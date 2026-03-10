@@ -11,6 +11,24 @@ class ScrapingJob(Base):
     workspace_id = Column(String, index=True, nullable=True) # null en MVP sin Auth
     requested_by = Column(String, nullable=True)
     status = Column(String, default="pending") # pending, running, completed, failed
+    
+    # Contexto de lo que hace el usuario (El Vendedor)
+    user_profession = Column(String, nullable=True) # ej: "Editor de Video", "Desarrollador Web"
+    user_technologies = Column(JSON, nullable=True) # ej: ["Premiere Pro", "After Effects"]
+    user_value_proposition = Column(Text, nullable=True) # ej: "Aumento retención con edición dinámica"
+    
+    # Factores de cierre del Vendedor (Agregados para mejorar outreach)
+    user_past_successes = Column(JSON, nullable=True) # ej: ["Canal X subió 30%", "Ahorro de $10k"]
+    user_roi_metrics = Column(JSON, nullable=True) # ej: ["ROI 3x", "Ahorro de 5 horas a la semana"]
+    
+    # Contexto de a quién busca (El Comprador / Prospecto)
+    target_niche = Column(String, nullable=True) # ej: "YouTubers de Finanzas", "Clínicas Dentales"
+    target_location = Column(String, nullable=True) # ej: "España", "Remoto"
+    target_language = Column(String, nullable=True) # ej: "es", "en"
+    target_company_size = Column(String, nullable=True) # ej: "1-10 empleados"
+    target_pain_points = Column(JSON, nullable=True) # ej: ["Canal estancado", "Mala iluminación"]
+    target_budget_signals = Column(JSON, nullable=True) # ej: ["Buscan contratar", "Tienen anuncios activos"]
+    
     source_type = Column(String, nullable=True)
     filters_json = Column(JSON, nullable=True)
     started_at = Column(DateTime, nullable=True)
@@ -47,6 +65,16 @@ class Prospect(Base):
     linkedin_url = Column(String, nullable=True)
     instagram_url = Column(String, nullable=True)
     facebook_url = Column(String, nullable=True)
+    
+    # Datos genéricos pero adaptativos según la profesión/nicho
+    inferred_tech_stack = Column(JSON, nullable=True) # ej: ["WordPress", "Shopify", "React"]
+    inferred_niche = Column(String, nullable=True)
+    generic_attributes = Column(JSON, nullable=True) # Respuestas a las "preguntas genéricas" que varían por rubro
+    
+    # Señales detectadas de probabilidad de presupuesto o cierre
+    hiring_signals = Column(Boolean, default=False) # ¿Tienen una pestaña "Trabaja con nosotros" / "Careers"?
+    estimated_revenue_signal = Column(String, nullable=True) # 'low', 'medium', 'high' deducido de su setup
+    has_active_ads = Column(Boolean, nullable=True) # Señal premium de que invierten dinero
     
     source = Column(String, nullable=True)
     source_url = Column(String, nullable=True)

@@ -13,7 +13,7 @@ A continuación, puedes encontrar la información de forma estructurada:
 - [06. Quickstart / Setup](06-quickstart.md) - Cómo clonar y levantar este proyecto localmente.
 
 ## Planeación y Backlog
-- [Backlog MVP de Scraping](backlog/01-fase-scraping-mvp.md) - Pasos específicos para validar y construir la primera versión funcional de este servicio.
+- [Plan de Trabajo por Fases](backlog/README.md) - Desglose detallado de todos los pasos, desde el Setup inicial (Fase 1) hasta la Integración Oficial en producción con Supabase y NestJS (Fase 5).
 
 ## Arquitectura por Fases
 - [Arquitectura Temporal (Validación/Docker)](arquitectura-temporal/01-vision-general.md) - Diseño aislado usando un contenedor local de Postgres para probar viabilidad libremente.

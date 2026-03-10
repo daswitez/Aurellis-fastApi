@@ -56,6 +56,17 @@ Representa cada solicitud de scraping lanzada por el sistema principal.
 - workspace_id
 - requested_by
 - status
+- user_profession *(ej. Editor de Video)*
+- user_technologies *(ej. ["Premiere Pro", "Motion Graphics"])*
+- user_value_proposition *(ej. Aumento de retención de audiencia)*
+- user_past_successes *(NUEVO: Casos de éxito previos para generar autoridad)*
+- user_roi_metrics *(NUEVO: Métricas tangibles de ROI que se le prometen al prospecto)*
+- target_niche *(ej. Creadores de Contenido)*
+- target_location *(ej. España, USA)*
+- target_language *(ej. es, en)*
+- target_company_size *(ej. Solopreneur, 10-50 empleados)*
+- target_pain_points *(ej. ["Baja retención", "Mala edición"])*
+- target_budget_signals *(NUEVO: Qué pistas nos dicen que tienen dinero para invertir)*
 - source_type
 - filters_json
 - started_at
@@ -85,6 +96,12 @@ Registro principal del prospecto ya normalizado.
 - linkedin_url
 - instagram_url
 - facebook_url
+- inferred_tech_stack *(Tecnologías detectadas en el prospecto)*
+- inferred_niche *(Nicho deducido de la empresa)*
+- generic_attributes *(JSON con info estructurada adaptada al rubro)*
+- hiring_signals *(NUEVO: True/False si buscan contratar o tienen "Careers")*
+- estimated_revenue_signal *(NUEVO: low/medium/high según apariencia del negocio)*
+- has_active_ads *(NUEVO: True/False si deducimos que pagan anuncios)*
 - source
 - source_url
 - score
