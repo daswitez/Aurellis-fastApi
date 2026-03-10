@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 from app.scraper.http_client import fetch_html
 from app.scraper.parser import parse_html_basic
+from app.services.ai_extractor import extract_business_entity_ai
 from app.services.heuristic_extractor import extract_business_entity_heuristic
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,13 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     clean_text, html_metadata = parse_html_basic(html_raw, base_url=target_url)
     
     # 3. Extracción de Lógica de Negocio mediante Heurística de Código
-    extracted_data = await extract_business_entity_heuristic(clean_text, html_raw, html_metadata, job_context)
+    # [FASE 5] Invocación a Inteligencia Artificial para comprensión profunda (DeepSeek)
+    # Fallback a heurística rápida si ocurre alguna excepción de red/API
+    try:
+        extracted_data = await extract_business_entity_ai(domain, clean_text, job_context)
+    except Exception as ai_e:
+        logger.error(f"Error AI para {target_url}. Usando heurística fallback: {ai_e}")
+        extracted_data = await extract_business_entity_heuristic(clean_text, html_raw, html_metadata, job_context)
     
     # 4. Fusionar Data Fuerte (Metadatos reales de bs4 como correos visibles y links) 
     # con Data Deductiva (Adivinada por el Heurístico)

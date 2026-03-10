@@ -1,43 +1,34 @@
-# Guía Rápida de Endpoints (API)
+# Documentación de Endpoints — Aurellis FastAPI
 
-Este documento detalla cómo levantar el servicio localmente y cómo usar los endpoints principales desde Postman, cURL o el futuro backend de NestJS.
+**Base URL:** `http://localhost:8000`  
+**Docs interactivos (Swagger):** `http://localhost:8000/docs`
 
 ---
 
-## 1. Levantar el Servicio Localmente
+## Cómo Levantar el Servidor
 
-Asegúrate de tener la base de datos de Docker corriendo:
 ```bash
-docker-compose up -d
-```
+# 1. Base de datos (Docker)
+docker-compose up -d postgres
 
-Luego, activa tu entorno y levanta el servidor uvicorn:
-```bash
+# 2. Entorno y servidor
 source venv/bin/activate
 uvicorn app.main:app --reload
 ```
-La API estará viva en `http://localhost:8000` y la documentación interactiva Swagger estará en `http://localhost:8000/docs`.
 
 ---
 
-## 2. Endpoints Principales
+## Endpoints
 
-### 2.1. Crear un Trabajo de Scraping (POST)
-**Endpoint:** `POST /api/v1/jobs/scrape`
+### 1. `POST /api/v1/jobs/scrape` — Crear un Job de Scraping
 
-Este es> **Nota de Errores Comunes:**
-> Si al invocar la API recibes un error tipo:
-> `{"detail": [{"type": "int_parsing", "loc": ["path","job_id"], "msg": "Input should be a valid integer..."}]}`
-> ¡Es porque estás accediendo al endpoint `POST /scrape` realizando un request **`GET`** (ej. poniendo la URL en la barra del navegador de Google Chrome)! Para usar endpoints POST, debes usar Terminal (cURL) o Postman.
+Crea un trabajo de prospección. Retorna inmediatamente (`202 Accepted`) y procesa en segundo plano.
 
-### Flujo de Uso
-La arquitectura no es "Solicitud Síncrona -> Respuesta con datos". Es un sistema de **Scraping Diferido**.nmediatamente que ha encolado el trabajo. 
+**Hay dos modos de uso:**
 
-**Modo 1: Modo Búsqueda Automática (Recomendado)**
-Le pides a la API que **busque prospectos en Google/DuckDuckGo** basados en un término#### B. Búsqueda Automática por Query (Buscador DDG)
-Si envías `search_query` y NO envías `urls`, la API buscará orgánicamente los dominios para ti.
+#### Modo A — Búsqueda Automática (recomendado)
+Le das un término de búsqueda y la API busca URLs en DuckDuckGo sola.
 
-**Comando `curl` exacto para Copiar y Pegar en la terminal:**
 ```bash
 curl -X POST http://localhost:8000/api/v1/jobs/scrape \
   -H "Content-Type: application/json" \
@@ -45,16 +36,32 @@ curl -X POST http://localhost:8000/api/v1/jobs/scrape \
     "search_query": "Clínicas dentales en Madrid",
     "user_profession": "Desarrollador Web",
     "user_technologies": ["WordPress", "SEO"],
-    "user_value_proposition": "Ayudo a clínicas a conseguir pacientes con webs rápidas.",
+    "user_value_proposition": "Ayudo a clínicas a conseguir más pacientes con webs rápidas.",
     "target_niche": "Salud Dental",
-    "target_company_size": "15",
+    "target_location": "España",
+    "target_language": "es",
+    "target_company_size": "5-20 empleados",
+    "target_pain_points": ["Sin web profesional", "Sin reservas online"],
+    "target_budget_signals": ["Anuncios activos en Google"],
     "max_results": 5
   }'
 ```
 
-*(Importante: `target_company_size` debe enviarse envuelto en comillas como string `"15"`)*
+#### Modo B — URLs Directas ("Semillas")
+Le das los dominios exactos a scrapear.
 
-**Respuesta Exitosa (HTTP 202 Accepted):**
+```bash
+curl -X POST http://localhost:8000/api/v1/jobs/scrape \
+  -H "Content-Type: application/json" \
+  -d '{
+    "urls": ["https://clinicadental.es", "https://smiledentist.es"],
+    "user_profession": "Desarrollador Web",
+    "user_value_proposition": "Ayudo a clínicas a conseguir más pacientes.",
+    "target_niche": "Salud Dental"
+  }'
+```
+
+**Respuesta `202 Accepted`:**
 ```json
 {
   "job_id": 1,
@@ -63,61 +70,131 @@ curl -X POST http://localhost:8000/api/v1/jobs/scrape \
 }
 ```
 
-**Modo 2: Modo URLs Precisas ("Semillas")**
-Le pides a la API que extraiga información **SÓLO de los dominios específicos** que tú ya conoces. 
+**Errores posibles:**
 
-**Payload JSON de Ejemplo:**
+| Código | Causa |
+|--------|-------|
+| `400` | No enviaste `urls` ni `search_query` |
+| `400` | DuckDuckGo no encontró resultados para tu query |
+| `422` | Algún campo tiene el tipo incorrecto (ej: `target_company_size` debe ser string `"15"`, no número) |
+
+---
+
+#### Campos del Payload — Referencia Completa
+
+| Campo | Tipo | Obligatorio | Descripción |
+|-------|------|-------------|-------------|
+| `search_query` | `string` | No* | Término para buscar en DuckDuckGo. Ej: `"Veterinarias en Lima"` |
+| `urls` | `string[]` | No* | Lista de URLs directas a scrapear |
+| `user_profession` | `string` | No | Tu profesión. Ej: `"Desarrollador Web"` |
+| `user_technologies` | `string[]` | No | Tus herramientas. Ej: `["WordPress", "Shopify"]` |
+| `user_value_proposition` | `string` | No | Tu propuesta de valor. DeepSeek la usa para calcular el match score |
+| `user_past_successes` | `string[]` | No | Casos de éxito anteriores |
+| `user_roi_metrics` | `string[]` | No | Métricas de ROI que ofreces |
+| `target_niche` | `string` | No | Nicho objetivo. Ej: `"Salud Dental"` |
+| `target_location` | `string` | No | País/ciudad. Ej: `"España"` |
+| `target_language` | `string` | No | Idioma. Ej: `"es"` |
+| `target_company_size` | `string` | No | Tamaño. Ej: `"5-20 empleados"`, `"Solopreneur"` |
+| `target_pain_points` | `string[]` | No | Problemas que tiene el prospecto ideal |
+| `target_budget_signals` | `string[]` | No | Señales de que tiene presupuesto |
+| `max_results` | `int` | No | Máximo de URLs a procesar. Default: `10` |
+
+*Debes enviar **al menos uno** de los dos: `search_query` o `urls`.
+
+---
+
+### 2. `GET /api/v1/jobs/{job_id}` — Estado del Job
+
+Consulta si el job terminó. Úsalo con polling cada 2-3 segundos hasta que `status` sea `"completed"`.
+
+```bash
+curl http://localhost:8000/api/v1/jobs/1
+```
+
+**Estados posibles:**
+
+| `status` | Significado |
+|----------|-------------|
+| `pending` | En cola, aún no arrancó |
+| `running` | Scrapeando activamente |
+| `completed` | Terminó bien — ya podés pedir los resultados |
+| `failed` | Error irrecuperable — revisar `error_message` |
+
+**Respuesta `200 OK`:**
 ```json
 {
-  "urls": ["https://apple.com", "https://ejemplo.com"],
-  "user_profession": "Agencia B2B"
+  "job_id": 1,
+  "status": "completed",
+  "message": "Terminó en 2026-03-10 21:10:50"
 }
 ```
 
-**Respuesta Esperada (`202 Accepted`):**
+**Respuesta `404`:**
 ```json
-{
-    "job_id": 14,
-    "status": "pending",
-    "message": "El trabajo ha sido encolado y el scraping iniciará de inmediato."
-}
+{ "detail": "Job no encontrado." }
 ```
 
 ---
 
-### 2.2. Consultar Estado del Trabajo (GET)
-Como el scraping de 50 sitios demora, tu cliente (NestJS) debe hacer *polling* a este endpoint usando el `job_id` que recibió en el paso anterior.
+### 3. `GET /api/v1/jobs/{job_id}/results` — Resultados del Job
 
-**Endpoint:** `GET /api/v1/jobs/{job_id}`
+Devuelve la lista paginada de prospectos analizados por DeepSeek y guardados en PostgreSQL.
 
-**Respuesta Esperada (`200 OK`):**
-```json
-{
-    "job_id": 14,
-    "status": "completed", 
-    "message": "Terminó en 2026-03-09T23:55:00"
-}
+```bash
+# Primeros 50 resultados (default)
+curl http://localhost:8000/api/v1/jobs/1/results
+
+# Con paginación
+curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
 ```
-*(Si sigue trabajando, `status` será `"running"`).*
 
----
+**Query params:**
 
-### 2.3. Obtener los Prospectos Guardados (GET)
-Una vez el Job esté `"completed"`, visitas este endpoint para descargar el listado estructurado de empresas que nuestro motor dedujo y enriqueció.
+| Param | Tipo | Default | Descripción |
+|-------|------|---------|-------------|
+| `limit` | `int` | `50` | Máximo de resultados por página |
+| `offset` | `int` | `0` | Desde qué posición paginar |
 
-**Endpoint:** `GET /api/v1/jobs/{job_id}/results`
-
-**Respuesta Esperada (`200 OK`):**
+**Respuesta `200 OK`:**
 ```json
 [
   {
-    "id": 150,
+    "id": 42,
     "company_name": "Clínica Sonrisas",
-    "domain": "sonrisas-madrid.es",
-    "email": "contacto@sonrisas-madrid.es",
+    "domain": "clinica-sonrisas.es",
+    "email": "contacto@clinica-sonrisas.es",
     "inferred_niche": "Salud Dental",
     "inferred_tech_stack": ["WordPress", "Google Analytics"],
     "has_active_ads": true
+  },
+  {
+    "id": 43,
+    "company_name": null,
+    "domain": "dentistamadrid.com",
+    "email": null,
+    "inferred_niche": "Salud Dental",
+    "inferred_tech_stack": [],
+    "has_active_ads": false
   }
 ]
 ```
+
+---
+
+## Flujo Completo de Uso (para NestJS)
+
+```
+1. POST /scrape          → Recibir { job_id: N }
+2. GET  /jobs/N          → Polling hasta { status: "completed" }
+3. GET  /jobs/N/results  → Descargar prospectos enriquecidos con IA
+```
+
+---
+
+## Notas Técnicas
+
+- **El scraping es asíncrono.** La API nunca bloquea — siempre retorna `202` de inmediato.
+- **Hay un delay de 2 segundos entre cada URL** para no saturar los sitios objetivo.
+- **DeepSeek AI** analiza el HTML de cada sitio para extraer `inferred_niche`, `pain_points` y `score`.
+- **Si un sitio devuelve 403 (anti-bot)**, se loggea un warning y se salta — no rompe el job.
+- **Los prospectos se guardan con `ON CONFLICT (domain)`** — nunca se duplican por dominio.

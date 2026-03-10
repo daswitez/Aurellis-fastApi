@@ -35,13 +35,36 @@ class JobResponse(BaseModel):
     
 class ProspectOut(BaseModel):
     """Salida estandarizada de un Prospecto estructurado para JSON"""
+    # Identificación
     id: int
     company_name: Optional[str]
     domain: str
+    website_url: Optional[str]
+    source_url: Optional[str]
+
+    # Contacto
     email: Optional[str]
-    inferred_niche: Optional[str]
-    inferred_tech_stack: Optional[List[str]]
+    phone: Optional[str]
+    linkedin_url: Optional[str]
+    instagram_url: Optional[str]
+    facebook_url: Optional[str]
+
+    # Análisis IA (DeepSeek)
+    score: Optional[float]               # Match score 0-100 con el perfil del vendedor
+    confidence_level: Optional[str]      # Confianza del análisis: low / medium / high
+    inferred_niche: Optional[str]        # Nicho detectado por IA
+    inferred_tech_stack: Optional[List[str]]  # Stack tecnológico detectado
+    generic_attributes: Optional[Any]   # Pain points y metadata del análisis IA
+
+    # Señales de negocio
+    estimated_revenue_signal: Optional[str]  # low / medium / high
     has_active_ads: Optional[bool]
-    
+    hiring_signals: Optional[bool]       # ¿Está contratando activamente?
+
+    # Descripción y ubicación
+    description: Optional[str]
+    location: Optional[str]
+    category: Optional[str]
+
     class Config:
         from_attributes = True

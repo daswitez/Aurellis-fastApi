@@ -19,7 +19,7 @@ services:
     image: dpage/pgadmin4
     container_name: aurellis_pgadmin_dev
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@aurellis.local
+      PGADMIN_DEFAULT_EMAIL: admin@aurelius.com
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
       - "5050:80"
