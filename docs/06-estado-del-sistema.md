@@ -1,7 +1,7 @@
 # Estado del Sistema
 
 **Última actualización:** 2026-03-11  
-**Versión operativa:** MVP refinado 1.2
+**Versión operativa:** MVP refinado 1.3
 
 ---
 
@@ -15,10 +15,12 @@ POST /jobs/scrape
   -> búsqueda DDG con pre-ranking
   -> scraping de dominio y páginas clave
   -> parser estructurado
+  -> clasificacion explicita de entidad
   -> quality gate
   -> IA opcional con cache y fallback
+  -> taxonomia y decision comercial final
   -> persistencia por prospecto y por job
-  -> endpoints de estado, resultados, logs y métricas
+  -> endpoints de estado, resultados, logs y metricas
 ```
 
 El sistema ya puede explicar no solo si un job terminó, sino también:
@@ -26,8 +28,10 @@ El sistema ya puede explicar no solo si un job terminó, sino también:
 - cuántos candidatos descubrió;
 - cuántos procesó;
 - cuántos quedaron `accepted`, `needs_review` o `rejected`;
+- cuáles quedaron `accepted_target`, `accepted_related` o rechazados por tipo no objetivo;
 - por qué terminó sin aceptados cuando eso ocurre;
-- cuánto ruido editorial/directorio está apareciendo en discovery.
+- cuánto ruido editorial/directorio está apareciendo en discovery;
+- cuánta inconsistencia de contacto y ruido telefónico está siendo filtrado.
 
 ---
 
@@ -40,13 +44,17 @@ El sistema ya puede explicar no solo si un job terminó, sino también:
 | Discovery DDG | OK | Queries canónicas, negativas, pre-ranking y seeds de directorio |
 | Scraper HTTP | OK | Homepage + páginas clave |
 | Parser HTML | OK | JSON-LD, idioma, CTAs, booking, pricing, mapas, contactos |
+| Clasificador de entidad | OK | `direct_business`, `directory`, `aggregator`, `media`, `association`, etc. |
 | Quality Gate | OK | `accepted`, `needs_review`, `rejected` |
+| Decisión comercial | OK | `accepted_target`, `accepted_related`, `rejected_*` |
 | Geo strict reforzado | OK | `areaServed`, `PostalAddress`, TLD, prefijos telefónicos |
 | IA DeepSeek | OK | Gateada por calidad/heurística |
+| Taxonomía comercial | OK | `taxonomy_top_level` y `taxonomy_business_type` |
 | Cache IA local | OK | Útil mientras siga siendo proceso único |
 | Persistencia canónica + por job | OK | `prospects`, `job_prospects`, `prospect_contacts`, `prospect_pages` |
 | Logs persistidos | OK | Visibles por API |
 | Métricas operativas agregadas | OK | `GET /jobs/metrics/operational` |
+| Métricas comerciales agregadas | OK | `GET /jobs/metrics/commercial` |
 | Tests automatizados | OK | `pytest` corriendo en el `venv` del repo |
 
 ---
@@ -57,9 +65,12 @@ El sistema ya puede explicar no solo si un job terminó, sino también:
 - limitar costo con `max_candidates_to_process`;
 - reabrir discovery si el primer batch no alcanza;
 - auditar resultados por calidad;
+- auditar resultados por decisión comercial;
 - consultar logs de ejecución;
 - revisar KPIs agregados de recall/precisión;
+- revisar KPIs agregados de clasificación comercial;
 - validar discovery offline con fixtures SERP;
+- validar clasificación comercial con fixtures HTML reales;
 - correr suite automatizada local.
 
 ---
@@ -102,7 +113,8 @@ Estado verificado:
 - discovery;
 - parser y quality;
 - IA y observabilidad;
-- métricas operativas.
+- métricas operativas;
+- métricas comerciales y fixtures HTML de regresión.
 
 ---
 
@@ -110,6 +122,7 @@ Estado verificado:
 
 - API usable: [05-api-y-reglas.md](05-api-y-reglas.md)
 - lógica de módulos: [11-mapa-de-modulos-y-cambios-recientes.md](11-mapa-de-modulos-y-cambios-recientes.md)
+- clasificación comercial implementada: [clasificacion-comercial/README.md](clasificacion-comercial/README.md)
 - backlog técnico: [07-observaciones-y-plan-de-mejora.md](07-observaciones-y-plan-de-mejora.md)
 - captura y recall: [12-plan-refinamiento-captura-y-recall.md](12-plan-refinamiento-captura-y-recall.md)
 - resumen ejecutivo y FODA: [13-estado-actual-foda-y-pendientes.md](13-estado-actual-foda-y-pendientes.md)

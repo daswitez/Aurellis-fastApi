@@ -20,12 +20,14 @@ El flujo actual es:
 4. `app/api/jobs.py` crea el job y lanza el worker.
 5. `app/scraper/engine.py` scrapea homepage y páginas clave del dominio.
 6. `app/scraper/parser.py` extrae metadata estructurada y señales visibles.
-7. `app/services/prospect_quality.py` decide `accepted`, `needs_review` o `rejected`.
-8. `app/services/heuristic_extractor.py` construye baseline comercial.
-9. `app/services/ai_extractor.py` enriquece solo si el gate lo permite.
-10. `app/services/scoring.py` combina heurística, IA y calidad.
-11. `app/services/db_upsert.py` persiste en `prospects`, `job_prospects`, contactos y páginas.
-12. `GET /jobs/...` expone estado, resultados, logs y métricas operativas.
+7. `app/services/entity_classifier.py` clasifica tipo de entidad.
+8. `app/services/prospect_quality.py` decide calidad técnica y decisión comercial.
+9. `app/services/heuristic_extractor.py` construye baseline comercial.
+10. `app/services/ai_extractor.py` enriquece solo si el gate lo permite.
+11. `app/services/scoring.py` combina heurística, IA y calidad.
+12. `app/services/db_upsert.py` persiste en `prospects`, `job_prospects`, contactos y páginas.
+13. `app/services/business_taxonomy.py` resuelve taxonomía cerrada.
+14. `GET /jobs/...` expone estado, resultados, logs, métricas operativas y métricas comerciales.
 
 ---
 
@@ -62,12 +64,14 @@ Lógica importante:
 - procesa candidatos por tandas;
 - reabre discovery si faltan aceptados y todavía hay presupuesto;
 - consolida `ai_summary`, `quality_summary`, `capture_summary` y `operational_summary`;
-- expone `GET /jobs/metrics/operational` para seguimiento agregado.
+- expone `GET /jobs/metrics/operational` para seguimiento agregado;
+- expone `GET /jobs/metrics/commercial` para medir precision comercial, contactos inconsistentes, ruido telefonico filtrado y rollout.
 
 Qué cambio reciente consolidó:
 
 - filtro `quality` robusto en `/results`;
 - resumen de captura y métricas operativas;
+- resumen de métricas comerciales;
 - reapertura incremental de discovery;
 - trazabilidad de exclusiones tempranas y batches procesados.
 
@@ -84,7 +88,8 @@ Lógica importante:
 - `JobCreateRequest` modela el job desde intención comercial, nicho y objetivos de captura;
 - `ProspectOut` expone el resultado visible por job;
 - `JobCaptureSummary` y `JobOperationalSummary` explican por qué un job terminó con o sin aceptados;
-- `JobsOperationalMetricsResponse` resume recall y precisión en agregado.
+- `JobsOperationalMetricsResponse` resume recall y precisión en agregado;
+- `JobsCommercialMetricsResponse` resume precision comercial, contactos inconsistentes y telefonos falsos filtrados.
 
 ---
 
@@ -121,6 +126,7 @@ Lógica importante:
 - separa dato canónico de dato contextual del job;
 - hace `upsert` por dominio en `Prospect`;
 - guarda `quality_status`, `rejection_reason`, evidence packs, AI trace y scoring trace en `JobProspect`;
+- persiste `acceptance_decision`, taxonomia, consistencia de contacto y evidencia comercial;
 - persiste contactos y páginas deduplicadas.
 
 Qué habilita:
@@ -212,12 +218,14 @@ Lógica importante:
 - parsea JSON-LD;
 - detecta direcciones, teléfonos, emails y mapas;
 - detecta CTA principal, booking, pricing, servicios y páginas internas;
-- consolida canales de contacto visibles y estructurados.
+- consolida canales de contacto visibles y estructurados;
+- filtra telefonos falsos y cuenta `phone_validation_rejections`.
 
 Resultado:
 
 - un `clean_text` útil para heurística/IA;
-- un `metadata` rico para quality gate y scoring.
+- un `metadata` rico para quality gate y scoring;
+- evidencia util para metricas comerciales y limpieza de telefonos.
 
 ### `app/scraper/engine.py`
 
@@ -234,6 +242,7 @@ Lógica importante:
 - corre baseline heurístico;
 - corre quality gate;
 - decide si llamar o no a IA;
+- recalcula taxonomia final;
 - construye el payload final persistible.
 
 Por qué importa:
@@ -257,7 +266,46 @@ Lógica importante:
 - calcula calidad de contacto;
 - clasifica `accepted`, `needs_review` o `rejected`;
 - define `rejection_reason`, `quality_flags` y `score_multiplier`;
+- separa `location` visible de `validated_location`;
+- construye `parsed_location`, `city`, `region`, `country` y `postal_code`;
+- define `acceptance_decision` como capa comercial separada;
 - arma el `evidence pack` compacto para IA.
+
+### `app/services/entity_classifier.py`
+
+Responsabilidad:
+
+- clasificar tipo de entidad antes del score final.
+
+Lógica importante:
+
+- distingue negocio real, directorio, comparador, marketplace, medio, artículo, asociación, agencia y consultor;
+- produce `entity_type_detected`, `entity_type_confidence`, `entity_type_evidence` e `is_target_entity`;
+- evita que el score final tenga que inferir solo por relevancia semántica si un sitio es target real.
+
+### `app/services/commercial_insights.py`
+
+Responsabilidad:
+
+- normalizar la frontera entre observación e inferencia comercial.
+
+Lógica importante:
+
+- normaliza `observed_signals`;
+- normaliza `inferred_opportunities`;
+- mantiene compatibilidad transitoria con `pain_points_detected`.
+
+### `app/services/business_taxonomy.py`
+
+Responsabilidad:
+
+- resolver una taxonomía cerrada de negocio reutilizable por heurística, IA y engine.
+
+Lógica importante:
+
+- emite `taxonomy_top_level`;
+- emite `taxonomy_business_type`;
+- evita depender de `inferred_niche` libre para decisiones de agrupación.
 
 Qué resolvió:
 
@@ -344,7 +392,32 @@ Qué cubre:
 
 - parser estructurado;
 - `areaServed`, `PostalAddress`, TLD, prefijos y mapas;
-- clasificación geo/idioma/contacto.
+- clasificación geo/idioma/contacto;
+- filtrado de teléfonos falsos;
+- precedencia entre `location`, `raw_location_text` y `validated_location`.
+
+### `tests/test_commercial_fixtures.py`
+
+Qué cubre:
+
+- negocio real;
+- directorio;
+- comparador;
+- medio;
+- asociación;
+- contacto inconsistente;
+- ubicación contaminada;
+- teléfono falso tipo fecha o secuencia.
+
+### `tests/test_commercial_metrics.py`
+
+Qué cubre:
+
+- `accepted_target_precision`;
+- `accepted_non_target_rate`;
+- conteo de contactos inconsistentes;
+- agregación de teléfonos falsos filtrados;
+- `rollout_stage` y `rollout_layers_completed`.
 
 ### `tests/test_ai_observability.py`
 
@@ -376,6 +449,7 @@ Qué cubre:
 | [09-cambios-implementados-hasta-fase-b.md](09-cambios-implementados-hasta-fase-b.md) | histórico de cambios ejecutados |
 | [12-plan-refinamiento-captura-y-recall.md](12-plan-refinamiento-captura-y-recall.md) | plan y estado de recall/captura |
 | [13-estado-actual-foda-y-pendientes.md](13-estado-actual-foda-y-pendientes.md) | lectura ejecutiva de fortalezas, debilidades, amenazas y próximos pasos |
+| [clasificacion-comercial/README.md](clasificacion-comercial/README.md) | implementación consolidada del plan comercial |
 
 ---
 
@@ -390,11 +464,13 @@ Si eres integrador:
 Si vas a tocar scraping o quality:
 
 1. [03-arquitectura-tecnica.md](03-arquitectura-tecnica.md)
-2. [12-plan-refinamiento-captura-y-recall.md](12-plan-refinamiento-captura-y-recall.md)
-3. este documento
+2. [clasificacion-comercial/README.md](clasificacion-comercial/README.md)
+3. [12-plan-refinamiento-captura-y-recall.md](12-plan-refinamiento-captura-y-recall.md)
+4. este documento
 
 Si vas a planificar siguientes fases:
 
 1. [13-estado-actual-foda-y-pendientes.md](13-estado-actual-foda-y-pendientes.md)
-2. [07-observaciones-y-plan-de-mejora.md](07-observaciones-y-plan-de-mejora.md)
-3. [docs/backlog/plan-detallado-estabilizacion-y-mejora.md](backlog/plan-detallado-estabilizacion-y-mejora.md)
+2. [clasificacion-comercial/01-estado-implementado.md](clasificacion-comercial/01-estado-implementado.md)
+3. [07-observaciones-y-plan-de-mejora.md](07-observaciones-y-plan-de-mejora.md)
+4. [docs/backlog/plan-detallado-estabilizacion-y-mejora.md](backlog/plan-detallado-estabilizacion-y-mejora.md)

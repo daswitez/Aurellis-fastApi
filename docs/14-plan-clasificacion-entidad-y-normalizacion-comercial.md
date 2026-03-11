@@ -3,6 +3,8 @@
 **Fecha:** 2026-03-11  
 **Objetivo:** mejorar la precisión comercial del pipeline separando negocio objetivo real de ruido semántico, limpiando mejor contactos/ubicación y distinguiendo observaciones de inferencias.
 
+**Implementacion consolidada:** ver [clasificacion-comercial/README.md](clasificacion-comercial/README.md).
+
 ---
 
 ## 1. Problema actual
