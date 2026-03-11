@@ -1314,6 +1314,8 @@ async def get_job_results(
                 else prospect.is_target_entity
             ),
             inferred_niche=prospect.inferred_niche,
+            taxonomy_top_level=job_prospect.taxonomy_top_level or prospect.taxonomy_top_level,
+            taxonomy_business_type=job_prospect.taxonomy_business_type or prospect.taxonomy_business_type,
             inferred_tech_stack=prospect.inferred_tech_stack,
             generic_attributes=prospect.generic_attributes,
             observed_signals=job_prospect.observed_signals or prospect.observed_signals,

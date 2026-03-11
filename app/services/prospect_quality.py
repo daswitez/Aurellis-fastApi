@@ -1075,6 +1075,10 @@ def build_ai_evidence_pack(
         "heuristic_pain_points": heuristic_data.get("generic_attributes", {}).get("pain_points_detected", []),
         "inferred_tech_stack": heuristic_data.get("inferred_tech_stack", []),
         "inferred_niche": heuristic_data.get("inferred_niche"),
+        "taxonomy_top_level": heuristic_data.get("taxonomy_top_level")
+        or heuristic_data.get("generic_attributes", {}).get("taxonomy_top_level"),
+        "taxonomy_business_type": heuristic_data.get("taxonomy_business_type")
+        or heuristic_data.get("generic_attributes", {}).get("taxonomy_business_type"),
         "entity_type_detected": quality_data.get("entity_type_detected"),
         "entity_type_confidence": quality_data.get("entity_type_confidence"),
         "is_target_entity": quality_data.get("is_target_entity"),

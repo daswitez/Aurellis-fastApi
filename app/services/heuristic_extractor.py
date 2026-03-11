@@ -3,6 +3,7 @@ import re
 import unicodedata
 from typing import Any, Dict, List
 
+from app.services.business_taxonomy import resolve_business_taxonomy
 from app.services.commercial_insights import (
     build_legacy_pain_points,
     normalize_inferred_opportunities,
@@ -630,6 +631,14 @@ def build_heuristic_trace(
         hiring_signals=hiring_signals,
         commercial_intent_score=components["commercial_intent"]["normalized_score"],
     )
+    taxonomy_data = resolve_business_taxonomy(
+        clean_text=clean_text,
+        metadata=metadata,
+        entity_type_detected="direct_business",
+        inferred_niche=inferred_niche,
+        target_niche=context.get("target_niche"),
+    )
+    inferred_niche = taxonomy_data["inferred_niche"]
     fit_summary = _build_fit_summary(heuristic_score, components)
     observed_signals = _build_observed_signals(clean_text, metadata, context, inferred_tech_stack)
     inferred_opportunities = _build_inferred_opportunities(observed_signals)
@@ -642,6 +651,10 @@ def build_heuristic_trace(
         "has_active_ads": has_active_ads,
         "hiring_signals": hiring_signals,
         "inferred_niche": inferred_niche,
+        "taxonomy_top_level": taxonomy_data["taxonomy_top_level"],
+        "taxonomy_business_type": taxonomy_data["taxonomy_business_type"],
+        "display_category": taxonomy_data["display_category"],
+        "taxonomy_evidence": taxonomy_data["taxonomy_evidence"],
         "inferred_tech_stack": inferred_tech_stack,
         "fit_summary": fit_summary,
         "observed_signals": observed_signals,
@@ -684,11 +697,13 @@ async def extract_business_entity_heuristic(
 
     return {
         "company_name": metadata.get("title", "").split("|")[0].strip(),
-        "category": inferred_niche or "Desconocido",
+        "category": heuristic_trace.get("display_category") or inferred_niche or "Desconocido",
         "location": metadata.get("addresses", [None])[0] if metadata.get("addresses") else None,
         "description": metadata.get("description", "Sin descripcion META encontrada."),
         "inferred_tech_stack": heuristic_trace["inferred_tech_stack"],
         "inferred_niche": inferred_niche,
+        "taxonomy_top_level": heuristic_trace.get("taxonomy_top_level"),
+        "taxonomy_business_type": heuristic_trace.get("taxonomy_business_type"),
         "hiring_signals": heuristic_trace["hiring_signals"],
         "estimated_revenue_signal": heuristic_trace["estimated_revenue_signal"],
         "has_active_ads": heuristic_trace["has_active_ads"],
@@ -703,6 +718,9 @@ async def extract_business_entity_heuristic(
             "observed_signals": heuristic_trace["observed_signals"],
             "inferred_opportunities": heuristic_trace["inferred_opportunities"],
             "pain_points_detected": heuristic_trace["pain_points_detected"],
+            "taxonomy_top_level": heuristic_trace.get("taxonomy_top_level"),
+            "taxonomy_business_type": heuristic_trace.get("taxonomy_business_type"),
+            "taxonomy_evidence": heuristic_trace.get("taxonomy_evidence", []),
             "heuristic_score_breakdown": heuristic_trace["heuristic_trace"]["component_scores"],
             "heuristic_signals": heuristic_trace["heuristic_trace"]["signals"],
         },

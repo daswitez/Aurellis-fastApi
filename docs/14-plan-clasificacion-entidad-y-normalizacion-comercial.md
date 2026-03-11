@@ -309,14 +309,26 @@ Toda clasificación fuerte debe poder explicarse con señales y razones visibles
 
 ### I.6. Taxonomía comercial controlada
 
-- [ ] **I-016 Definir taxonomía cerrada para nicho y tipo de negocio**
+- [x] **I-016 Definir taxonomía cerrada para nicho y tipo de negocio**
   - `taxonomy_top_level`
   - `taxonomy_business_type`
   - **Criterio de cierre:** `inferred_niche` deja de ser solo texto libre y se vuelve filtrable.
 
-- [ ] **I-017 Alinear parser, heurística, IA y API con la taxonomía**
+- [x] **I-017 Alinear parser, heurística, IA y API con la taxonomía**
   - Evitar etiquetas distintas para el mismo tipo de entidad.
   - **Criterio de cierre:** negocio, directorio y medio quedan clasificados con consistencia entre capas.
+
+**Notas de implementación 2026-03-11**
+
+- La taxonomía cerrada quedó centralizada en `app/services/business_taxonomy.py`.
+- El pipeline ahora persiste y expone:
+  - `taxonomy_top_level`
+  - `taxonomy_business_type`
+- Heurística, IA y `engine` usan el mismo resolvedor taxonómico para normalizar:
+  - `inferred_niche`
+  - categoría visible
+  - directorios/medios/agregadores frente a negocios reales
+- `inferred_niche` deja de depender solo de texto libre de heurística o IA y pasa por normalización canónica antes de persistirse.
 
 ### I.7. Testing, fixtures y rollout
 

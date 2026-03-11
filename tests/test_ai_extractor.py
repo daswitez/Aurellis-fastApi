@@ -81,7 +81,9 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
                 ):
                     result = await extract_business_entity_ai("example.com", "x" * 200, {})
 
-        self.assertEqual(result["inferred_niche"], "Dental Clinic")
+        self.assertEqual(result["inferred_niche"], "Dental")
+        self.assertEqual(result["taxonomy_top_level"], "health")
+        self.assertEqual(result["taxonomy_business_type"], "dental_clinic")
         self.assertEqual(result["inferred_tech_stack"], ["WordPress", "React"])
         self.assertEqual(
             result["generic_attributes"]["observed_signals"],
@@ -140,6 +142,7 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
                 second = await extract_business_entity_ai("example.com", "x" * 200, {}, cache_key="cache-key")
 
         self.assertEqual(first["inferred_niche"], second["inferred_niche"])
+        self.assertEqual(first["taxonomy_business_type"], second["taxonomy_business_type"])
         self.assertEqual(second["_ai_metrics"]["total_tokens"], 0)
         self.assertTrue(second["_ai_metrics"]["cache_hit"])
         self.assertEqual(client_builder.call_count, 1)
@@ -167,6 +170,7 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["observed_signals"], [])
         self.assertEqual(result["inferred_opportunities"], ["Posible oportunidad: sin CTA clara"])
         self.assertEqual(result["generic_attributes"]["pain_points_detected"], result["inferred_opportunities"])
+        self.assertEqual(result["taxonomy_business_type"], "medical_clinic")
 
     async def test_rejects_incomplete_ai_payload(self) -> None:
         payload = json.dumps(

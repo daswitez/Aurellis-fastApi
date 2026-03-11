@@ -199,6 +199,8 @@ class ProspectOut(BaseModel):
     entity_type_evidence: Optional[Dict[str, Any]]
     is_target_entity: Optional[bool]
     inferred_niche: Optional[str]        # Nicho detectado por IA
+    taxonomy_top_level: Optional[str]
+    taxonomy_business_type: Optional[str]
     inferred_tech_stack: Optional[List[str]]  # Stack tecnológico detectado
     generic_attributes: Optional[Dict[str, Any]]
     observed_signals: Optional[List[str]]

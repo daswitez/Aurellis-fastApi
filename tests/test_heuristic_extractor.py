@@ -55,6 +55,9 @@ class HeuristicExtractorTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("contact_availability", result["generic_attributes"]["heuristic_score_breakdown"])
         self.assertIn("contactabilidad", result["fit_summary"])
         self.assertIn("stack_fit", result["heuristic_trace"]["component_scores"])
+        self.assertEqual(result["taxonomy_top_level"], "health")
+        self.assertEqual(result["taxonomy_business_type"], "dental_clinic")
+        self.assertEqual(result["inferred_niche"], "Dental")
         self.assertEqual(result["observed_signals"], [])
         self.assertEqual(result["inferred_opportunities"], [])
 
@@ -88,6 +91,7 @@ class HeuristicExtractorTestCase(unittest.IsolatedAsyncioTestCase):
             any(item.startswith("Posible oportunidad: ") for item in trace["inferred_opportunities"])
         )
         self.assertEqual(trace["pain_points_detected"], trace["inferred_opportunities"])
+        self.assertEqual(trace["taxonomy_business_type"], "local_business")
         self.assertIn("Fit heuristico debil", trace["fit_summary"])
 
 

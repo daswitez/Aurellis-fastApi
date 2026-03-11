@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from app.scraper.http_client import FetchHtmlError, fetch_html
 from app.scraper.parser import parse_html_basic
 from app.services.ai_extractor import AIExtractionFallbackError, PROMPT_VERSION, extract_business_entity_ai
+from app.services.business_taxonomy import resolve_business_taxonomy
 from app.services.discovery import build_discovery_metadata
 from app.services.entity_classifier import classify_entity_type
 from app.services.heuristic_extractor import extract_business_entity_heuristic
@@ -390,12 +391,24 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
 
     observed_signals = _pick_signal_list(extracted_data, heuristic_baseline, key="observed_signals")
     inferred_opportunities = _pick_signal_list(extracted_data, heuristic_baseline, key="inferred_opportunities")
+    taxonomy_data = resolve_business_taxonomy(
+        clean_text=combined_text,
+        metadata=merged_metadata,
+        entity_type_detected=quality_data.get("entity_type_detected"),
+        inferred_niche=_pick_first_defined(extracted_data.get("inferred_niche"), heuristic_baseline.get("inferred_niche")),
+        category=_pick_first_defined(extracted_data.get("category"), heuristic_baseline.get("category")),
+        target_niche=job_context.get("target_niche"),
+    )
+    if isinstance(generic_attributes, dict):
+        generic_attributes.setdefault("taxonomy_top_level", taxonomy_data.get("taxonomy_top_level"))
+        generic_attributes.setdefault("taxonomy_business_type", taxonomy_data.get("taxonomy_business_type"))
+        generic_attributes.setdefault("taxonomy_evidence", taxonomy_data.get("taxonomy_evidence"))
 
     final_prospect = {
         "domain": domain,
         "website_url": target_url,
         "company_name": _pick_first_defined(extracted_data.get("company_name"), heuristic_baseline.get("company_name"), domain),
-        "category": _pick_first_defined(extracted_data.get("category"), heuristic_baseline.get("category")),
+        "category": taxonomy_data.get("display_category") or _pick_first_defined(extracted_data.get("category"), heuristic_baseline.get("category")),
         "location": quality_data.get("location"),
         "raw_location_text": quality_data.get("raw_location_text"),
         "parsed_location": quality_data.get("parsed_location"),
@@ -429,7 +442,9 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "company_size_signal": quality_data.get("company_size_signal"),
         "service_keywords": quality_data.get("service_keywords"),
         "inferred_tech_stack": _pick_first_defined(extracted_data.get("inferred_tech_stack"), heuristic_baseline.get("inferred_tech_stack")),
-        "inferred_niche": _pick_first_defined(extracted_data.get("inferred_niche"), heuristic_baseline.get("inferred_niche")),
+        "inferred_niche": taxonomy_data.get("inferred_niche"),
+        "taxonomy_top_level": taxonomy_data.get("taxonomy_top_level"),
+        "taxonomy_business_type": taxonomy_data.get("taxonomy_business_type"),
         "generic_attributes": generic_attributes,
         "observed_signals": observed_signals,
         "inferred_opportunities": inferred_opportunities,

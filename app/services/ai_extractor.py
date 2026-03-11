@@ -8,6 +8,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from app.config import get_settings
+from app.services.business_taxonomy import resolve_business_taxonomy
 from app.services.commercial_insights import (
     build_legacy_pain_points,
     normalize_inferred_opportunities,
@@ -350,14 +351,24 @@ La estructura esperada es:
 
 def _validate_ai_response_payload(parsed_data: Any) -> Dict[str, Any]:
     payload = _AIResponsePayload.model_validate(parsed_data)
+    taxonomy_data = resolve_business_taxonomy(
+        clean_text="",
+        metadata={},
+        inferred_niche=payload.inferred_niche,
+    )
     return {
         "inferred_tech_stack": payload.inferred_tech_stack,
-        "inferred_niche": payload.inferred_niche,
+        "inferred_niche": taxonomy_data["inferred_niche"],
+        "taxonomy_top_level": taxonomy_data["taxonomy_top_level"],
+        "taxonomy_business_type": taxonomy_data["taxonomy_business_type"],
         "generic_attributes": {
             "evaluation_method": f"DeepSeek API ({PROMPT_VERSION})",
             "observed_signals": payload.generic_attributes.observed_signals,
             "inferred_opportunities": payload.generic_attributes.inferred_opportunities,
             "pain_points_detected": payload.generic_attributes.pain_points_detected,
+            "taxonomy_top_level": taxonomy_data["taxonomy_top_level"],
+            "taxonomy_business_type": taxonomy_data["taxonomy_business_type"],
+            "taxonomy_evidence": taxonomy_data["taxonomy_evidence"],
         },
         "observed_signals": payload.generic_attributes.observed_signals,
         "inferred_opportunities": payload.generic_attributes.inferred_opportunities,

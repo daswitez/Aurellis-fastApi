@@ -74,6 +74,8 @@ def _extract_job_prospect_data(
         "entity_type_confidence": prospect_data.get("entity_type_confidence"),
         "entity_type_evidence": prospect_data.get("entity_type_evidence"),
         "is_target_entity": prospect_data.get("is_target_entity"),
+        "taxonomy_top_level": prospect_data.get("taxonomy_top_level"),
+        "taxonomy_business_type": prospect_data.get("taxonomy_business_type"),
         "match_score": prospect_data.get("score", 0.0),
         "confidence_level": prospect_data.get("confidence_level"),
         "fit_summary": prospect_data.get("fit_summary"),
@@ -119,6 +121,8 @@ def _extract_job_prospect_data(
             "entity_type_confidence": prospect_data.get("entity_type_confidence"),
             "entity_type_evidence": prospect_data.get("entity_type_evidence"),
             "is_target_entity": prospect_data.get("is_target_entity"),
+            "taxonomy_top_level": prospect_data.get("taxonomy_top_level"),
+            "taxonomy_business_type": prospect_data.get("taxonomy_business_type"),
             "content_coverage": prospect_data.get("content_coverage"),
             "heuristic_signals": (
                 prospect_data.get("heuristic_trace", {}).get("signals")
@@ -129,6 +133,8 @@ def _extract_job_prospect_data(
         },
         "raw_extraction_json": {
             "inferred_niche": prospect_data.get("inferred_niche"),
+            "taxonomy_top_level": prospect_data.get("taxonomy_top_level"),
+            "taxonomy_business_type": prospect_data.get("taxonomy_business_type"),
             "inferred_tech_stack": prospect_data.get("inferred_tech_stack"),
             "generic_attributes": prospect_data.get("generic_attributes"),
             "observed_signals": observed_signals,
@@ -367,6 +373,8 @@ async def save_scraped_prospect(
             "entity_type_confidence": job_stmt.excluded.entity_type_confidence,
             "entity_type_evidence": job_stmt.excluded.entity_type_evidence,
             "is_target_entity": job_stmt.excluded.is_target_entity,
+            "taxonomy_top_level": job_stmt.excluded.taxonomy_top_level,
+            "taxonomy_business_type": job_stmt.excluded.taxonomy_business_type,
             "match_score": job_stmt.excluded.match_score,
             "confidence_level": job_stmt.excluded.confidence_level,
             "fit_summary": job_stmt.excluded.fit_summary,

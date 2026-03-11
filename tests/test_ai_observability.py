@@ -225,6 +225,8 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["scoring_trace"]["heuristic_weight"], 0.15)
         self.assertEqual(result["quality_status"], "accepted")
         self.assertEqual(result["acceptance_decision"], "accepted_target")
+        self.assertEqual(result["taxonomy_top_level"], "health")
+        self.assertEqual(result["taxonomy_business_type"], "dental_clinic")
 
     async def test_prefers_normalized_location_over_ai_or_heuristic_raw_location(self) -> None:
         metadata = {
@@ -330,6 +332,7 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["country"], "España")
         self.assertEqual(result["observed_signals"], ["No se detectan testimonios visibles"])
         self.assertEqual(result["inferred_opportunities"], ["Posible oportunidad: destacar prueba social visible"])
+        self.assertEqual(result["taxonomy_business_type"], "dental_clinic")
 
     async def test_uses_heuristic_and_attaches_ai_trace_on_fallback(self) -> None:
         metadata = {
@@ -472,6 +475,7 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["acceptance_decision"], "rejected_low_confidence")
         self.assertEqual(result["ai_trace"]["status"], "skipped")
         self.assertEqual(result["ai_trace"]["fallback_reason"], "quality_rejected")
+        self.assertEqual(result["taxonomy_business_type"], "dental_clinic")
 
 
 if __name__ == "__main__":
