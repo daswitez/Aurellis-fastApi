@@ -118,6 +118,54 @@ MEDIUM_CONFIDENCE_GEO_SOURCES = {
     "discovery_title",
     "discovery_snippet",
 }
+LOCATION_STREET_HINTS = (
+    "calle",
+    "avenida",
+    "av",
+    "street",
+    "st",
+    "road",
+    "rd",
+    "plaza",
+    "paseo",
+    "carrera",
+    "camino",
+    "suite",
+    "ste",
+    "oficina",
+    "office",
+    "local",
+    "piso",
+)
+LOCATION_NOISE_HINTS = (
+    "tel",
+    "telefono",
+    "telefono:",
+    "teléfono",
+    "phone",
+    "whatsapp",
+    "horario",
+    "horarios",
+    "hours",
+    "lunes",
+    "martes",
+    "miercoles",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sabado",
+    "sábado",
+    "domingo",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+POSTAL_CODE_REGEX = re.compile(r"\b[A-Z]{0,2}\d{4,6}[A-Z]{0,3}\b", re.IGNORECASE)
+URL_REGEX = re.compile(r"https?://\S+", re.IGNORECASE)
 DIRECTORY_ENTITY_TYPES = {"directory", "aggregator", "marketplace"}
 MEDIA_ENTITY_TYPES = {"media", "association"}
 ARTICLE_ENTITY_TYPES = {"blog_post"}
@@ -150,6 +198,23 @@ CONTACT_CONFIDENCE_TO_SCORE = {
 }
 
 
+def _build_country_alias_lookup() -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for canonical_name, rule in LOCATION_SIGNAL_RULES.items():
+        display_name = str(rule.get("display_name") or canonical_name)
+        for candidate in [
+            canonical_name,
+            display_name,
+            *rule.get("target_aliases", []),
+            *rule.get("match_aliases", []),
+            *rule.get("country_codes", []),
+        ]:
+            normalized_candidate = _normalize_geo_token(candidate)
+            if normalized_candidate:
+                lookup[normalized_candidate] = display_name
+    return lookup
+
+
 def _normalize_text(value: str | None) -> str:
     normalized = (value or "").strip().lower()
     normalized = re.sub(r"\s+", " ", normalized)
@@ -160,6 +225,9 @@ def _normalize_geo_token(value: str | None) -> str:
     normalized = unicodedata.normalize("NFKD", str(value or ""))
     normalized = normalized.encode("ascii", "ignore").decode("ascii").strip().lower()
     return re.sub(r"\s+", " ", normalized)
+
+
+COUNTRY_ALIAS_LOOKUP = _build_country_alias_lookup()
 
 
 def _resolve_location_signal_rule(target_location: str | None) -> dict[str, Any] | None:
@@ -252,12 +320,12 @@ def _extract_geo_evidence(
     hostname = urlparse(website_url).netloc.lower().removeprefix("www.")
     if signal_rule and hostname:
         if any(hostname.endswith(tld) for tld in signal_rule["tlds"]):
-            evidence.append({"source": "tld", "value": f"{hostname} {normalized_target}"})
+            evidence.append({"source": "tld", "value": str(signal_rule.get("display_name") or normalized_target)})
     if signal_rule:
         for phone in metadata.get("phones", []):
             normalized_phone = str(phone or "").strip()
             if any(normalized_phone.startswith(prefix) for prefix in signal_rule["phone_prefixes"]):
-                evidence.append({"source": "phone_prefix", "value": f"{normalized_phone} {normalized_target}"})
+                evidence.append({"source": "phone_prefix", "value": str(signal_rule.get("display_name") or normalized_target)})
     for field_name in ["title", "description"]:
         field_value = metadata.get(field_name)
         if field_value:
@@ -267,6 +335,265 @@ def _extract_geo_evidence(
     if discovery_metadata.get("snippet"):
         evidence.append({"source": "discovery_snippet", "value": str(discovery_metadata["snippet"])})
     return evidence
+
+
+def _sanitize_location_text(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+
+    normalized = URL_REGEX.sub(" ", normalized)
+    normalized = re.sub(r"[\n\r\t|;]+", ", ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" ,.-")
+    return normalized[:240] or None
+
+
+def _country_from_text(value: str | None) -> str | None:
+    normalized_value = _normalize_geo_token(value)
+    if not normalized_value:
+        return None
+    if normalized_value in COUNTRY_ALIAS_LOOKUP:
+        return COUNTRY_ALIAS_LOOKUP[normalized_value]
+
+    padded_value = f" {normalized_value} "
+    for alias in sorted(COUNTRY_ALIAS_LOOKUP, key=len, reverse=True):
+        if len(alias) <= 2:
+            continue
+        if f" {alias} " in padded_value:
+            return COUNTRY_ALIAS_LOOKUP[alias]
+    return None
+
+
+def _is_country_token(value: str | None, country: str | None) -> bool:
+    normalized_value = _normalize_geo_token(value)
+    normalized_country = _normalize_geo_token(country)
+    if not normalized_value or not normalized_country:
+        return False
+
+    for canonical_name, rule in LOCATION_SIGNAL_RULES.items():
+        display_name = str(rule.get("display_name") or canonical_name)
+        if _normalize_geo_token(display_name) != normalized_country:
+            continue
+        allowed_tokens = {
+            _normalize_geo_token(candidate)
+            for candidate in [canonical_name, display_name, *rule.get("target_aliases", []), *rule.get("country_codes", [])]
+        }
+        return normalized_value in allowed_tokens
+    return False
+
+
+def _normalize_location_fragment(value: str | None) -> str | None:
+    normalized = " ".join(str(value or "").strip().split())
+    return normalized[:120] or None
+
+
+def _extract_postal_code(value: str | None) -> str | None:
+    match = POSTAL_CODE_REGEX.search(str(value or ""))
+    return match.group(0).upper() if match else None
+
+
+def _remove_postal_code(value: str | None) -> str:
+    return " ".join(POSTAL_CODE_REGEX.sub(" ", str(value or "")).split()).strip(" ,.-")
+
+
+def _looks_like_street_fragment(value: str | None) -> bool:
+    normalized = _normalize_geo_token(value)
+    return bool(normalized) and any(
+        normalized == hint
+        or normalized.startswith(f"{hint} ")
+        or f" {hint} " in f" {normalized} "
+        for hint in LOCATION_STREET_HINTS
+    )
+
+
+def _looks_like_noise_fragment(value: str | None) -> bool:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return True
+    normalized = _normalize_geo_token(raw_value)
+    if not normalized:
+        return True
+    if "@" in raw_value or raw_value.lower().startswith(("http://", "https://", "www.")):
+        return True
+    if any(hint in f" {normalized} " for hint in LOCATION_NOISE_HINTS):
+        return True
+    digits_only = re.sub(r"\D", "", raw_value)
+    return len(digits_only) >= 8 and not re.search(r"[A-Za-zÁÉÍÓÚáéíóúÑñ]", raw_value)
+
+
+def _structured_address_components(metadata: dict[str, Any]) -> dict[str, Any]:
+    for node in metadata.get("structured_data", []):
+        if not isinstance(node, dict):
+            continue
+        address = node.get("address")
+        if isinstance(address, dict):
+            city = _normalize_location_fragment(address.get("addressLocality"))
+            region = _normalize_location_fragment(address.get("addressRegion"))
+            postal_code = _extract_postal_code(address.get("postalCode"))
+            country = _country_from_text(address.get("addressCountry")) or _normalize_location_fragment(address.get("addressCountry"))
+            if not any([city, region, country, postal_code]):
+                continue
+            raw_parts = [
+                _normalize_location_fragment(address.get("streetAddress")),
+                city,
+                region,
+                postal_code,
+                country,
+            ]
+            return {
+                "city": city,
+                "region": region,
+                "country": country,
+                "postal_code": postal_code,
+                "raw_location_text": ", ".join(part for part in raw_parts if part)[:240] or None,
+                "source": "structured_address",
+            }
+        if isinstance(address, str):
+            parsed = _parse_location_text(address, source="structured_address")
+            if any(parsed.get(field) for field in ("city", "region", "country", "postal_code")):
+                return parsed
+    return {}
+
+
+def _parse_location_text(value: str | None, *, source: str) -> dict[str, Any]:
+    sanitized_value = _sanitize_location_text(value)
+    if not sanitized_value:
+        return {"source": source}
+
+    city: str | None = None
+    region: str | None = None
+    country = _country_from_text(sanitized_value)
+    postal_code = _extract_postal_code(sanitized_value)
+    locality_candidates: list[str] = []
+
+    for raw_chunk in re.split(r"[,\n]", sanitized_value):
+        chunk = _normalize_location_fragment(raw_chunk)
+        if not chunk or _looks_like_noise_fragment(chunk):
+            continue
+
+        if not country:
+            country = _country_from_text(chunk) or country
+        cleaned_chunk = _normalize_location_fragment(_remove_postal_code(chunk))
+        if not cleaned_chunk:
+            continue
+        if country and _normalize_geo_token(cleaned_chunk) == _normalize_geo_token(country):
+            continue
+        if country and _is_country_token(cleaned_chunk, country):
+            continue
+        locality_candidates.append(cleaned_chunk)
+
+    if locality_candidates:
+        filtered_candidates = [chunk for chunk in locality_candidates if not _looks_like_street_fragment(chunk)]
+        ordered_candidates = filtered_candidates or locality_candidates
+        city = ordered_candidates[-1]
+        if len(ordered_candidates) > 1:
+            candidate_region = ordered_candidates[-2]
+            if _normalize_geo_token(candidate_region) != _normalize_geo_token(city):
+                region = candidate_region
+
+    return {
+        "city": city,
+        "region": region,
+        "country": country,
+        "postal_code": postal_code,
+        "raw_location_text": sanitized_value,
+        "source": source,
+    }
+
+
+def _merge_location_components(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for field in ("city", "region", "country", "postal_code"):
+        if not merged.get(field) and incoming.get(field):
+            merged[field] = incoming[field]
+    if not merged.get("raw_location_text") and incoming.get("raw_location_text"):
+        merged["raw_location_text"] = incoming["raw_location_text"]
+    if incoming.get("source"):
+        merged.setdefault("source", incoming["source"])
+    return merged
+
+
+def _select_raw_location_text(metadata: dict[str, Any], geo_evidence: list[dict[str, str]]) -> str | None:
+    for address in metadata.get("addresses", []):
+        sanitized = _sanitize_location_text(address)
+        if sanitized:
+            return sanitized
+    for evidence in geo_evidence:
+        if evidence.get("source") in {"address", "area_served", "postal_address_country"}:
+            sanitized = _sanitize_location_text(str(evidence.get("value") or ""))
+            if sanitized:
+                return sanitized
+    return None
+
+
+def _build_location_components(metadata: dict[str, Any], geo_evidence: list[dict[str, str]]) -> dict[str, Any]:
+    components = _structured_address_components(metadata)
+
+    raw_location_text = _select_raw_location_text(metadata, geo_evidence)
+    if raw_location_text:
+        components = _merge_location_components(
+            components,
+            _parse_location_text(raw_location_text, source="raw_location_text"),
+        )
+        components["raw_location_text"] = raw_location_text
+
+    for evidence in geo_evidence:
+        if evidence.get("source") not in {"address", "area_served", "postal_address_country", "tld", "phone_prefix"}:
+            continue
+        components = _merge_location_components(
+            components,
+            _parse_location_text(str(evidence.get("value") or ""), source=str(evidence.get("source") or "geo_evidence")),
+        )
+
+    return components
+
+
+def _format_location_components(components: dict[str, Any]) -> str | None:
+    city = _normalize_location_fragment(components.get("city"))
+    region = _normalize_location_fragment(components.get("region"))
+    country = _normalize_location_fragment(components.get("country"))
+    postal_code = _normalize_location_fragment(components.get("postal_code"))
+
+    locality_parts: list[str] = []
+    if postal_code and city:
+        locality_parts.append(f"{postal_code} {city}")
+    elif city:
+        locality_parts.append(city)
+    elif postal_code:
+        locality_parts.append(postal_code)
+
+    if region and _normalize_geo_token(region) not in {
+        _normalize_geo_token(part) for part in locality_parts + ([country] if country else [])
+    }:
+        locality_parts.append(region)
+    if country and _normalize_geo_token(country) not in {
+        _normalize_geo_token(part) for part in locality_parts
+    }:
+        locality_parts.append(country)
+
+    return ", ".join(part for part in locality_parts if part)[:160] or None
+
+
+def _finalize_parsed_location(components: dict[str, Any]) -> dict[str, Any] | None:
+    formatted = _format_location_components(components)
+    if not formatted:
+        return None
+    return {
+        "formatted": formatted,
+        "city": _normalize_location_fragment(components.get("city")),
+        "region": _normalize_location_fragment(components.get("region")),
+        "country": _normalize_location_fragment(components.get("country")),
+        "postal_code": _normalize_location_fragment(components.get("postal_code")),
+        "source": components.get("source"),
+    }
+
+
+def _best_geo_confidence(geo_evidence: list[dict[str, str]], parsed_location: dict[str, Any] | None) -> str:
+    if any(evidence.get("source") in HIGH_CONFIDENCE_GEO_SOURCES for evidence in geo_evidence):
+        return "high"
+    if any(evidence.get("source") in MEDIUM_CONFIDENCE_GEO_SOURCES for evidence in geo_evidence) or parsed_location:
+        return "medium"
+    return "low"
 
 
 def _looks_like_specific_location(value: str) -> bool:
@@ -317,12 +644,28 @@ def _has_strong_geo_evidence(geo_evidence: list[dict[str, str]]) -> bool:
     return False
 
 
-def _assess_location(target_location: str | None, geo_evidence: list[dict[str, str]]) -> dict[str, Any]:
+def _assess_location(
+    target_location: str | None,
+    geo_evidence: list[dict[str, str]],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    components = _build_location_components(metadata, geo_evidence)
+    parsed_location = _finalize_parsed_location(components)
+    visible_location = parsed_location["formatted"] if parsed_location else None
+    geo_confidence = _best_geo_confidence(geo_evidence, parsed_location)
+
     if not target_location:
         return {
+            "location": visible_location,
+            "raw_location_text": components.get("raw_location_text"),
+            "parsed_location": parsed_location,
+            "city": parsed_location.get("city") if parsed_location else None,
+            "region": parsed_location.get("region") if parsed_location else None,
+            "country": parsed_location.get("country") if parsed_location else None,
+            "postal_code": parsed_location.get("postal_code") if parsed_location else None,
             "validated_location": None,
             "location_match_status": "unknown",
-            "location_confidence": "low",
+            "location_confidence": geo_confidence,
             "geo_evidence": geo_evidence,
         }
 
@@ -339,32 +682,45 @@ def _assess_location(target_location: str | None, geo_evidence: list[dict[str, s
         if matches_target:
             confidence = "high" if evidence["source"] in HIGH_CONFIDENCE_GEO_SOURCES else "medium"
             return {
-                "validated_location": evidence["value"][:160],
+                "location": visible_location,
+                "raw_location_text": components.get("raw_location_text"),
+                "parsed_location": parsed_location,
+                "city": parsed_location.get("city") if parsed_location else None,
+                "region": parsed_location.get("region") if parsed_location else None,
+                "country": parsed_location.get("country") if parsed_location else None,
+                "postal_code": parsed_location.get("postal_code") if parsed_location else None,
+                "validated_location": visible_location or str(evidence["value"])[:160],
                 "location_match_status": "match",
                 "location_confidence": confidence,
                 "geo_evidence": geo_evidence,
             }
 
     if _has_strong_geo_evidence(geo_evidence):
-        for evidence in geo_evidence:
-            if evidence.get("source") in HIGH_CONFIDENCE_GEO_SOURCES and _looks_like_specific_location(str(evidence.get("value") or "")):
-                candidate = str(evidence["value"])[:160]
-                break
-        else:
-            candidate = str(geo_evidence[0]["value"])[:160]
         return {
-            "validated_location": candidate,
+            "location": visible_location,
+            "raw_location_text": components.get("raw_location_text"),
+            "parsed_location": parsed_location,
+            "city": parsed_location.get("city") if parsed_location else None,
+            "region": parsed_location.get("region") if parsed_location else None,
+            "country": parsed_location.get("country") if parsed_location else None,
+            "postal_code": parsed_location.get("postal_code") if parsed_location else None,
+            "validated_location": visible_location,
             "location_match_status": "mismatch",
-            "location_confidence": "high" if any(
-                evidence.get("source") in HIGH_CONFIDENCE_GEO_SOURCES for evidence in geo_evidence
-            ) else "medium",
+            "location_confidence": geo_confidence,
             "geo_evidence": geo_evidence,
         }
 
     return {
+        "location": visible_location,
+        "raw_location_text": components.get("raw_location_text"),
+        "parsed_location": parsed_location,
+        "city": parsed_location.get("city") if parsed_location else None,
+        "region": parsed_location.get("region") if parsed_location else None,
+        "country": parsed_location.get("country") if parsed_location else None,
+        "postal_code": parsed_location.get("postal_code") if parsed_location else None,
         "validated_location": None,
         "location_match_status": "unknown",
-        "location_confidence": "low",
+        "location_confidence": geo_confidence,
         "geo_evidence": geo_evidence,
     }
 
@@ -691,6 +1047,13 @@ def build_ai_evidence_pack(
         "summary_text": compact_text,
         "title": metadata.get("title"),
         "description": metadata.get("description"),
+        "location": quality_data.get("location"),
+        "raw_location_text": quality_data.get("raw_location_text"),
+        "parsed_location": quality_data.get("parsed_location"),
+        "city": quality_data.get("city"),
+        "region": quality_data.get("region"),
+        "country": quality_data.get("country"),
+        "postal_code": quality_data.get("postal_code"),
         "validated_location": quality_data.get("validated_location"),
         "location_match_status": quality_data.get("location_match_status"),
         "detected_language": quality_data.get("detected_language"),
@@ -748,7 +1111,7 @@ def evaluate_prospect_quality(
     detected_language = _detect_language(clean_text, metadata)
     language_data = _assess_language(context.get("target_language"), detected_language)
     geo_evidence = _extract_geo_evidence(metadata, discovery_metadata, context.get("target_location"))
-    location_data = _assess_location(context.get("target_location"), geo_evidence)
+    location_data = _assess_location(context.get("target_location"), geo_evidence, metadata)
     contact_data = _build_contact_quality(metadata)
     contact_quality_score = float(contact_data["contact_quality_score"])
     company_size_signal = _infer_company_size_signal(metadata, heuristic_data)
@@ -790,7 +1153,7 @@ def evaluate_prospect_quality(
             }
         ),
         "has_contact": contact_quality_score > 0,
-        "has_location": bool(location_data["geo_evidence"]),
+        "has_location": bool(location_data.get("location") or location_data["geo_evidence"]),
         "has_cta": bool(metadata.get("primary_cta")),
         "has_structured_data": bool(metadata.get("structured_data")),
     }

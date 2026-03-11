@@ -104,6 +104,10 @@ class ParserAndQualityTestCase(unittest.TestCase):
         )
 
         self.assertEqual(quality["location_match_status"], "match")
+        self.assertEqual(quality["location"], "Madrid, España")
+        self.assertEqual(quality["raw_location_text"], "Calle Mayor 1, Madrid, ES")
+        self.assertEqual(quality["parsed_location"]["city"], "Madrid")
+        self.assertEqual(quality["parsed_location"]["country"], "España")
         self.assertEqual(quality["quality_status"], "accepted")
         self.assertEqual(quality["acceptance_decision"], "accepted_target")
         self.assertEqual(quality["contact_consistency_status"], "consistent")
@@ -271,6 +275,7 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertEqual(quality["location_match_status"], "unknown")
         self.assertEqual(quality["quality_status"], "needs_review")
         self.assertEqual(quality["acceptance_decision"], "rejected_article")
+        self.assertIsNone(quality["location"])
         self.assertIsNone(quality["validated_location"])
 
     def test_quality_uses_tld_phone_and_area_served_as_geo_signals(self) -> None:
@@ -436,6 +441,75 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertTrue(
             any(item["source"] in {"phone_prefix", "tld"} for item in quality["geo_evidence"])
         )
+        self.assertEqual(quality["location"], "Bolivia")
+        self.assertEqual(quality["validated_location"], "Bolivia")
+        self.assertEqual(quality["parsed_location"]["country"], "Bolivia")
+
+    def test_quality_keeps_visible_location_normalized_without_target_geo(self) -> None:
+        clean_text = "Clinica dental con reservas online y formulario de contacto."
+        metadata = {
+            "website_url": "https://clinicamadrid.es",
+            "title": "Clinica Dental Madrid",
+            "description": "Clinica dental en Madrid",
+            "html_lang": "es",
+            "meta_locale": "es_es",
+            "emails": ["hola@clinicamadrid.es"],
+            "phones": ["+34911111111"],
+            "social_links": [],
+            "internal_links": ["https://clinicamadrid.es/contacto"],
+            "map_links": ["https://google.com/maps?q=Madrid"],
+            "addresses": ["Calle Mayor 1, 28013 Madrid, ES"],
+            "form_detected": True,
+            "whatsapp_url": None,
+            "booking_url": "https://clinicamadrid.es/reservas",
+            "pricing_page_url": None,
+            "service_page_url": None,
+            "structured_data": [
+                {
+                    "@type": "Dentist",
+                    "address": {
+                        "streetAddress": "Calle Mayor 1",
+                        "postalCode": "28013",
+                        "addressLocality": "Madrid",
+                        "addressCountry": "ES",
+                    },
+                }
+            ],
+            "structured_data_evidence": ["json_ld_detected", "structured_address_detected"],
+            "contact_channels": [{"type": "email", "value": "hola@clinicamadrid.es"}],
+            "cta_candidates": ["booking"],
+            "primary_cta": "booking",
+        }
+        heuristic_data = {
+            "score": 0.72,
+            "confidence_level": "medium",
+            "inferred_niche": "Dental",
+            "inferred_tech_stack": ["WordPress"],
+            "generic_attributes": {"pain_points_detected": []},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={"target_language": "es"},
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "clinicas madrid", "title": "Clinica Madrid"},
+            entity_data=classify_entity_type(
+                target_url="https://clinicamadrid.es",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "clinicas madrid", "title": "Clinica Madrid"},
+            ),
+        )
+
+        self.assertEqual(quality["location"], "28013 Madrid, España")
+        self.assertEqual(quality["raw_location_text"], "Calle Mayor 1, 28013 Madrid, ES")
+        self.assertEqual(quality["parsed_location"]["postal_code"], "28013")
+        self.assertEqual(quality["parsed_location"]["city"], "Madrid")
+        self.assertEqual(quality["parsed_location"]["country"], "España")
+        self.assertIsNone(quality["validated_location"])
+        self.assertEqual(quality["location_match_status"], "unknown")
 
 
 if __name__ == "__main__":

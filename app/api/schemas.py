@@ -210,6 +210,12 @@ class ProspectOut(BaseModel):
     # Descripción y ubicación
     description: Optional[str]
     location: Optional[str]
+    raw_location_text: Optional[str]
+    parsed_location: Optional[Dict[str, Any]]
+    city: Optional[str]
+    region: Optional[str]
+    country: Optional[str]
+    postal_code: Optional[str]
     validated_location: Optional[str]
     location_match_status: Optional[MatchStatus]
     location_confidence: Optional[ConfidenceLevel]

@@ -218,6 +218,101 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["quality_status"], "accepted")
         self.assertEqual(result["acceptance_decision"], "accepted_target")
 
+    async def test_prefers_normalized_location_over_ai_or_heuristic_raw_location(self) -> None:
+        metadata = {
+            "title": "Clinica Dental Madrid",
+            "description": "Clinica dental en Madrid",
+            "emails": ["hola@clinicamadrid.es"],
+            "phones": ["+34911111111"],
+            "social_links": [],
+            "internal_links": ["https://clinicamadrid.es/contacto"],
+            "form_detected": True,
+            "contact_channels": [
+                {"type": "contact_form", "value": "https://clinicamadrid.es/contacto"},
+                {"type": "email", "value": "hola@clinicamadrid.es"},
+            ],
+            "addresses": ["Calle Mayor 1, 28013 Madrid, ES"],
+            "map_links": ["https://google.com/maps?q=Madrid"],
+            "cta_candidates": ["booking"],
+            "primary_cta": "booking",
+            "booking_url": "https://clinicamadrid.es/reservas",
+            "structured_data_evidence": ["json_ld_detected", "structured_address_detected"],
+            "structured_data": [
+                {
+                    "@type": "Dentist",
+                    "address": {
+                        "streetAddress": "Calle Mayor 1",
+                        "postalCode": "28013",
+                        "addressLocality": "Madrid",
+                        "addressCountry": "ES",
+                    },
+                }
+            ],
+            "html_lang": "es",
+            "meta_locale": "es_es",
+            "website_url": "https://clinicamadrid.es",
+        }
+        heuristic_result = {
+            "company_name": "Clinica Dental Madrid",
+            "category": "Clinica",
+            "location": "Calle Mayor 1, Madrid, ES | Tel +34 911 111 111",
+            "description": "Clinica dental",
+            "inferred_tech_stack": ["WordPress"],
+            "inferred_niche": "Dental",
+            "hiring_signals": False,
+            "estimated_revenue_signal": "medium",
+            "has_active_ads": False,
+            "score": 0.64,
+            "confidence_level": "medium",
+            "fit_summary": "Fit heuristico fuerte; destacan contacto y reservas.",
+            "heuristic_trace": {"component_scores": {"stack_fit": 0.8}, "signals": {}},
+            "generic_attributes": {
+                "evaluation_method": "Heuristic Code (No LLM)",
+                "pain_points_detected": [],
+            },
+        }
+        ai_result = {
+            "location": "Madrid | Horarios 9:00-18:00",
+            "inferred_tech_stack": ["WordPress", "Google Analytics"],
+            "inferred_niche": "Dental",
+            "generic_attributes": {
+                "evaluation_method": "DeepSeek API (deepseek_prospect_v2)",
+                "pain_points_detected": [],
+            },
+            "hiring_signals": False,
+            "estimated_revenue_signal": "high",
+            "score": 0.78,
+            "confidence_level": "high",
+            "_ai_metrics": {},
+        }
+
+        with patch("app.scraper.engine.fetch_html", new=AsyncMock(return_value="<html></html>")):
+            with patch("app.scraper.engine.parse_html_basic", return_value=("x" * 250, metadata)):
+                with patch(
+                    "app.scraper.engine._crawl_key_pages",
+                    new=AsyncMock(return_value=("", metadata, [])),
+                ):
+                    with patch(
+                        "app.scraper.engine.extract_business_entity_heuristic",
+                        new=AsyncMock(return_value=heuristic_result),
+                    ):
+                        with patch(
+                            "app.scraper.engine.extract_business_entity_ai",
+                            new=AsyncMock(return_value=ai_result),
+                        ):
+                            result = await scrape_single_prospect(
+                                "https://clinicamadrid.es",
+                                {"job_id": 9, "target_location": "Madrid", "target_language": "es"},
+                            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["location"], "28013 Madrid, España")
+        self.assertEqual(result["validated_location"], "28013 Madrid, España")
+        self.assertEqual(result["raw_location_text"], "Calle Mayor 1, 28013 Madrid, ES")
+        self.assertEqual(result["city"], "Madrid")
+        self.assertEqual(result["country"], "España")
+
     async def test_uses_heuristic_and_attaches_ai_trace_on_fallback(self) -> None:
         metadata = {
             "title": "Dental Home",

@@ -257,21 +257,34 @@ Toda clasificación fuerte debe poder explicarse con señales y razones visibles
 
 ### I.4. Normalización de ubicación
 
-- [ ] **I-011 Separar ubicación cruda de ubicación parseada**
+- [x] **I-011 Separar ubicación cruda de ubicación parseada**
   - No usar texto contaminado como `location` final.
   - Guardar `raw_location_text`.
   - **Criterio de cierre:** el campo visible no mezcla dirección, teléfono, horarios y texto residual.
 
-- [ ] **I-012 Parsear componentes de ubicación**
+- [x] **I-012 Parsear componentes de ubicación**
   - `city`
   - `region`
   - `country`
   - `postal_code`
   - **Criterio de cierre:** la ubicación puede usarse para filtros y scoring con menos ruido.
 
-- [ ] **I-013 Revisar precedencia entre `location`, `validated_location` y componentes**
+- [x] **I-013 Revisar precedencia entre `location`, `validated_location` y componentes**
   - Documentar cuál es el campo visible principal y cuál es el técnico.
   - **Criterio de cierre:** no hay ambigüedad entre texto detectado, texto validado y ubicación normalizada.
+
+**Notas de implementación 2026-03-11**
+
+- El pipeline ahora persiste:
+  - `raw_location_text`
+  - `parsed_location`
+  - `city`
+  - `region`
+  - `country`
+  - `postal_code`
+- `location` pasa a ser el campo visible principal y sale de la ubicación parseada/normalizada.
+- `validated_location` queda como campo técnico de validación geográfica contra el contexto objetivo.
+- El motor dejó de hacer fallback a texto crudo de heurística/IA para `location`; si no hay ubicación normalizada, el campo visible queda vacío antes que contaminarse.
 
 ### I.5. Separar observaciones de inferencias
 
