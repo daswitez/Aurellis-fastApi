@@ -72,6 +72,7 @@ def _extract_job_prospect_data(
             "estimated_revenue_signal": prospect_data.get("estimated_revenue_signal"),
             "has_active_ads": prospect_data.get("has_active_ads"),
             "hiring_signals": prospect_data.get("hiring_signals"),
+            "ai_trace": prospect_data.get("ai_trace"),
         },
         "created_at": now,
         "updated_at": now,

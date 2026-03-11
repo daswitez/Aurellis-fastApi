@@ -215,19 +215,29 @@ Cambios de escalabilidad, integración oficial y endurecimiento de producción.
   - Diseño documentado en `docs/10-diseno-prompt-deepseek.md`.
   - **Criterio de cierre:** el prompt está versionado y su salida esperada es consistente.
 
-- [ ] **C-002 Validar respuesta de IA con schema**
+- [x] **C-002 Validar respuesta de IA con schema**
   - No depender solo de `json.loads`.
   - Rechazar o normalizar respuestas incompletas.
+  - Implementado con schema interno Pydantic en `app/services/ai_extractor.py`.
+  - Se exige estructura mínima obligatoria y se normalizan valores compatibles (`score`, `confidence_level`, listas y booleanos); si faltan campos clave o la forma es inválida, cae a fallback `Invalid AI Schema`.
+  - Cubierto con pruebas en `tests/test_ai_extractor.py`.
   - **Criterio de cierre:** la respuesta del modelo entra al sistema solo si cumple estructura mínima válida.
 
-- [ ] **C-003 Propagar todo el contexto útil al extractor**
+- [x] **C-003 Propagar todo el contexto útil al extractor**
   - Incluir tecnologías, éxitos previos, métricas ROI y demás señales del vendedor si realmente se van a usar.
+  - El armado de `job_context` quedó centralizado en `app/api/jobs.py` para evitar desalineaciones entre payload, modelo y extractor.
+  - Ahora también se propagan `target_location`, `target_language` y `target_company_size`, que el prompt `deepseek_prospect_v2` ya consume.
+  - Cubierto con prueba de contrato en `tests/test_job_context.py`.
   - **Criterio de cierre:** no se almacenan campos “de adorno” que jamás alimentan la evaluación.
 
 ### C.2. Observabilidad de IA
 
-- [ ] **C-004 Registrar fallback y fallos de IA**
+- [x] **C-004 Registrar fallback y fallos de IA**
   - Medir cuántas veces entra la heurística por caída del proveedor o respuesta inválida.
+  - El extractor IA ahora emite motivos explícitos de fallback (`missing_api_key`, `invalid_schema`, `provider_error`, etc.) y el engine activa la heurística de forma trazable.
+  - Cada prospecto persistido guarda `ai_trace` en `job_prospects.raw_extraction_json`, y el worker escribe eventos `ai_enrichment` en `scraping_logs`.
+  - `GET /jobs/{id}` ahora devuelve `ai_summary` con `attempts`, `successes`, `fallbacks`, `fallback_ratio` y desglose por motivo.
+  - Cubierto con pruebas en `tests/test_ai_extractor.py` y `tests/test_ai_observability.py`.
   - **Criterio de cierre:** existe trazabilidad clara del ratio de fallback.
 
 - [ ] **C-005 Medir latencia y costo estimado**

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import JobProspect, Prospect, ScrapingJob, ScrapingLog
-from app.api.schemas import JobCreateRequest, JobLogOut, JobLogsResponse, JobResponse, ProspectOut, ScrapingLogLevel
+from app.api.schemas import JobAISummary, JobCreateRequest, JobLogOut, JobLogsResponse, JobResponse, ProspectOut, ScrapingLogLevel
 from app.scraper.engine import scrape_single_prospect
 from app.scraper.http_client import FetchHtmlError
 from app.scraper.search_engines.ddg_search import SearchDiscoveryResult, find_prospect_urls_by_query
@@ -63,6 +63,35 @@ def _job_summary_message(job: ScrapingJob) -> str:
     return "Pendiente"
 
 
+def _build_job_context(
+    job: ScrapingJob,
+    *,
+    search_query: str | None,
+    discovery_method: str | None,
+    source_type: str | None,
+    search_warning: str | None,
+) -> dict:
+    return {
+        "job_id": job.id,
+        "workspace_id": job.workspace_id,
+        "user_profession": job.user_profession,
+        "user_technologies": job.user_technologies,
+        "user_value_proposition": job.user_value_proposition,
+        "user_past_successes": job.user_past_successes,
+        "user_roi_metrics": job.user_roi_metrics,
+        "target_niche": job.target_niche,
+        "target_location": job.target_location,
+        "target_language": job.target_language,
+        "target_company_size": job.target_company_size,
+        "target_pain_points": job.target_pain_points,
+        "target_budget_signals": job.target_budget_signals,
+        "search_query": search_query,
+        "discovery_method": normalize_discovery_method(discovery_method),
+        "source_type": normalize_source_type(source_type),
+        "search_warning": search_warning,
+    }
+
+
 def _serialize_job_log(log: ScrapingLog) -> JobLogOut:
     context = log.context_json or {}
     return JobLogOut(
@@ -81,6 +110,47 @@ def _serialize_job_log(log: ScrapingLog) -> JobLogOut:
         rank_position=context.get("rank_position"),
         error=context.get("error"),
     )
+
+
+def _summarize_ai_usage(raw_extractions: list[dict | None]) -> JobAISummary:
+    attempts = 0
+    successes = 0
+    fallbacks = 0
+    fallback_reasons: dict[str, int] = {}
+
+    for raw_extraction in raw_extractions:
+        if not isinstance(raw_extraction, dict):
+            continue
+
+        ai_trace = raw_extraction.get("ai_trace")
+        if not isinstance(ai_trace, dict):
+            continue
+
+        attempts += 1
+        if ai_trace.get("selected_method") == "heuristic":
+            fallbacks += 1
+            fallback_reason = ai_trace.get("fallback_reason")
+            if isinstance(fallback_reason, str) and fallback_reason:
+                fallback_reasons[fallback_reason] = fallback_reasons.get(fallback_reason, 0) + 1
+        else:
+            successes += 1
+
+    fallback_ratio = round((fallbacks / attempts), 4) if attempts else 0.0
+    return JobAISummary(
+        attempts=attempts,
+        successes=successes,
+        fallbacks=fallbacks,
+        fallback_ratio=fallback_ratio,
+        fallback_reasons=fallback_reasons,
+    )
+
+
+async def _get_job_ai_summary(db: AsyncSession, job_id: int) -> JobAISummary:
+    result = await db.execute(
+        select(JobProspect.raw_extraction_json).where(JobProspect.job_id == job_id)
+    )
+    raw_extractions = list(result.scalars().all())
+    return _summarize_ai_usage(raw_extractions)
 
 
 async def _get_recent_job_errors(db: AsyncSession, job_id: int, limit: int = 3) -> list[JobLogOut]:
@@ -119,6 +189,10 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             job.total_saved = 0
             job.total_failed = 0
             job.total_skipped = 0
+            ai_attempts = 0
+            ai_successes = 0
+            ai_fallbacks = 0
+            ai_fallback_reasons: dict[str, int] = {}
             await _append_job_log(
                 db,
                 job_id,
@@ -154,6 +228,51 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
 
                     prospect_dict["job_id"] = job_id
                     prospect_dict["rank_position"] = rank_position
+                    ai_trace = prospect_dict.get("ai_trace")
+                    if isinstance(ai_trace, dict):
+                        ai_attempts += 1
+                        fallback_reason = ai_trace.get("fallback_reason")
+                        if ai_trace.get("selected_method") == "heuristic":
+                            ai_fallbacks += 1
+                            if isinstance(fallback_reason, str) and fallback_reason:
+                                ai_fallback_reasons[fallback_reason] = ai_fallback_reasons.get(fallback_reason, 0) + 1
+                            await _append_job_log(
+                                db,
+                                job_id,
+                                "WARNING",
+                                "Fallback heurístico activado para enriquecimiento IA",
+                                source_name="ai_enrichment",
+                                context_json={
+                                    "stage": "ai_enrichment",
+                                    "url": str(url),
+                                    "domain": prospect_dict.get("domain"),
+                                    "rank_position": rank_position,
+                                    "provider": ai_trace.get("provider"),
+                                    "selected_method": ai_trace.get("selected_method"),
+                                    "evaluation_method": ai_trace.get("evaluation_method"),
+                                    "fallback_reason": fallback_reason,
+                                    "error_type": ai_trace.get("error_type"),
+                                    "retryable": ai_trace.get("retryable"),
+                                },
+                            )
+                        else:
+                            ai_successes += 1
+                            await _append_job_log(
+                                db,
+                                job_id,
+                                "INFO",
+                                "Enriquecimiento IA completado",
+                                source_name="ai_enrichment",
+                                context_json={
+                                    "stage": "ai_enrichment",
+                                    "url": str(url),
+                                    "domain": prospect_dict.get("domain"),
+                                    "rank_position": rank_position,
+                                    "provider": ai_trace.get("provider"),
+                                    "selected_method": ai_trace.get("selected_method"),
+                                    "evaluation_method": ai_trace.get("evaluation_method"),
+                                },
+                            )
 
                     saved_prospect = await save_scraped_prospect(db, prospect_dict, job_context)
                     if saved_prospect:
@@ -219,6 +338,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     "total_saved": job.total_saved,
                     "total_failed": job.total_failed,
                     "total_skipped": job.total_skipped,
+                    "ai_attempts": ai_attempts,
+                    "ai_successes": ai_successes,
+                    "ai_fallbacks": ai_fallbacks,
+                    "ai_fallback_ratio": round((ai_fallbacks / ai_attempts), 4) if ai_attempts else 0.0,
+                    "ai_fallback_reasons": ai_fallback_reasons,
                 },
             )
             await db.commit()
@@ -313,22 +437,13 @@ async def create_scraping_job(
     )
     await db.commit()
     
-    job_context = {
-        "job_id": new_job.id,
-        "workspace_id": new_job.workspace_id,
-        "user_profession": new_job.user_profession,
-        "user_technologies": new_job.user_technologies,
-        "user_value_proposition": new_job.user_value_proposition,
-        "user_past_successes": new_job.user_past_successes,
-        "user_roi_metrics": new_job.user_roi_metrics,
-        "target_niche": new_job.target_niche,
-        "target_pain_points": new_job.target_pain_points,
-        "target_budget_signals": new_job.target_budget_signals,
-        "search_query": payload.search_query,
-        "discovery_method": normalize_discovery_method(discovery_result.discovery_method),
-        "source_type": normalize_source_type(discovery_result.source_type),
-        "search_warning": discovery_result.warning_message,
-    }
+    job_context = _build_job_context(
+        new_job,
+        search_query=payload.search_query,
+        discovery_method=discovery_result.discovery_method,
+        source_type=discovery_result.source_type,
+        search_warning=discovery_result.warning_message,
+    )
     
     # Encolar la tarea en FastAPI usando las URLs finales descubiertas
     background_tasks.add_task(
@@ -359,6 +474,7 @@ async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="Job no encontrado.")
     recent_errors = await _get_recent_job_errors(db, job_id)
+    ai_summary = await _get_job_ai_summary(db, job_id)
         
     return JobResponse(
         job_id=job.id,
@@ -375,6 +491,7 @@ async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
         total_failed=job.total_failed,
         total_skipped=job.total_skipped,
         error_message=job.error_message,
+        ai_summary=ai_summary,
         recent_errors=recent_errors,
     )
     

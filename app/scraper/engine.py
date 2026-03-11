@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from app.scraper.http_client import FetchHtmlError, fetch_html
 from app.scraper.parser import parse_html_basic
-from app.services.ai_extractor import extract_business_entity_ai
+from app.services.ai_extractor import AIExtractionFallbackError, PROMPT_VERSION, extract_business_entity_ai
 from app.services.heuristic_extractor import extract_business_entity_heuristic
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,29 @@ def _select_contact_page_url(internal_links: list[str]) -> str | None:
             if any(keyword in lowered for keyword in priority_keywords):
                 return link
     return None
+
+
+def _build_ai_trace(
+    *,
+    status: str,
+    selected_method: str,
+    evaluation_method: str,
+    fallback_reason: str | None = None,
+    error_type: str | None = None,
+    retryable: bool | None = None,
+    message: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "provider": "deepseek",
+        "prompt_version": PROMPT_VERSION,
+        "status": status,
+        "selected_method": selected_method,
+        "evaluation_method": evaluation_method,
+        "fallback_reason": fallback_reason,
+        "error_type": error_type,
+        "retryable": retryable,
+        "message": message,
+    }
 
 
 async def _crawl_key_pages(root_metadata: Dict[str, Any]) -> tuple[str, Dict[str, Any], list[dict[str, str]]]:
@@ -146,11 +169,59 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     # 3. Extracción de Lógica de Negocio mediante Heurística de Código
     # [FASE 5] Invocación a Inteligencia Artificial para comprensión profunda (DeepSeek)
     # Fallback a heurística rápida si ocurre alguna excepción de red/API
+    ai_trace: Dict[str, Any]
     try:
         extracted_data = await extract_business_entity_ai(domain, combined_text, job_context)
-    except Exception as ai_e:
-        logger.error(f"Error AI para {target_url}. Usando heurística fallback: {ai_e}")
+        evaluation_method = "DeepSeek API ({})".format(PROMPT_VERSION)
+        generic_attributes = extracted_data.get("generic_attributes")
+        if isinstance(generic_attributes, dict):
+            evaluation_method = str(generic_attributes.get("evaluation_method") or evaluation_method)
+        ai_trace = _build_ai_trace(
+            status="success",
+            selected_method="ai",
+            evaluation_method=evaluation_method,
+        )
+    except AIExtractionFallbackError as ai_e:
+        logger.warning(
+            "Fallback heurístico para %s por %s [%s]",
+            target_url,
+            ai_e.reason,
+            ai_e.error_type,
+        )
         extracted_data = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
+        evaluation_method = "Heuristic Code (No LLM)"
+        generic_attributes = extracted_data.get("generic_attributes")
+        if isinstance(generic_attributes, dict):
+            generic_attributes["fallback_reason"] = ai_e.reason
+            generic_attributes["ai_error_type"] = ai_e.error_type
+            evaluation_method = str(generic_attributes.get("evaluation_method") or evaluation_method)
+        ai_trace = _build_ai_trace(
+            status="fallback",
+            selected_method="heuristic",
+            evaluation_method=evaluation_method,
+            fallback_reason=ai_e.reason,
+            error_type=ai_e.error_type,
+            retryable=ai_e.retryable,
+            message=str(ai_e),
+        )
+    except Exception as ai_e:
+        logger.error(f"Error AI inesperado para {target_url}. Usando heurística fallback: {ai_e}")
+        extracted_data = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
+        evaluation_method = "Heuristic Code (No LLM)"
+        generic_attributes = extracted_data.get("generic_attributes")
+        if isinstance(generic_attributes, dict):
+            generic_attributes["fallback_reason"] = "unexpected_exception"
+            generic_attributes["ai_error_type"] = "unexpected_exception"
+            evaluation_method = str(generic_attributes.get("evaluation_method") or evaluation_method)
+        ai_trace = _build_ai_trace(
+            status="fallback",
+            selected_method="heuristic",
+            evaluation_method=evaluation_method,
+            fallback_reason="unexpected_exception",
+            error_type="unexpected_exception",
+            retryable=False,
+            message=str(ai_e),
+        )
     
     # 4. Fusionar Data Fuerte (Metadatos reales de bs4 como correos visibles y links) 
     # con Data Deductiva (Adivinada por el Heurístico)
@@ -190,6 +261,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "job_id": job_context.get("job_id"),  # Será asociado a la métrica padre
         "internal_links": internal_links,
         "crawled_pages": crawled_pages,
+        "ai_trace": ai_trace,
     }
     
     logger.info(f"Terminado el procesamiento para {domain}. Fusión de datos exitosa.")

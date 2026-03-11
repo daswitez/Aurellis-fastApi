@@ -177,6 +177,15 @@ curl http://localhost:8000/api/v1/jobs/1
   "total_saved": 4,
   "total_failed": 0,
   "total_skipped": 1,
+  "ai_summary": {
+    "attempts": 4,
+    "successes": 3,
+    "fallbacks": 1,
+    "fallback_ratio": 0.25,
+    "fallback_reasons": {
+      "invalid_schema": 1
+    }
+  },
   "recent_errors": []
 }
 ```
@@ -185,7 +194,7 @@ curl http://localhost:8000/api/v1/jobs/1
 
 - antes devolvía esencialmente un string de estado;
 - ahora sirve para monitoreo real del job;
-- incluye métricas operativas y errores recientes resumidos sin ir a `/logs`.
+- incluye métricas operativas, resumen de uso de IA y errores recientes resumidos sin ir a `/logs`.
 
 **Respuesta `404`:**
 ```json

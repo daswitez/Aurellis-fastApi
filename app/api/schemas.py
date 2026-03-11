@@ -61,6 +61,14 @@ class JobLogsResponse(BaseModel):
     items: List[JobLogOut] = Field(default_factory=list)
 
 
+class JobAISummary(BaseModel):
+    attempts: int = 0
+    successes: int = 0
+    fallbacks: int = 0
+    fallback_ratio: float = 0.0
+    fallback_reasons: Dict[str, int] = Field(default_factory=dict)
+
+
 class JobResponse(BaseModel):
     """Estructura de la respuesta al crear o consultar un Job"""
     job_id: int
@@ -77,6 +85,7 @@ class JobResponse(BaseModel):
     total_failed: Optional[int] = None
     total_skipped: Optional[int] = None
     error_message: Optional[str] = None
+    ai_summary: Optional[JobAISummary] = None
     recent_errors: List[JobLogOut] = Field(default_factory=list)
     
 class ProspectOut(BaseModel):
