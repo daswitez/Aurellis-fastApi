@@ -19,7 +19,8 @@ class _FakeCompletions:
 
     async def create(self, **kwargs):
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=self.payload))]
+            choices=[SimpleNamespace(message=SimpleNamespace(content=self.payload))],
+            usage=SimpleNamespace(prompt_tokens=120, completion_tokens=45, total_tokens=165),
         )
 
 
@@ -54,12 +55,18 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
             }
         )
 
+        settings_stub = SimpleNamespace(
+            DEEPSEEK_INPUT_COST_PER_1M_TOKENS=0.14,
+            DEEPSEEK_OUTPUT_COST_PER_1M_TOKENS=0.28,
+        )
+
         with patch("app.services.ai_extractor._get_deepseek_api_key", return_value="test-key"):
-            with patch(
-                "app.services.ai_extractor._build_deepseek_client",
-                return_value=_FakeClient(payload),
-            ):
-                result = await extract_business_entity_ai("example.com", "x" * 200, {})
+            with patch("app.services.ai_extractor.get_settings", return_value=settings_stub):
+                with patch(
+                    "app.services.ai_extractor._build_deepseek_client",
+                    return_value=_FakeClient(payload),
+                ):
+                    result = await extract_business_entity_ai("example.com", "x" * 200, {})
 
         self.assertEqual(result["inferred_niche"], "Dental Clinic")
         self.assertEqual(result["inferred_tech_stack"], ["WordPress", "React"])
@@ -77,6 +84,10 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["score"], 1.0)
         self.assertEqual(result["confidence_level"], "high")
         self.assertTrue(result["hiring_signals"])
+        self.assertEqual(result["_ai_metrics"]["prompt_tokens"], 120)
+        self.assertEqual(result["_ai_metrics"]["completion_tokens"], 45)
+        self.assertEqual(result["_ai_metrics"]["total_tokens"], 165)
+        self.assertEqual(result["_ai_metrics"]["estimated_cost_usd"], 0.0000294)
 
     async def test_rejects_incomplete_ai_payload(self) -> None:
         payload = json.dumps(

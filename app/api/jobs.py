@@ -117,6 +117,12 @@ def _summarize_ai_usage(raw_extractions: list[dict | None]) -> JobAISummary:
     successes = 0
     fallbacks = 0
     fallback_reasons: dict[str, int] = {}
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_tokens = 0
+    total_latency_ms = 0
+    estimated_cost_usd = 0.0
+    cost_samples = 0
 
     for raw_extraction in raw_extractions:
         if not isinstance(raw_extraction, dict):
@@ -127,6 +133,13 @@ def _summarize_ai_usage(raw_extractions: list[dict | None]) -> JobAISummary:
             continue
 
         attempts += 1
+        total_prompt_tokens += int(ai_trace.get("prompt_tokens") or 0)
+        total_completion_tokens += int(ai_trace.get("completion_tokens") or 0)
+        total_tokens += int(ai_trace.get("total_tokens") or 0)
+        total_latency_ms += int(ai_trace.get("latency_ms") or 0)
+        if ai_trace.get("estimated_cost_usd") is not None:
+            estimated_cost_usd += float(ai_trace.get("estimated_cost_usd") or 0.0)
+            cost_samples += 1
         if ai_trace.get("selected_method") == "heuristic":
             fallbacks += 1
             fallback_reason = ai_trace.get("fallback_reason")
@@ -142,6 +155,12 @@ def _summarize_ai_usage(raw_extractions: list[dict | None]) -> JobAISummary:
         fallbacks=fallbacks,
         fallback_ratio=fallback_ratio,
         fallback_reasons=fallback_reasons,
+        total_prompt_tokens=total_prompt_tokens,
+        total_completion_tokens=total_completion_tokens,
+        total_tokens=total_tokens,
+        total_latency_ms=total_latency_ms,
+        average_latency_ms=round((total_latency_ms / attempts), 2) if attempts else 0.0,
+        estimated_cost_usd=round(estimated_cost_usd, 8) if cost_samples else None,
     )
 
 
@@ -193,6 +212,12 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             ai_successes = 0
             ai_fallbacks = 0
             ai_fallback_reasons: dict[str, int] = {}
+            ai_prompt_tokens = 0
+            ai_completion_tokens = 0
+            ai_total_tokens = 0
+            ai_total_latency_ms = 0
+            ai_estimated_cost_usd = 0.0
+            ai_cost_samples = 0
             await _append_job_log(
                 db,
                 job_id,
@@ -231,6 +256,13 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     ai_trace = prospect_dict.get("ai_trace")
                     if isinstance(ai_trace, dict):
                         ai_attempts += 1
+                        ai_prompt_tokens += int(ai_trace.get("prompt_tokens") or 0)
+                        ai_completion_tokens += int(ai_trace.get("completion_tokens") or 0)
+                        ai_total_tokens += int(ai_trace.get("total_tokens") or 0)
+                        ai_total_latency_ms += int(ai_trace.get("latency_ms") or 0)
+                        if ai_trace.get("estimated_cost_usd") is not None:
+                            ai_estimated_cost_usd += float(ai_trace.get("estimated_cost_usd") or 0.0)
+                            ai_cost_samples += 1
                         fallback_reason = ai_trace.get("fallback_reason")
                         if ai_trace.get("selected_method") == "heuristic":
                             ai_fallbacks += 1
@@ -253,6 +285,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                     "fallback_reason": fallback_reason,
                                     "error_type": ai_trace.get("error_type"),
                                     "retryable": ai_trace.get("retryable"),
+                                    "latency_ms": ai_trace.get("latency_ms"),
+                                    "prompt_tokens": ai_trace.get("prompt_tokens"),
+                                    "completion_tokens": ai_trace.get("completion_tokens"),
+                                    "total_tokens": ai_trace.get("total_tokens"),
+                                    "estimated_cost_usd": ai_trace.get("estimated_cost_usd"),
                                 },
                             )
                         else:
@@ -271,6 +308,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                     "provider": ai_trace.get("provider"),
                                     "selected_method": ai_trace.get("selected_method"),
                                     "evaluation_method": ai_trace.get("evaluation_method"),
+                                    "latency_ms": ai_trace.get("latency_ms"),
+                                    "prompt_tokens": ai_trace.get("prompt_tokens"),
+                                    "completion_tokens": ai_trace.get("completion_tokens"),
+                                    "total_tokens": ai_trace.get("total_tokens"),
+                                    "estimated_cost_usd": ai_trace.get("estimated_cost_usd"),
                                 },
                             )
 
@@ -343,6 +385,12 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     "ai_fallbacks": ai_fallbacks,
                     "ai_fallback_ratio": round((ai_fallbacks / ai_attempts), 4) if ai_attempts else 0.0,
                     "ai_fallback_reasons": ai_fallback_reasons,
+                    "ai_prompt_tokens": ai_prompt_tokens,
+                    "ai_completion_tokens": ai_completion_tokens,
+                    "ai_total_tokens": ai_total_tokens,
+                    "ai_total_latency_ms": ai_total_latency_ms,
+                    "ai_average_latency_ms": round((ai_total_latency_ms / ai_attempts), 2) if ai_attempts else 0.0,
+                    "ai_estimated_cost_usd": round(ai_estimated_cost_usd, 8) if ai_cost_samples else None,
                 },
             )
             await db.commit()

@@ -67,6 +67,12 @@ class JobAISummary(BaseModel):
     fallbacks: int = 0
     fallback_ratio: float = 0.0
     fallback_reasons: Dict[str, int] = Field(default_factory=dict)
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    total_latency_ms: int = 0
+    average_latency_ms: float = 0.0
+    estimated_cost_usd: Optional[float] = None
 
 
 class JobResponse(BaseModel):

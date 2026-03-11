@@ -1,5 +1,6 @@
 import json
 import logging
+from time import perf_counter
 from typing import Any, Dict, Literal
 
 from openai import AsyncOpenAI
@@ -26,11 +27,13 @@ class AIExtractionFallbackError(Exception):
         *,
         error_type: str,
         retryable: bool = False,
+        usage: Dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.reason = reason
         self.error_type = error_type
         self.retryable = retryable
+        self.usage = usage or {}
 
 
 def _get_deepseek_api_key() -> str:
@@ -39,6 +42,49 @@ def _get_deepseek_api_key() -> str:
 
 def _build_deepseek_client(api_key: str) -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
+
+
+def _build_ai_usage(
+    *,
+    latency_ms: int | None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+) -> Dict[str, Any]:
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+
+    settings = get_settings()
+    estimated_cost_usd: float | None = None
+    if prompt_tokens is not None and completion_tokens is not None:
+        input_cost_rate = max(settings.DEEPSEEK_INPUT_COST_PER_1M_TOKENS, 0.0)
+        output_cost_rate = max(settings.DEEPSEEK_OUTPUT_COST_PER_1M_TOKENS, 0.0)
+        if input_cost_rate > 0 or output_cost_rate > 0:
+            estimated_cost_usd = round(
+                ((prompt_tokens * input_cost_rate) + (completion_tokens * output_cost_rate)) / 1_000_000,
+                8,
+            )
+
+    return {
+        "latency_ms": latency_ms,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
+    }
+
+
+def _extract_usage_metrics(response: Any, *, latency_ms: int | None) -> Dict[str, Any]:
+    usage = getattr(response, "usage", None)
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+    return _build_ai_usage(
+        latency_ms=latency_ms,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+    )
 
 
 def _normalize_string_list(raw_value: Any, *, max_items: int = 10) -> list[str]:
@@ -319,6 +365,8 @@ async def extract_business_entity_ai(
     client = _build_deepseek_client(deepseek_api_key)
 
     sys_prompt = _build_system_prompt(domain, job_context)
+    response = None
+    request_started_at = perf_counter()
 
     try:
         # Llamada a IA
@@ -334,13 +382,19 @@ async def extract_business_entity_ai(
             max_tokens=500,  # Respuesta JSON debe ser corta (menos coste salida)
             response_format={"type": "json_object"} # Fuerza a DeepSeek a escupir JSON puro
         )
+        usage_metrics = _extract_usage_metrics(
+            response,
+            latency_ms=int((perf_counter() - request_started_at) * 1000),
+        )
         
         raw_output = response.choices[0].message.content
         logger.info(f"Respuesta IA para {domain} completada. Parseando JSON.")
         
         # Intentar parsear
         parsed_data = json.loads(raw_output)
-        return _validate_ai_response_payload(parsed_data)
+        validated_payload = _validate_ai_response_payload(parsed_data)
+        validated_payload["_ai_metrics"] = usage_metrics
+        return validated_payload
 
     except json.JSONDecodeError as je:
         logger.error(f"DeepSeek no devolvió un JSON válido para {domain}: {str(je)}")
@@ -349,6 +403,10 @@ async def extract_business_entity_ai(
             f"DeepSeek no devolvió JSON válido para {domain}",
             error_type="invalid_response",
             retryable=False,
+            usage=_extract_usage_metrics(
+                response,
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
         ) from je
     except ValidationError as ve:
         logger.error(f"DeepSeek devolvió schema inválido para {domain}: {ve.errors()}")
@@ -357,6 +415,10 @@ async def extract_business_entity_ai(
             f"DeepSeek devolvió schema inválido para {domain}",
             error_type="invalid_response",
             retryable=False,
+            usage=_extract_usage_metrics(
+                response,
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
         ) from ve
     except Exception as e:
         logger.error(f"Fallo en API de DeepSeek para {domain}: {str(e)}")
@@ -365,4 +427,7 @@ async def extract_business_entity_ai(
             f"Fallo en API de DeepSeek para {domain}: {str(e)}",
             error_type="provider_error",
             retryable=True,
+            usage=_build_ai_usage(
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
         ) from e

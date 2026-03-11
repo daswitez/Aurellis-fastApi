@@ -46,6 +46,7 @@ def _extract_job_prospect_data(
         "processing_status": "processed",
         "match_score": prospect_data.get("score", 0.0),
         "confidence_level": prospect_data.get("confidence_level"),
+        "fit_summary": prospect_data.get("fit_summary"),
         "pain_points_json": pain_points_detected or None,
         "evidence_json": {
             "source_type": normalize_source_type(job_context.get("source_type") or prospect_data.get("source")),
@@ -64,6 +65,11 @@ def _extract_job_prospect_data(
             ],
             "contact_page_url": prospect_data.get("contact_page_url"),
             "form_detected": prospect_data.get("form_detected", False),
+            "heuristic_signals": (
+                prospect_data.get("heuristic_trace", {}).get("signals")
+                if isinstance(prospect_data.get("heuristic_trace"), dict)
+                else None
+            ),
         },
         "raw_extraction_json": {
             "inferred_niche": prospect_data.get("inferred_niche"),
@@ -73,6 +79,7 @@ def _extract_job_prospect_data(
             "has_active_ads": prospect_data.get("has_active_ads"),
             "hiring_signals": prospect_data.get("hiring_signals"),
             "ai_trace": prospect_data.get("ai_trace"),
+            "heuristic_trace": prospect_data.get("heuristic_trace"),
         },
         "created_at": now,
         "updated_at": now,
@@ -246,6 +253,7 @@ async def save_scraped_prospect(
             "processing_status": job_stmt.excluded.processing_status,
             "match_score": job_stmt.excluded.match_score,
             "confidence_level": job_stmt.excluded.confidence_level,
+            "fit_summary": job_stmt.excluded.fit_summary,
             "pain_points_json": job_stmt.excluded.pain_points_json,
             "evidence_json": job_stmt.excluded.evidence_json,
             "raw_extraction_json": job_stmt.excluded.raw_extraction_json,

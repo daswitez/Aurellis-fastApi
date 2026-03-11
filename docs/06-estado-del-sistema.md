@@ -42,12 +42,12 @@ El flujo completo de prospección automática está operativo:
 
 ## ⚠️ Limitaciones Actuales (pendientes de mejora)
 
-### 1. El score puede quedar en `0.0`
-**Causa probable:** si DeepSeek falla, no hay `DEEPSEEK_API_KEY`, o el contexto comercial del job es demasiado pobre, el sistema cae al extractor heurístico y hoy ese fallback devuelve `score=0.0`.
+### 1. El score heurístico base ya existe, pero falta combinarlo mejor con IA
+**Estado actual:** si DeepSeek falla, no hay `DEEPSEEK_API_KEY`, o la respuesta del proveedor es inválida, el sistema cae a un baseline heurístico local con breakdown explicable.
 
-**Archivo a revisar:** `app/services/ai_extractor.py`
+**Qué usa hoy el baseline:** contacto visible, señales comerciales, stack detectado, madurez digital y ajuste con el contexto del job.
 
-**Solución sugerida:** mejorar el score heurístico base, medir el ratio de fallback y validar la respuesta cruda del proveedor IA para detectar respuestas incompletas o inconsistentes.
+**Mejora pendiente:** definir la fórmula híbrida final entre score IA y score heurístico para que ambos convivan de manera estable.
 
 ### 2. `inferred_tech_stack` vacío `[]`
 **Causa probable:** El prompt no pide explícitamente detectar tecnologías web (WordPress, Shopify, etc.).

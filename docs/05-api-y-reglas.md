@@ -182,6 +182,12 @@ curl http://localhost:8000/api/v1/jobs/1
     "successes": 3,
     "fallbacks": 1,
     "fallback_ratio": 0.25,
+    "total_prompt_tokens": 1820,
+    "total_completion_tokens": 320,
+    "total_tokens": 2140,
+    "total_latency_ms": 8420,
+    "average_latency_ms": 2105.0,
+    "estimated_cost_usd": 0.0003912,
     "fallback_reasons": {
       "invalid_schema": 1
     }
@@ -195,6 +201,8 @@ curl http://localhost:8000/api/v1/jobs/1
 - antes devolvía esencialmente un string de estado;
 - ahora sirve para monitoreo real del job;
 - incluye métricas operativas, resumen de uso de IA y errores recientes resumidos sin ir a `/logs`.
+
+**Nota sobre costo estimado:** `estimated_cost_usd` depende de que el entorno tenga configuradas `DEEPSEEK_INPUT_COST_PER_1M_TOKENS` y `DEEPSEEK_OUTPUT_COST_PER_1M_TOKENS`. Si no están definidas, ese campo puede venir como `null`.
 
 **Respuesta `404`:**
 ```json

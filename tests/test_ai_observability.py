@@ -17,10 +17,44 @@ class AISummaryTestCase(unittest.TestCase):
     def test_summarizes_fallback_ratio_and_reasons(self) -> None:
         summary = _summarize_ai_usage(
             [
-                {"ai_trace": {"selected_method": "ai"}},
-                {"ai_trace": {"selected_method": "heuristic", "fallback_reason": "invalid_schema"}},
-                {"ai_trace": {"selected_method": "heuristic", "fallback_reason": "provider_error"}},
-                {"ai_trace": {"selected_method": "heuristic", "fallback_reason": "invalid_schema"}},
+                {
+                    "ai_trace": {
+                        "selected_method": "ai",
+                        "prompt_tokens": 100,
+                        "completion_tokens": 20,
+                        "total_tokens": 120,
+                        "latency_ms": 900,
+                        "estimated_cost_usd": 0.00002,
+                    }
+                },
+                {
+                    "ai_trace": {
+                        "selected_method": "heuristic",
+                        "fallback_reason": "invalid_schema",
+                        "prompt_tokens": 80,
+                        "completion_tokens": 10,
+                        "total_tokens": 90,
+                        "latency_ms": 700,
+                        "estimated_cost_usd": 0.00001,
+                    }
+                },
+                {
+                    "ai_trace": {
+                        "selected_method": "heuristic",
+                        "fallback_reason": "provider_error",
+                        "latency_ms": 300,
+                    }
+                },
+                {
+                    "ai_trace": {
+                        "selected_method": "heuristic",
+                        "fallback_reason": "invalid_schema",
+                        "prompt_tokens": 60,
+                        "completion_tokens": 5,
+                        "total_tokens": 65,
+                        "latency_ms": 500,
+                    }
+                },
                 None,
                 {"other": "ignored"},
             ]
@@ -32,6 +66,12 @@ class AISummaryTestCase(unittest.TestCase):
         self.assertEqual(summary.fallback_ratio, 0.75)
         self.assertEqual(summary.fallback_reasons["invalid_schema"], 2)
         self.assertEqual(summary.fallback_reasons["provider_error"], 1)
+        self.assertEqual(summary.total_prompt_tokens, 240)
+        self.assertEqual(summary.total_completion_tokens, 35)
+        self.assertEqual(summary.total_tokens, 275)
+        self.assertEqual(summary.total_latency_ms, 2400)
+        self.assertEqual(summary.average_latency_ms, 600.0)
+        self.assertEqual(summary.estimated_cost_usd, 0.00003)
 
 
 class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):

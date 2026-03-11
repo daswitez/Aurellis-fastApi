@@ -240,15 +240,23 @@ Cambios de escalabilidad, integración oficial y endurecimiento de producción.
   - Cubierto con pruebas en `tests/test_ai_extractor.py` y `tests/test_ai_observability.py`.
   - **Criterio de cierre:** existe trazabilidad clara del ratio de fallback.
 
-- [ ] **C-005 Medir latencia y costo estimado**
+- [x] **C-005 Medir latencia y costo estimado**
   - Registrar duración y, si es posible, tokens aproximados por request.
+  - Cada intento de IA ahora registra `latency_ms`, `prompt_tokens`, `completion_tokens`, `total_tokens` y `estimated_cost_usd` dentro de `ai_trace`.
+  - `GET /jobs/{id}` agrega esos valores en `ai_summary` con acumulados y promedio de latencia por job.
+  - El costo estimado se calcula con tarifas configurables vía `DEEPSEEK_INPUT_COST_PER_1M_TOKENS` y `DEEPSEEK_OUTPUT_COST_PER_1M_TOKENS`.
+  - Cubierto con pruebas en `tests/test_ai_extractor.py` y `tests/test_ai_observability.py`.
   - **Criterio de cierre:** el equipo puede estimar costo operativo de usar IA en producción.
 
 ### C.3. Scoring híbrido
 
-- [ ] **C-006 Diseñar score base heurístico**
+- [x] **C-006 Diseñar score base heurístico**
   - Crear una señal local independiente de la IA.
   - Usar factores como hiring, ads, stack, contacto disponible y madurez del sitio.
+  - El extractor heurístico ahora calcula un baseline explicable con breakdown ponderado por `contact_availability`, `commercial_intent`, `digital_maturity`, `context_fit` y `stack_fit`.
+  - El baseline se calcula siempre en el engine, se reutiliza en fallback IA y se persiste por job como `fit_summary`, `heuristic_trace` y señales en `job_prospects`.
+  - El prospecto puede conservar valor comercial aunque la IA falle, y el sistema ya no cae por defecto a `score=0.0` sin explicación.
+  - Cubierto con pruebas en `tests/test_heuristic_extractor.py` y regresión sobre fallback en `tests/test_ai_observability.py`.
   - **Criterio de cierre:** el sistema conserva valor aunque la IA falle o se limite.
 
 - [ ] **C-007 Definir fórmula final de score**

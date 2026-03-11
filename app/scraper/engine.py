@@ -76,6 +76,11 @@ def _build_ai_trace(
     error_type: str | None = None,
     retryable: bool | None = None,
     message: str | None = None,
+    latency_ms: int | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+    estimated_cost_usd: float | None = None,
 ) -> Dict[str, Any]:
     return {
         "provider": "deepseek",
@@ -87,7 +92,19 @@ def _build_ai_trace(
         "error_type": error_type,
         "retryable": retryable,
         "message": message,
+        "latency_ms": latency_ms,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
     }
+
+
+def _pick_first_defined(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 async def _crawl_key_pages(root_metadata: Dict[str, Any]) -> tuple[str, Dict[str, Any], list[dict[str, str]]]:
@@ -165,6 +182,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     key_pages_text, key_pages_metadata, crawled_pages = await _crawl_key_pages(html_metadata)
     combined_text = clean_text if not key_pages_text else f"{clean_text}\n\n{key_pages_text}"
     merged_metadata = _merge_html_metadata(html_metadata, key_pages_metadata)
+    heuristic_baseline = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
     
     # 3. Extracción de Lógica de Negocio mediante Heurística de Código
     # [FASE 5] Invocación a Inteligencia Artificial para comprensión profunda (DeepSeek)
@@ -172,6 +190,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     ai_trace: Dict[str, Any]
     try:
         extracted_data = await extract_business_entity_ai(domain, combined_text, job_context)
+        ai_metrics = extracted_data.pop("_ai_metrics", {})
         evaluation_method = "DeepSeek API ({})".format(PROMPT_VERSION)
         generic_attributes = extracted_data.get("generic_attributes")
         if isinstance(generic_attributes, dict):
@@ -180,6 +199,11 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
             status="success",
             selected_method="ai",
             evaluation_method=evaluation_method,
+            latency_ms=ai_metrics.get("latency_ms"),
+            prompt_tokens=ai_metrics.get("prompt_tokens"),
+            completion_tokens=ai_metrics.get("completion_tokens"),
+            total_tokens=ai_metrics.get("total_tokens"),
+            estimated_cost_usd=ai_metrics.get("estimated_cost_usd"),
         )
     except AIExtractionFallbackError as ai_e:
         logger.warning(
@@ -188,7 +212,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
             ai_e.reason,
             ai_e.error_type,
         )
-        extracted_data = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
+        extracted_data = heuristic_baseline
         evaluation_method = "Heuristic Code (No LLM)"
         generic_attributes = extracted_data.get("generic_attributes")
         if isinstance(generic_attributes, dict):
@@ -203,10 +227,15 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
             error_type=ai_e.error_type,
             retryable=ai_e.retryable,
             message=str(ai_e),
+            latency_ms=ai_e.usage.get("latency_ms"),
+            prompt_tokens=ai_e.usage.get("prompt_tokens"),
+            completion_tokens=ai_e.usage.get("completion_tokens"),
+            total_tokens=ai_e.usage.get("total_tokens"),
+            estimated_cost_usd=ai_e.usage.get("estimated_cost_usd"),
         )
     except Exception as ai_e:
         logger.error(f"Error AI inesperado para {target_url}. Usando heurística fallback: {ai_e}")
-        extracted_data = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
+        extracted_data = heuristic_baseline
         evaluation_method = "Heuristic Code (No LLM)"
         generic_attributes = extracted_data.get("generic_attributes")
         if isinstance(generic_attributes, dict):
@@ -231,10 +260,10 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     final_prospect = {
         "domain": domain,
         "website_url": target_url,
-        "company_name": extracted_data.get("company_name", domain),
-        "category": extracted_data.get("category"),
-        "location": extracted_data.get("location"),
-        "description": extracted_data.get("description"),
+        "company_name": _pick_first_defined(extracted_data.get("company_name"), heuristic_baseline.get("company_name"), domain),
+        "category": _pick_first_defined(extracted_data.get("category"), heuristic_baseline.get("category")),
+        "location": _pick_first_defined(extracted_data.get("location"), heuristic_baseline.get("location")),
+        "description": _pick_first_defined(extracted_data.get("description"), heuristic_baseline.get("description")),
         
         # Metadatos seguros de HTML (BeautifulSoup y Regex son asertivos)
         "email": merged_metadata.get("emails")[0] if merged_metadata.get("emails") else None,
@@ -246,14 +275,16 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "facebook_url": next((s for s in merged_metadata.get("social_links", []) if "facebook.com" in s), None),
         
         # Deducciones del algoritmo heurístico basado en el contexto del vendedor
-        "inferred_tech_stack": extracted_data.get("inferred_tech_stack"),
-        "inferred_niche": extracted_data.get("inferred_niche"),
-        "generic_attributes": extracted_data.get("generic_attributes"),
-        "estimated_revenue_signal": extracted_data.get("estimated_revenue_signal"),
-        "has_active_ads": extracted_data.get("has_active_ads"),
-        "hiring_signals": extracted_data.get("hiring_signals", False),
-        "score": extracted_data.get("score", 0.0),
-        "confidence_level": extracted_data.get("confidence_level", "low"),
+        "inferred_tech_stack": _pick_first_defined(extracted_data.get("inferred_tech_stack"), heuristic_baseline.get("inferred_tech_stack")),
+        "inferred_niche": _pick_first_defined(extracted_data.get("inferred_niche"), heuristic_baseline.get("inferred_niche")),
+        "generic_attributes": _pick_first_defined(extracted_data.get("generic_attributes"), heuristic_baseline.get("generic_attributes")),
+        "estimated_revenue_signal": _pick_first_defined(extracted_data.get("estimated_revenue_signal"), heuristic_baseline.get("estimated_revenue_signal")),
+        "has_active_ads": _pick_first_defined(extracted_data.get("has_active_ads"), heuristic_baseline.get("has_active_ads")),
+        "hiring_signals": _pick_first_defined(extracted_data.get("hiring_signals"), heuristic_baseline.get("hiring_signals"), False),
+        "score": _pick_first_defined(extracted_data.get("score"), heuristic_baseline.get("score"), 0.0),
+        "confidence_level": _pick_first_defined(extracted_data.get("confidence_level"), heuristic_baseline.get("confidence_level"), "low"),
+        "fit_summary": heuristic_baseline.get("fit_summary"),
+        "heuristic_trace": heuristic_baseline.get("heuristic_trace"),
         
         # Auditoría de origen
         "source": "HTTPX_Scraper",

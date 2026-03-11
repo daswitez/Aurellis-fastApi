@@ -3,6 +3,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://aurellis_user:aurellis_password@localhost:5432/aurellis_scraping_dev"
     DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_INPUT_COST_PER_1M_TOKENS: float = 0.0
+    DEEPSEEK_OUTPUT_COST_PER_1M_TOKENS: float = 0.0
     DEMO_MODE: bool = False
     HTTP_VERIFY_TLS: bool = True
     HTTP_MAX_RETRIES: int = 2
