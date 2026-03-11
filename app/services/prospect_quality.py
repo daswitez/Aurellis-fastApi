@@ -118,6 +118,36 @@ MEDIUM_CONFIDENCE_GEO_SOURCES = {
     "discovery_title",
     "discovery_snippet",
 }
+DIRECTORY_ENTITY_TYPES = {"directory", "aggregator", "marketplace"}
+MEDIA_ENTITY_TYPES = {"media", "association"}
+ARTICLE_ENTITY_TYPES = {"blog_post"}
+GENERIC_EMAIL_DOMAINS = {
+    "gmail.com",
+    "outlook.com",
+    "hotmail.com",
+    "yahoo.com",
+    "icloud.com",
+    "proton.me",
+    "protonmail.com",
+    "live.com",
+}
+COMMON_SECOND_LEVEL_TLDS = {"com", "net", "org", "gov", "edu", "co"}
+CONTACT_SOURCE_CONFIDENCE = {
+    "structured_data": "high",
+    "mailto_link": "high",
+    "tel_link": "high",
+    "visible_text": "medium",
+    "metadata_list": "medium",
+    "html_form": "medium",
+    "whatsapp_link": "medium",
+    "booking_link": "medium",
+    "unknown": "medium",
+}
+CONTACT_CONFIDENCE_TO_SCORE = {
+    "low": 0.35,
+    "medium": 0.65,
+    "high": 0.9,
+}
 
 
 def _normalize_text(value: str | None) -> str:
@@ -368,20 +398,168 @@ def _assess_language(target_language: str | None, detected_language: str | None)
     }
 
 
-def _build_contact_quality(metadata: dict[str, Any]) -> tuple[float, list[dict[str, str]]]:
+def _normalize_host_root(hostname: str | None) -> str:
+    parts = [part for part in str(hostname or "").lower().split(".") if part]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    if parts[-2] in COMMON_SECOND_LEVEL_TLDS and len(parts[-1]) == 2:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _email_domain(email: str | None) -> str:
+    _, _, domain = str(email or "").strip().lower().partition("@")
+    return domain
+
+
+def _same_business_domain(email_domain: str, site_root: str) -> bool:
+    return bool(email_domain and site_root) and (
+        email_domain == site_root or email_domain.endswith(f".{site_root}")
+    )
+
+
+def _score_channel_confidence(source: str | None, *, boost: bool = False, penalize: bool = False) -> str:
+    confidence = CONTACT_SOURCE_CONFIDENCE.get(str(source or "").strip().lower(), "medium")
+    if penalize:
+        return "low"
+    if boost and confidence == "medium":
+        return "high"
+    return confidence
+
+
+def _build_contact_quality(metadata: dict[str, Any]) -> dict[str, Any]:
+    channels = [dict(channel) for channel in metadata.get("contact_channels", []) if isinstance(channel, dict)]
+    seen_pairs = {
+        (str(channel.get("type") or "").strip().lower(), str(channel.get("value") or "").strip())
+        for channel in channels
+    }
+    for email in metadata.get("emails", []):
+        pair = ("email", str(email).strip())
+        if pair not in seen_pairs and pair[1]:
+            channels.append({"type": "email", "value": pair[1], "source": "metadata_list"})
+            seen_pairs.add(pair)
+    for phone in metadata.get("phones", []):
+        pair = ("phone", str(phone).strip())
+        if pair not in seen_pairs and pair[1]:
+            channels.append({"type": "phone", "value": pair[1], "source": "metadata_list"})
+            seen_pairs.add(pair)
+    site_host = urlparse(str(metadata.get("website_url") or "")).netloc.lower().removeprefix("www.")
+    site_root = _normalize_host_root(site_host)
+
+    enriched_channels: list[dict[str, Any]] = []
+    primary_email: str | None = None
+    primary_phone: str | None = None
+    primary_email_confidence = "low"
+    primary_phone_confidence = "low"
+    contact_consistency_status = "unknown"
+    primary_contact_source: str | None = None
     score = 0.0
-    channels = metadata.get("contact_channels", [])
-    if any(channel.get("type") == "email" for channel in channels):
-        score += 0.35
-    if any(channel.get("type") == "phone" for channel in channels):
-        score += 0.25
+
+    best_email_rank = -1
+    for channel in channels:
+        channel_type = str(channel.get("type") or "").strip().lower()
+        channel_value = str(channel.get("value") or "").strip()
+        channel_source = str(channel.get("source") or "unknown").strip().lower()
+        if not channel_type or not channel_value:
+            continue
+
+        enriched_channel = {
+            "type": channel_type,
+            "value": channel_value,
+            "source": channel_source,
+            "confidence": "low",
+            "is_primary": False,
+        }
+
+        if channel_type == "email":
+            email_domain = _email_domain(channel_value)
+            same_domain = _same_business_domain(email_domain, site_root)
+            is_generic_domain = email_domain in GENERIC_EMAIL_DOMAINS
+            if not site_root:
+                confidence = _score_channel_confidence(channel_source)
+                rank = 2
+                relation = "unknown_site_domain"
+            elif same_domain:
+                confidence = _score_channel_confidence(channel_source, boost=True)
+                rank = 3
+                relation = "same_business_domain"
+            elif is_generic_domain:
+                confidence = _score_channel_confidence(channel_source)
+                rank = 2
+                relation = "generic_domain"
+            else:
+                confidence = _score_channel_confidence(channel_source, penalize=True)
+                rank = 1
+                relation = "external_domain"
+            enriched_channel["confidence"] = confidence
+            enriched_channel["domain_relation"] = relation
+            if rank > best_email_rank:
+                best_email_rank = rank
+                primary_email = channel_value if relation != "external_domain" else None
+                primary_email_confidence = confidence
+                if same_domain:
+                    contact_consistency_status = "consistent"
+                elif relation == "external_domain":
+                    contact_consistency_status = "inconsistent"
+                elif contact_consistency_status != "consistent":
+                    contact_consistency_status = "unknown"
+                if primary_email:
+                    primary_contact_source = f"email:{channel_source}"
+            enriched_channels.append(enriched_channel)
+            continue
+
+        if channel_type == "phone":
+            confidence = _score_channel_confidence(channel_source)
+            if channel_value.startswith("+"):
+                confidence = "high" if confidence == "medium" else confidence
+            enriched_channel["confidence"] = confidence
+            if CONTACT_CONFIDENCE_TO_SCORE[confidence] > CONTACT_CONFIDENCE_TO_SCORE[primary_phone_confidence]:
+                primary_phone = channel_value
+                primary_phone_confidence = confidence
+                if not primary_contact_source:
+                    primary_contact_source = f"phone:{channel_source}"
+            enriched_channels.append(enriched_channel)
+            continue
+
+        if channel_type == "contact_form":
+            enriched_channel["confidence"] = "medium"
+            if not primary_contact_source:
+                primary_contact_source = f"form:{channel_source}"
+        elif channel_type in {"whatsapp", "booking"}:
+            enriched_channel["confidence"] = "medium"
+            if not primary_contact_source:
+                primary_contact_source = f"{channel_type}:{channel_source}"
+        else:
+            enriched_channel["confidence"] = "low"
+        enriched_channels.append(enriched_channel)
+
+    for channel in enriched_channels:
+        if channel["type"] == "email" and primary_email and channel["value"] == primary_email:
+            channel["is_primary"] = True
+        if channel["type"] == "phone" and primary_phone and channel["value"] == primary_phone:
+            channel["is_primary"] = True
+
+    if primary_email:
+        score += 0.35 * CONTACT_CONFIDENCE_TO_SCORE.get(primary_email_confidence, 0.35)
+    if primary_phone:
+        score += 0.25 * CONTACT_CONFIDENCE_TO_SCORE.get(primary_phone_confidence, 0.35)
     if metadata.get("form_detected"):
         score += 0.15
     if metadata.get("whatsapp_url"):
-        score += 0.15
+        score += 0.10
     if metadata.get("booking_url"):
         score += 0.10
-    return round(min(score, 1.0), 4), channels
+
+    return {
+        "contact_quality_score": round(min(score, 1.0), 4),
+        "contact_channels": enriched_channels,
+        "primary_email": primary_email,
+        "primary_phone": primary_phone,
+        "contact_consistency_status": contact_consistency_status,
+        "primary_email_confidence": primary_email_confidence if primary_email else "low",
+        "primary_phone_confidence": primary_phone_confidence if primary_phone else "low",
+        "primary_contact_source": primary_contact_source,
+    }
 
 
 def _infer_company_size_signal(metadata: dict[str, Any], heuristic_data: dict[str, Any]) -> str:
@@ -417,6 +595,9 @@ def _classify_quality_status(
     location_match_status: str,
     language_match_status: str,
     contact_quality_score: float,
+    contact_consistency_status: str,
+    primary_email_confidence: str,
+    primary_phone_confidence: str,
 ) -> tuple[str, str | None, list[str], float]:
     flags: list[str] = []
     score_multiplier = 1.0
@@ -437,11 +618,57 @@ def _classify_quality_status(
             return "rejected", "language_mismatch", flags, score_multiplier
         return "needs_review", "language_mismatch", flags, score_multiplier
 
+    if contact_consistency_status == "inconsistent":
+        flags.append("contact_inconsistent")
+        if primary_phone_confidence == "low" and contact_quality_score < 0.15:
+            return "rejected", "contact_inconsistent", flags, 0.55
+        return "needs_review", "contact_inconsistent", flags, 0.75
+
+    if primary_email_confidence == "low" and primary_phone_confidence == "low" and contact_quality_score < 0.3:
+        flags.append("weak_primary_contact")
+        return "rejected", "low_contact_quality", flags, 0.7
+
     if contact_quality_score < 0.25 and heuristic_confidence == "low":
         flags.append("weak_contactability")
         return "rejected", "low_contact_quality", flags, 0.75
 
     return "accepted", None, flags, score_multiplier
+
+
+def _derive_acceptance_decision(
+    *,
+    quality_status: str,
+    rejection_reason: str | None,
+    entity_type_detected: str | None,
+    entity_type_confidence: str | None,
+    is_target_entity: bool | None,
+    heuristic_score: float,
+) -> tuple[str, float, float | None]:
+    normalized_entity_type = str(entity_type_detected or "unknown").strip().lower()
+    normalized_confidence = str(entity_type_confidence or "low").strip().lower()
+
+    if normalized_entity_type in DIRECTORY_ENTITY_TYPES:
+        return "rejected_directory", 0.2, 0.25
+    if normalized_entity_type in MEDIA_ENTITY_TYPES:
+        return "rejected_media", 0.25, 0.3
+    if normalized_entity_type in ARTICLE_ENTITY_TYPES:
+        return "rejected_article", 0.15, 0.2
+
+    if quality_status == "accepted" and is_target_entity:
+        return "accepted_target", 1.0, None
+
+    if quality_status == "accepted" and normalized_entity_type == "unknown":
+        if heuristic_score >= 0.55 and normalized_confidence in {"medium", "high"}:
+            return "accepted_related", 0.75, 0.7
+        return "rejected_low_confidence", 0.45, 0.45
+
+    if quality_status == "accepted":
+        return "accepted_related", 0.7, 0.65
+
+    if rejection_reason == "low_contact_quality":
+        return "rejected_low_confidence", 0.5, 0.45
+
+    return "rejected_low_confidence", 0.55 if quality_status == "needs_review" else 0.45, 0.5 if quality_status == "needs_review" else 0.4
 
 
 def build_ai_cache_signature(domain: str, clean_text: str, prompt_version: str) -> str:
@@ -472,11 +699,19 @@ def build_ai_evidence_pack(
         "booking_url": quality_data.get("booking_url"),
         "pricing_page_url": quality_data.get("pricing_page_url"),
         "contact_channels": quality_data.get("contact_channels_json"),
+        "contact_consistency_status": quality_data.get("contact_consistency_status"),
+        "primary_email_confidence": quality_data.get("primary_email_confidence"),
+        "primary_phone_confidence": quality_data.get("primary_phone_confidence"),
+        "primary_contact_source": quality_data.get("primary_contact_source"),
         "heuristic_score": heuristic_data.get("score"),
         "heuristic_confidence": heuristic_data.get("confidence_level"),
         "heuristic_pain_points": heuristic_data.get("generic_attributes", {}).get("pain_points_detected", []),
         "inferred_tech_stack": heuristic_data.get("inferred_tech_stack", []),
         "inferred_niche": heuristic_data.get("inferred_niche"),
+        "entity_type_detected": quality_data.get("entity_type_detected"),
+        "entity_type_confidence": quality_data.get("entity_type_confidence"),
+        "is_target_entity": quality_data.get("is_target_entity"),
+        "acceptance_decision": quality_data.get("acceptance_decision"),
         "discovery": discovery_metadata,
         "service_keywords": quality_data.get("service_keywords"),
     }
@@ -484,11 +719,16 @@ def build_ai_evidence_pack(
 
 def should_call_ai(heuristic_data: dict[str, Any], quality_data: dict[str, Any]) -> tuple[bool, str]:
     quality_status = quality_data.get("quality_status")
+    acceptance_decision = str(quality_data.get("acceptance_decision") or "").strip().lower()
     heuristic_score = float(heuristic_data.get("score") or 0.0)
     heuristic_confidence = str(heuristic_data.get("confidence_level") or "low")
 
     if quality_status == "rejected":
         return False, "quality_rejected"
+    if acceptance_decision.startswith("rejected_"):
+        return False, "commercial_rejected"
+    if acceptance_decision == "accepted_related":
+        return False, "commercial_related_only"
     if heuristic_confidence == "high" and quality_status == "accepted" and heuristic_score >= 0.7:
         return False, "heuristic_high_confidence"
     if heuristic_confidence == "high" and heuristic_score <= 0.2:
@@ -503,22 +743,39 @@ def evaluate_prospect_quality(
     context: dict[str, Any],
     heuristic_data: dict[str, Any],
     discovery_metadata: dict[str, Any],
+    entity_data: dict[str, Any],
 ) -> dict[str, Any]:
     detected_language = _detect_language(clean_text, metadata)
     language_data = _assess_language(context.get("target_language"), detected_language)
     geo_evidence = _extract_geo_evidence(metadata, discovery_metadata, context.get("target_location"))
     location_data = _assess_location(context.get("target_location"), geo_evidence)
-    contact_quality_score, contact_channels = _build_contact_quality(metadata)
+    contact_data = _build_contact_quality(metadata)
+    contact_quality_score = float(contact_data["contact_quality_score"])
     company_size_signal = _infer_company_size_signal(metadata, heuristic_data)
     service_keywords = _extract_service_keywords(clean_text)
-    quality_status, rejection_reason, quality_flags, score_multiplier = _classify_quality_status(
+    quality_status, rejection_reason, quality_flags, technical_score_multiplier = _classify_quality_status(
         has_target_location=bool(str(context.get("target_location") or "").strip()),
         heuristic_score=float(heuristic_data.get("score") or 0.0),
         heuristic_confidence=str(heuristic_data.get("confidence_level") or "low"),
         location_match_status=location_data["location_match_status"],
         language_match_status=language_data["language_match_status"],
         contact_quality_score=contact_quality_score,
+        contact_consistency_status=str(contact_data["contact_consistency_status"]),
+        primary_email_confidence=str(contact_data["primary_email_confidence"]),
+        primary_phone_confidence=str(contact_data["primary_phone_confidence"]),
     )
+    is_target_entity = entity_data.get("is_target_entity")
+    if is_target_entity is False:
+        quality_flags.append("non_target_entity")
+    acceptance_decision, commercial_score_multiplier, score_cap = _derive_acceptance_decision(
+        quality_status=quality_status,
+        rejection_reason=rejection_reason,
+        entity_type_detected=entity_data.get("entity_type_detected"),
+        entity_type_confidence=entity_data.get("entity_type_confidence"),
+        is_target_entity=is_target_entity,
+        heuristic_score=float(heuristic_data.get("score") or 0.0),
+    )
+    score_multiplier = round(technical_score_multiplier * commercial_score_multiplier, 4)
 
     content_coverage = {
         "page_types_detected": sorted(
@@ -545,10 +802,21 @@ def evaluate_prospect_quality(
         "booking_url": metadata.get("booking_url"),
         "pricing_page_url": metadata.get("pricing_page_url"),
         "whatsapp_url": metadata.get("whatsapp_url"),
-        "contact_channels_json": contact_channels,
+        "contact_channels_json": contact_data["contact_channels"],
         "contact_quality_score": contact_quality_score,
+        "email": contact_data["primary_email"],
+        "phone": contact_data["primary_phone"],
+        "contact_consistency_status": contact_data["contact_consistency_status"],
+        "primary_email_confidence": contact_data["primary_email_confidence"],
+        "primary_phone_confidence": contact_data["primary_phone_confidence"],
+        "primary_contact_source": contact_data["primary_contact_source"],
         "company_size_signal": company_size_signal,
         "service_keywords": service_keywords,
+        "entity_type_detected": entity_data.get("entity_type_detected"),
+        "entity_type_confidence": entity_data.get("entity_type_confidence"),
+        "entity_type_evidence": entity_data.get("entity_type_evidence"),
+        "is_target_entity": is_target_entity,
+        "acceptance_decision": acceptance_decision,
         "quality_status": quality_status,
         "quality_flags": quality_flags,
         "rejection_reason": rejection_reason,
@@ -558,4 +826,7 @@ def evaluate_prospect_quality(
         "structured_data_evidence": metadata.get("structured_data_evidence", []),
         "content_coverage": content_coverage,
         "score_multiplier": score_multiplier,
+        "technical_score_multiplier": technical_score_multiplier,
+        "commercial_score_multiplier": commercial_score_multiplier,
+        "score_cap": score_cap,
     }

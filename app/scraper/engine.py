@@ -6,6 +6,7 @@ from app.scraper.http_client import FetchHtmlError, fetch_html
 from app.scraper.parser import parse_html_basic
 from app.services.ai_extractor import AIExtractionFallbackError, PROMPT_VERSION, extract_business_entity_ai
 from app.services.discovery import build_discovery_metadata
+from app.services.entity_classifier import classify_entity_type
 from app.services.heuristic_extractor import extract_business_entity_heuristic
 from app.services.prospect_quality import (
     build_ai_cache_signature,
@@ -241,12 +242,19 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         job_context.get("discovery_entry"),
         job_context.get("discovery_queries", []),
     )
+    entity_data = classify_entity_type(
+        target_url=target_url,
+        clean_text=combined_text,
+        metadata=merged_metadata,
+        discovery_metadata=discovery_metadata,
+    )
     quality_data = evaluate_prospect_quality(
         clean_text=combined_text,
         metadata=merged_metadata,
         context=job_context,
         heuristic_data=heuristic_baseline,
         discovery_metadata=discovery_metadata,
+        entity_data=entity_data,
     )
 
     use_ai, gate_reason = should_call_ai(heuristic_baseline, quality_data)
@@ -368,8 +376,8 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "detected_language": quality_data.get("detected_language"),
         "language_match_status": quality_data.get("language_match_status"),
         "description": _pick_first_defined(extracted_data.get("description"), heuristic_baseline.get("description")),
-        "email": merged_metadata.get("emails")[0] if merged_metadata.get("emails") else None,
-        "phone": merged_metadata.get("phones")[0] if merged_metadata.get("phones") else None,
+        "email": quality_data.get("email"),
+        "phone": quality_data.get("phone"),
         "contact_page_url": contact_page_url,
         "form_detected": merged_metadata.get("form_detected", False),
         "linkedin_url": next((s for s in merged_metadata.get("social_links", []) if "linkedin.com" in s), None),
@@ -381,6 +389,10 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "whatsapp_url": quality_data.get("whatsapp_url"),
         "contact_channels_json": quality_data.get("contact_channels_json"),
         "contact_quality_score": quality_data.get("contact_quality_score"),
+        "contact_consistency_status": quality_data.get("contact_consistency_status"),
+        "primary_email_confidence": quality_data.get("primary_email_confidence"),
+        "primary_phone_confidence": quality_data.get("primary_phone_confidence"),
+        "primary_contact_source": quality_data.get("primary_contact_source"),
         "company_size_signal": quality_data.get("company_size_signal"),
         "service_keywords": quality_data.get("service_keywords"),
         "inferred_tech_stack": _pick_first_defined(extracted_data.get("inferred_tech_stack"), heuristic_baseline.get("inferred_tech_stack")),
@@ -391,6 +403,11 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "hiring_signals": _pick_first_defined(extracted_data.get("hiring_signals"), heuristic_baseline.get("hiring_signals"), False),
         "score": final_scoring["score"],
         "confidence_level": final_scoring["confidence_level"],
+        "entity_type_detected": quality_data.get("entity_type_detected"),
+        "entity_type_confidence": quality_data.get("entity_type_confidence"),
+        "entity_type_evidence": quality_data.get("entity_type_evidence"),
+        "is_target_entity": quality_data.get("is_target_entity"),
+        "acceptance_decision": quality_data.get("acceptance_decision"),
         "fit_summary": final_scoring["fit_summary"],
         "heuristic_trace": heuristic_baseline.get("heuristic_trace"),
         "scoring_trace": final_scoring["scoring_trace"],

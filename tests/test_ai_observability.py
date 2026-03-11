@@ -111,10 +111,10 @@ class AISummaryTestCase(unittest.TestCase):
     def test_summarizes_capture_distribution(self) -> None:
         summary = _summarize_capture_usage(
             rows=[
-                ("accepted", None),
-                ("needs_review", "geo_unknown"),
-                ("rejected", "geo_mismatch"),
-                ("rejected", "low_contact_quality"),
+                ("accepted", None, "accepted_target"),
+                ("needs_review", "geo_unknown", "rejected_low_confidence"),
+                ("rejected", "geo_mismatch", "rejected_low_confidence"),
+                ("rejected", "low_contact_quality", "rejected_low_confidence"),
             ],
             total_processed=6,
             total_found=8,
@@ -131,7 +131,7 @@ class AISummaryTestCase(unittest.TestCase):
         self.assertEqual(summary.candidates_processed, 6)
         self.assertEqual(summary.candidates_discovered, 8)
         self.assertEqual(summary.acceptance_rate, 0.1667)
-        self.assertEqual(summary.candidate_dropoff_by_reason["geo_mismatch"], 1)
+        self.assertEqual(summary.candidate_dropoff_by_reason["rejected_low_confidence"], 3)
         self.assertEqual(summary.candidate_dropoff_by_reason["processing_failed"], 1)
         self.assertEqual(summary.candidate_dropoff_by_reason["processing_skipped"], 1)
 
@@ -216,6 +216,7 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["scoring_trace"]["ai_weight"], 0.85)
         self.assertEqual(result["scoring_trace"]["heuristic_weight"], 0.15)
         self.assertEqual(result["quality_status"], "accepted")
+        self.assertEqual(result["acceptance_decision"], "accepted_target")
 
     async def test_uses_heuristic_and_attaches_ai_trace_on_fallback(self) -> None:
         metadata = {
@@ -347,6 +348,7 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         assert result is not None
         self.assertEqual(result["quality_status"], "rejected")
         self.assertEqual(result["rejection_reason"], "geo_mismatch")
+        self.assertEqual(result["acceptance_decision"], "rejected_low_confidence")
         self.assertEqual(result["ai_trace"]["status"], "skipped")
         self.assertEqual(result["ai_trace"]["fallback_reason"], "quality_rejected")
 

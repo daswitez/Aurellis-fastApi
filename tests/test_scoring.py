@@ -40,6 +40,26 @@ class ScoringStrategyTestCase(unittest.TestCase):
         self.assertEqual(result["confidence_level"], "high")
         self.assertIn("IA y heuristica son consistentes", result["fit_summary"])
 
+    def test_applies_structural_penalty_for_commercially_rejected_entity(self) -> None:
+        result = build_final_score(
+            ai_data={"score": 0.92, "confidence_level": "high"},
+            ai_trace={"selected_method": "ai"},
+            heuristic_data={
+                "score": 0.88,
+                "confidence_level": "high",
+                "fit_summary": "Fit heuristico fuerte; destacan identidad empresarial, contacto.",
+            },
+            quality_data={
+                "acceptance_decision": "rejected_directory",
+                "score_multiplier": 0.2,
+                "score_cap": 0.25,
+            },
+        )
+
+        self.assertEqual(result["score"], 0.1828)
+        self.assertEqual(result["scoring_trace"]["acceptance_decision"], "rejected_directory")
+        self.assertEqual(result["scoring_trace"]["score_cap"], 0.25)
+
 
 if __name__ == "__main__":
     unittest.main()

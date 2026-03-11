@@ -8,6 +8,27 @@ RevenueSignal = Literal["low", "medium", "high"]
 ConfidenceLevel = Literal["low", "medium", "high"]
 MatchStatus = Literal["match", "mismatch", "unknown"]
 ProspectQualityStatus = Literal["accepted", "needs_review", "rejected"]
+ContactConsistencyStatus = Literal["consistent", "inconsistent", "unknown"]
+AcceptanceDecision = Literal[
+    "accepted_target",
+    "accepted_related",
+    "rejected_directory",
+    "rejected_media",
+    "rejected_article",
+    "rejected_low_confidence",
+]
+EntityTypeDetected = Literal[
+    "direct_business",
+    "directory",
+    "aggregator",
+    "marketplace",
+    "media",
+    "blog_post",
+    "association",
+    "agency",
+    "consultant",
+    "unknown",
+]
 ResultSourceType = Literal["duckduckgo_search", "mock_search", "seed_url", "manual", "enrichment"]
 DiscoveryMethod = Literal["search_query", "seed_url", "manual", "enrichment"]
 ScrapingLogLevel = Literal["INFO", "WARNING", "ERROR"]
@@ -157,10 +178,15 @@ class ProspectOut(BaseModel):
     rank_position: Optional[int]
     quality_status: Optional[ProspectQualityStatus]
     rejection_reason: Optional[str]
+    acceptance_decision: Optional[AcceptanceDecision]
 
     # Contacto
     email: Optional[str]
     phone: Optional[str]
+    contact_consistency_status: Optional[ContactConsistencyStatus]
+    primary_email_confidence: Optional[ConfidenceLevel]
+    primary_phone_confidence: Optional[ConfidenceLevel]
+    primary_contact_source: Optional[str]
     linkedin_url: Optional[str]
     instagram_url: Optional[str]
     facebook_url: Optional[str]
@@ -168,6 +194,10 @@ class ProspectOut(BaseModel):
     # Análisis IA (DeepSeek)
     score: Optional[float]  # Match score 0.0-1.0 con el perfil del vendedor
     confidence_level: Optional[ConfidenceLevel]
+    entity_type_detected: Optional[EntityTypeDetected]
+    entity_type_confidence: Optional[ConfidenceLevel]
+    entity_type_evidence: Optional[Dict[str, Any]]
+    is_target_entity: Optional[bool]
     inferred_niche: Optional[str]        # Nicho detectado por IA
     inferred_tech_stack: Optional[List[str]]  # Stack tecnológico detectado
     generic_attributes: Optional[Dict[str, Any]]

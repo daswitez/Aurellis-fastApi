@@ -96,6 +96,31 @@ def _normalize_email(candidate: str) -> str | None:
     return normalized
 
 
+def _looks_like_date_digits(digits_only: str) -> bool:
+    if len(digits_only) != 8 or not digits_only.isdigit():
+        return False
+
+    day = int(digits_only[:2])
+    month = int(digits_only[2:4])
+    year = int(digits_only[4:])
+    if 1 <= day <= 31 and 1 <= month <= 12 and 1900 <= year <= 2100:
+        return True
+
+    year = int(digits_only[:4])
+    month = int(digits_only[4:6])
+    day = int(digits_only[6:])
+    return 1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31
+
+
+def _looks_like_sequence_noise(digits_only: str) -> bool:
+    if len(set(digits_only)) == 1:
+        return True
+
+    ascending = "01234567890"
+    descending = "09876543210"
+    return digits_only in ascending or digits_only in descending
+
+
 def _normalize_phone(candidate: str) -> str | None:
     normalized = re.sub(r"[^\d+]", "", candidate.strip())
     if normalized.startswith("00"):
@@ -105,6 +130,10 @@ def _normalize_phone(candidate: str) -> str | None:
 
     digits_only = re.sub(r"\D", "", normalized)
     if len(digits_only) < 7 or len(digits_only) > 15:
+        return None
+    if _looks_like_date_digits(digits_only):
+        return None
+    if _looks_like_sequence_noise(digits_only):
         return None
     return normalized
 
@@ -124,6 +153,19 @@ def _extract_visible_contacts(text: str) -> tuple[set[str], set[str]]:
             phones.add(normalized_phone)
 
     return emails, phones
+
+
+def _append_contact_channel(
+    channels: list[dict[str, str]],
+    *,
+    channel_type: str,
+    value: str | None,
+    source: str,
+) -> None:
+    normalized_value = " ".join((value or "").strip().split())
+    if not normalized_value:
+        return
+    channels.append({"type": channel_type, "value": normalized_value, "source": source})
 
 
 def _add_unique(container: list[str], value: str | None, *, limit: int = 10) -> None:
@@ -289,6 +331,20 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
         metadata["structured_data_evidence"].append("json_ld_detected")
     if structured_addresses:
         metadata["structured_data_evidence"].append("structured_address_detected")
+    for phone in structured_phones:
+        _append_contact_channel(
+            metadata["contact_channels"],
+            channel_type="phone",
+            value=phone,
+            source="structured_data",
+        )
+    for email in structured_emails:
+        _append_contact_channel(
+            metadata["contact_channels"],
+            channel_type="email",
+            value=email,
+            source="structured_data",
+        )
 
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"].strip()
@@ -306,19 +362,34 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
             normalized_email = _normalize_email(email)
             if normalized_email:
                 metadata["emails"].add(normalized_email)
-                metadata["contact_channels"].append({"type": "email", "value": normalized_email})
+                _append_contact_channel(
+                    metadata["contact_channels"],
+                    channel_type="email",
+                    value=normalized_email,
+                    source="mailto_link",
+                )
             continue
 
         if lowered_href.startswith("tel:"):
             normalized_phone = _normalize_phone(href[4:])
             if normalized_phone:
                 metadata["phones"].add(normalized_phone)
-                metadata["contact_channels"].append({"type": "phone", "value": normalized_phone})
+                _append_contact_channel(
+                    metadata["contact_channels"],
+                    channel_type="phone",
+                    value=normalized_phone,
+                    source="tel_link",
+                )
             continue
 
         if "wa.me" in lowered_href or "api.whatsapp.com" in lowered_href or "whatsapp" in lowered_href:
             metadata["whatsapp_url"] = normalized_href or href
-            metadata["contact_channels"].append({"type": "whatsapp", "value": metadata["whatsapp_url"]})
+            _append_contact_channel(
+                metadata["contact_channels"],
+                channel_type="whatsapp",
+                value=metadata["whatsapp_url"],
+                source="whatsapp_link",
+            )
 
         if any(social in lowered_href for social in ["linkedin.com", "instagram.com", "facebook.com", "twitter.com", "x.com"]):
             if normalized_href:
@@ -362,13 +433,33 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
         _add_unique(metadata["addresses"], address_candidate, limit=5)
 
     for phone in sorted(metadata["phones"]):
-        metadata["contact_channels"].append({"type": "phone", "value": phone})
+        _append_contact_channel(
+            metadata["contact_channels"],
+            channel_type="phone",
+            value=phone,
+            source="visible_text",
+        )
     for email in sorted(metadata["emails"]):
-        metadata["contact_channels"].append({"type": "email", "value": email})
+        _append_contact_channel(
+            metadata["contact_channels"],
+            channel_type="email",
+            value=email,
+            source="visible_text",
+        )
     if metadata["form_detected"]:
-        metadata["contact_channels"].append({"type": "contact_form", "value": base_url})
+        _append_contact_channel(
+            metadata["contact_channels"],
+            channel_type="contact_form",
+            value=base_url,
+            source="html_form",
+        )
     if metadata["booking_url"]:
-        metadata["contact_channels"].append({"type": "booking", "value": metadata["booking_url"]})
+        _append_contact_channel(
+            metadata["contact_channels"],
+            channel_type="booking",
+            value=metadata["booking_url"],
+            source="booking_link",
+        )
 
     deduped_channels: list[dict[str, str]] = []
     seen_pairs: set[tuple[str, str]] = set()

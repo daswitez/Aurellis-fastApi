@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-SCORE_STRATEGY_VERSION = "hybrid_v1"
+SCORE_STRATEGY_VERSION = "hybrid_v2"
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -67,6 +67,15 @@ def _build_fit_summary(
     return f"{prefix}; la heuristica modera una evaluacion IA mas optimista."
 
 
+def _apply_quality_adjustments(base_score: float, quality_data: Dict[str, Any]) -> float:
+    score_multiplier = float(quality_data.get("score_multiplier") or 1.0)
+    score_cap = quality_data.get("score_cap")
+    adjusted_score = base_score * score_multiplier
+    if score_cap is not None:
+        adjusted_score = min(adjusted_score, float(score_cap))
+    return round(adjusted_score, 4)
+
+
 def build_final_score(
     *,
     ai_data: Dict[str, Any],
@@ -79,14 +88,17 @@ def build_final_score(
     heuristic_summary = heuristic_data.get("fit_summary")
     quality_data = quality_data or {}
     score_multiplier = float(quality_data.get("score_multiplier") or 1.0)
+    score_cap = quality_data.get("score_cap")
+    acceptance_decision = quality_data.get("acceptance_decision")
 
     if ai_trace.get("selected_method") != "ai":
+        adjusted_score = _apply_quality_adjustments(heuristic_score, quality_data)
         return {
-            "score": round(heuristic_score * score_multiplier, 4),
+            "score": adjusted_score,
             "confidence_level": heuristic_confidence,
             "fit_summary": _build_fit_summary(
                 strategy="heuristic_only",
-                final_score=heuristic_score * score_multiplier,
+                final_score=adjusted_score,
                 ai_score=None,
                 heuristic_score=heuristic_score,
                 agreement_band="n/a",
@@ -103,9 +115,11 @@ def build_final_score(
                 "heuristic_weight": 1.0,
                 "agreement_delta": None,
                 "agreement_band": None,
-                "final_score": round(heuristic_score * score_multiplier, 4),
+                "final_score": adjusted_score,
                 "final_confidence_level": heuristic_confidence,
                 "score_multiplier": round(score_multiplier, 4),
+                "score_cap": round(float(score_cap), 4) if score_cap is not None else None,
+                "acceptance_decision": acceptance_decision,
             },
         }
 
@@ -121,7 +135,8 @@ def build_final_score(
 
     ai_weight = _clamp(ai_weight, 0.35, 0.85)
     heuristic_weight = round(1.0 - ai_weight, 4)
-    final_score = round(((ai_score * ai_weight) + (heuristic_score * heuristic_weight)) * score_multiplier, 4)
+    blended_score = (ai_score * ai_weight) + (heuristic_score * heuristic_weight)
+    final_score = _apply_quality_adjustments(blended_score, quality_data)
 
     agreement_band = _agreement_band(delta)
     blended_confidence_numeric = (
@@ -158,5 +173,7 @@ def build_final_score(
             "final_score": final_score,
             "final_confidence_level": final_confidence_level,
             "score_multiplier": round(score_multiplier, 4),
+            "score_cap": round(float(score_cap), 4) if score_cap is not None else None,
+            "acceptance_decision": acceptance_decision,
         },
     }

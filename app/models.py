@@ -75,6 +75,10 @@ class Prospect(Base):
     whatsapp_url = Column(String, nullable=True)
     contact_channels_json = Column(JSON, nullable=True)
     contact_quality_score = Column(Float, nullable=True)
+    contact_consistency_status = Column(String, nullable=True)
+    primary_email_confidence = Column(String, nullable=True)
+    primary_phone_confidence = Column(String, nullable=True)
+    primary_contact_source = Column(String, nullable=True)
     company_size_signal = Column(String, nullable=True)
     service_keywords = Column(JSON, nullable=True)
     
@@ -86,6 +90,10 @@ class Prospect(Base):
     inferred_tech_stack = Column(JSON, nullable=True) # ej: ["WordPress", "Shopify", "React"]
     inferred_niche = Column(String, nullable=True)
     generic_attributes = Column(JSON, nullable=True) # Respuestas a las "preguntas genéricas" que varían por rubro
+    entity_type_detected = Column(String, nullable=True)
+    entity_type_confidence = Column(String, nullable=True)
+    entity_type_evidence = Column(JSON, nullable=True)
+    is_target_entity = Column(Boolean, nullable=True)
     
     # Señales detectadas de probabilidad de presupuesto o cierre
     hiring_signals = Column(Boolean, default=False) # ¿Tienen una pestaña "Trabaja con nosotros" / "Careers"?
@@ -127,7 +135,16 @@ class JobProspect(Base):
     quality_status = Column(String, nullable=True)
     quality_flags_json = Column(JSON, nullable=True)
     rejection_reason = Column(String, nullable=True)
+    acceptance_decision = Column(String, nullable=True)
+    contact_consistency_status = Column(String, nullable=True)
+    primary_email_confidence = Column(String, nullable=True)
+    primary_phone_confidence = Column(String, nullable=True)
+    primary_contact_source = Column(String, nullable=True)
     discovery_confidence = Column(String, nullable=True)
+    entity_type_detected = Column(String, nullable=True)
+    entity_type_confidence = Column(String, nullable=True)
+    entity_type_evidence = Column(JSON, nullable=True)
+    is_target_entity = Column(Boolean, nullable=True)
 
     match_score = Column(Float, default=0.0)  # rango esperado: 0.0 a 1.0
     confidence_level = Column(String, nullable=True)  # low, medium, high

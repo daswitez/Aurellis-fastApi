@@ -29,6 +29,22 @@ TESTIMONIAL_KEYWORDS = ["testimonios", "testimonial", "testimonials", "case stud
 PORTFOLIO_KEYWORDS = ["portfolio", "portafolio", "proyectos", "work", "casos", "portfolio"]
 BOOKING_KEYWORDS = ["reserva", "reservas", "book", "booking", "agenda", "cita", "appointment", "schedule"]
 PAIN_POINT_BOOKING_HINTS = ["reserva", "reservas", "booking", "agenda", "cita", "appointment"]
+BUSINESS_SCHEMA_TYPES = {
+    "accountingservice",
+    "attorney",
+    "beautysalon",
+    "dentalclinic",
+    "dentist",
+    "employmentagency",
+    "financialservice",
+    "localbusiness",
+    "medicalbusiness",
+    "medicalclinic",
+    "organization",
+    "professionalservice",
+    "realestateagent",
+    "store",
+}
 
 
 def _normalize_text(value: str) -> str:
@@ -280,6 +296,80 @@ def _score_digital_maturity(
     )
 
 
+def _score_business_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    points = 0
+    evidence: list[str] = []
+    internal_links = metadata.get("internal_links", [])
+    has_email = bool(metadata.get("emails"))
+    has_phone = bool(metadata.get("phones"))
+    has_form = bool(metadata.get("form_detected"))
+    has_address = bool(metadata.get("addresses") or metadata.get("map_links"))
+    has_service_page = any("service" in link.lower() or "servicio" in link.lower() for link in internal_links)
+    has_about_page = any(
+        any(keyword in link.lower() for keyword in ["about", "nosotros", "equipo"])
+        for link in internal_links
+    )
+    has_contact_page = any("contact" in link.lower() or "contacto" in link.lower() for link in internal_links)
+    has_pricing_or_booking = any(
+        any(keyword in link.lower() for keyword in ["pricing", "precio", "precios", "book", "booking", "reserv", "agenda"])
+        for link in internal_links
+    ) or bool(metadata.get("booking_url") or metadata.get("pricing_page_url"))
+
+    structured_business_types: set[str] = set()
+    for node in metadata.get("structured_data", []):
+        if not isinstance(node, dict):
+            continue
+        node_type = node.get("@type")
+        values = node_type if isinstance(node_type, list) else [node_type]
+        for value in values:
+            if not value:
+                continue
+            normalized = _normalize_text(str(value)).strip().replace(" ", "")
+            if normalized in BUSINESS_SCHEMA_TYPES:
+                structured_business_types.add(normalized)
+
+    if has_email or has_phone:
+        points += 2
+        evidence.append("owned_contact_channel_visible")
+    if has_form and has_contact_page:
+        points += 2
+        evidence.append("contact_flow_visible")
+    elif has_form or has_contact_page:
+        points += 1
+        evidence.append("contact_surface_visible")
+    if has_address:
+        points += 2
+        evidence.append("owned_location_signal_visible")
+    if has_service_page:
+        points += 2
+        evidence.append("service_navigation_visible")
+    if has_about_page:
+        points += 1
+        evidence.append("about_identity_page_visible")
+    if has_pricing_or_booking:
+        points += 1
+        evidence.append("conversion_path_visible")
+    if structured_business_types:
+        points += 2
+        evidence.append("business_structured_data_visible")
+
+    return _component(
+        points / 12,
+        evidence,
+        {
+            "has_email": has_email,
+            "has_phone": has_phone,
+            "has_form": has_form,
+            "has_address": has_address,
+            "has_service_page": has_service_page,
+            "has_about_page": has_about_page,
+            "has_contact_page": has_contact_page,
+            "has_pricing_or_booking": has_pricing_or_booking,
+            "structured_business_types": sorted(structured_business_types),
+        },
+    )
+
+
 def _score_context_fit(
     text_content: str,
     metadata: Dict[str, Any],
@@ -413,6 +503,7 @@ def _derive_revenue_signal(
 
 def _build_fit_summary(score: float, components: Dict[str, Dict[str, Any]]) -> str:
     labels = {
+        "business_identity": "identidad empresarial",
         "contact_availability": "contactabilidad",
         "commercial_intent": "intencion comercial",
         "digital_maturity": "madurez digital",
@@ -495,6 +586,7 @@ def build_heuristic_trace(
     inferred_niche = _infer_niche(clean_text, metadata, context)
 
     components = {
+        "business_identity": _score_business_identity(metadata),
         "contact_availability": _score_contact_availability(metadata),
         "commercial_intent": _score_commercial_intent(
             normalized_text,
@@ -506,11 +598,12 @@ def build_heuristic_trace(
         "stack_fit": _score_stack_fit(context, inferred_tech_stack),
     }
     component_weights = {
-        "contact_availability": 0.25,
-        "commercial_intent": 0.25,
-        "digital_maturity": 0.20,
-        "context_fit": 0.20,
-        "stack_fit": 0.10,
+        "business_identity": 0.30,
+        "contact_availability": 0.22,
+        "commercial_intent": 0.18,
+        "digital_maturity": 0.15,
+        "context_fit": 0.10,
+        "stack_fit": 0.05,
     }
     heuristic_score = round(
         sum(components[name]["normalized_score"] * weight for name, weight in component_weights.items()),

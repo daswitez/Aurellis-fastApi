@@ -1,6 +1,7 @@
 import unittest
 
 from app.scraper.parser import parse_html_basic
+from app.services.entity_classifier import classify_entity_type
 from app.services.prospect_quality import build_ai_evidence_pack, evaluate_prospect_quality
 
 
@@ -57,6 +58,7 @@ class ParserAndQualityTestCase(unittest.TestCase):
             "Agenda tu cita hoy mismo."
         )
         metadata = {
+            "website_url": "https://clinicamadrid.es",
             "title": "Clinica Dental Madrid",
             "description": "Clinica dental en Madrid",
             "html_lang": "es",
@@ -93,10 +95,20 @@ class ParserAndQualityTestCase(unittest.TestCase):
             context={"target_location": "Madrid", "target_language": "es"},
             heuristic_data=heuristic_data,
             discovery_metadata={"query": "clinicas dentales madrid", "title": "Clinica Madrid"},
+            entity_data=classify_entity_type(
+                target_url="https://clinicamadrid.es",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "clinicas dentales madrid", "title": "Clinica Madrid"},
+            ),
         )
 
         self.assertEqual(quality["location_match_status"], "match")
         self.assertEqual(quality["quality_status"], "accepted")
+        self.assertEqual(quality["acceptance_decision"], "accepted_target")
+        self.assertEqual(quality["contact_consistency_status"], "consistent")
+        self.assertEqual(quality["primary_email_confidence"], "high")
+        self.assertEqual(quality["primary_phone_confidence"], "high")
         self.assertEqual(quality["detected_language"], "es")
         self.assertEqual(quality["primary_cta"], "booking")
         self.assertGreaterEqual(quality["contact_quality_score"], 0.6)
@@ -130,6 +142,76 @@ class ParserAndQualityTestCase(unittest.TestCase):
         _, metadata = parse_html_basic(html, "https://example.com")
 
         self.assertEqual(metadata["addresses"], [])
+
+    def test_parser_rejects_phone_like_dates_and_sequences(self) -> None:
+        html = """
+        <html>
+          <body>
+            <p>Fecha de actualizacion: 2026-03-11</p>
+            <p>Telefono falso: 12345678</p>
+            <p>Secuencia: 999999999</p>
+            <a href="tel:+34 911 111 111">Llamanos</a>
+          </body>
+        </html>
+        """
+
+        _, metadata = parse_html_basic(html, "https://clinicamadrid.es")
+
+        self.assertEqual(metadata["phones"], ["+34911111111"])
+
+    def test_quality_flags_external_email_domains_as_inconsistent(self) -> None:
+        clean_text = "Clinica dental con formulario de contacto y CTA para reservar."
+        metadata = {
+            "website_url": "https://clinicamadrid.es",
+            "title": "Clinica Dental Madrid",
+            "description": "Clinica dental en Madrid",
+            "html_lang": "es",
+            "meta_locale": "es_es",
+            "emails": ["ventas@partner-leads.com"],
+            "phones": [],
+            "social_links": [],
+            "internal_links": ["https://clinicamadrid.es/contacto"],
+            "map_links": [],
+            "addresses": [],
+            "form_detected": True,
+            "whatsapp_url": None,
+            "booking_url": None,
+            "pricing_page_url": None,
+            "service_page_url": "https://clinicamadrid.es/servicios",
+            "structured_data": [{"@type": "Dentist"}],
+            "structured_data_evidence": ["json_ld_detected"],
+            "contact_channels": [{"type": "email", "value": "ventas@partner-leads.com", "source": "mailto_link"}],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+        }
+        heuristic_data = {
+            "score": 0.72,
+            "confidence_level": "medium",
+            "inferred_niche": "Dental",
+            "inferred_tech_stack": ["WordPress"],
+            "generic_attributes": {"pain_points_detected": []},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={"target_language": "es"},
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "clinicas dentales madrid", "title": "Clinica Madrid"},
+            entity_data=classify_entity_type(
+                target_url="https://clinicamadrid.es",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "clinicas dentales madrid", "title": "Clinica Madrid"},
+            ),
+        )
+
+        self.assertEqual(quality["contact_consistency_status"], "inconsistent")
+        self.assertIsNone(quality["email"])
+        self.assertEqual(quality["primary_email_confidence"], "low")
+        self.assertEqual(quality["quality_status"], "needs_review")
+        self.assertEqual(quality["rejection_reason"], "contact_inconsistent")
 
     def test_quality_uses_unknown_when_geo_evidence_is_weak(self) -> None:
         clean_text = "Articulo sobre productos digitales y oportunidades de negocio."
@@ -174,10 +256,21 @@ class ParserAndQualityTestCase(unittest.TestCase):
                 "title": "Ideas de negocio para disenadores",
                 "snippet": "Gumroad ofrece un enfoque mas directo para vender productos digitales.",
             },
+            entity_data=classify_entity_type(
+                target_url="https://example.com/blog/ideas-negocio",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={
+                    "query": "disenadores argentina",
+                    "title": "Ideas de negocio para disenadores",
+                    "snippet": "Gumroad ofrece un enfoque mas directo para vender productos digitales.",
+                },
+            ),
         )
 
         self.assertEqual(quality["location_match_status"], "unknown")
         self.assertEqual(quality["quality_status"], "needs_review")
+        self.assertEqual(quality["acceptance_decision"], "rejected_article")
         self.assertIsNone(quality["validated_location"])
 
     def test_quality_uses_tld_phone_and_area_served_as_geo_signals(self) -> None:
@@ -222,6 +315,12 @@ class ParserAndQualityTestCase(unittest.TestCase):
             context={"target_location": "Argentina", "target_language": "es"},
             heuristic_data=heuristic_data,
             discovery_metadata={"query": "clinicas argentina", "title": "Clinica Ejemplo"},
+            entity_data=classify_entity_type(
+                target_url="https://clinicaejemplo.com.ar",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "clinicas argentina", "title": "Clinica Ejemplo"},
+            ),
         )
 
         self.assertEqual(quality["location_match_status"], "match")
@@ -272,6 +371,12 @@ class ParserAndQualityTestCase(unittest.TestCase):
             context={"target_location": "España", "target_language": "es"},
             heuristic_data=heuristic_data,
             discovery_metadata={"query": "clinicas espana", "title": "Clinica Ejemplo"},
+            entity_data=classify_entity_type(
+                target_url="https://clinicaejemplo.com",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "clinicas espana", "title": "Clinica Ejemplo"},
+            ),
         )
 
         self.assertEqual(quality["location_match_status"], "match")
@@ -319,6 +424,12 @@ class ParserAndQualityTestCase(unittest.TestCase):
             context={"target_location": "Bolivia", "target_language": "es"},
             heuristic_data=heuristic_data,
             discovery_metadata={"query": "clinicas bolivia", "title": "Clinica Ejemplo"},
+            entity_data=classify_entity_type(
+                target_url="https://clinicaejemplo.com.bo",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "clinicas bolivia", "title": "Clinica Ejemplo"},
+            ),
         )
 
         self.assertEqual(quality["location_match_status"], "match")

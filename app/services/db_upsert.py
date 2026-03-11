@@ -11,6 +11,15 @@ from app.services.source_metadata import normalize_discovery_method, normalize_s
 
 logger = logging.getLogger(__name__)
 
+
+def _confidence_label_to_score(value: str | None) -> float:
+    mapping = {
+        "low": 0.35,
+        "medium": 0.65,
+        "high": 0.9,
+    }
+    return mapping.get(str(value or "").strip().lower(), 0.5)
+
 def _extract_canonical_prospect_data(prospect_data: Dict[str, Any]) -> Dict[str, Any]:
     prospect_columns = {col.name for col in Prospect.__table__.columns}
     excluded_columns = {"id", "created_at", "job_id"}
@@ -47,7 +56,16 @@ def _extract_job_prospect_data(
         "quality_status": prospect_data.get("quality_status") or "accepted",
         "quality_flags_json": prospect_data.get("quality_flags"),
         "rejection_reason": prospect_data.get("rejection_reason"),
+        "acceptance_decision": prospect_data.get("acceptance_decision"),
+        "contact_consistency_status": prospect_data.get("contact_consistency_status"),
+        "primary_email_confidence": prospect_data.get("primary_email_confidence"),
+        "primary_phone_confidence": prospect_data.get("primary_phone_confidence"),
+        "primary_contact_source": prospect_data.get("primary_contact_source"),
         "discovery_confidence": prospect_data.get("discovery_confidence"),
+        "entity_type_detected": prospect_data.get("entity_type_detected"),
+        "entity_type_confidence": prospect_data.get("entity_type_confidence"),
+        "entity_type_evidence": prospect_data.get("entity_type_evidence"),
+        "is_target_entity": prospect_data.get("is_target_entity"),
         "match_score": prospect_data.get("score", 0.0),
         "confidence_level": prospect_data.get("confidence_level"),
         "fit_summary": prospect_data.get("fit_summary"),
@@ -69,11 +87,20 @@ def _extract_job_prospect_data(
             ],
             "contact_page_url": prospect_data.get("contact_page_url"),
             "form_detected": prospect_data.get("form_detected", False),
+            "contact_consistency_status": prospect_data.get("contact_consistency_status"),
+            "primary_email_confidence": prospect_data.get("primary_email_confidence"),
+            "primary_phone_confidence": prospect_data.get("primary_phone_confidence"),
+            "primary_contact_source": prospect_data.get("primary_contact_source"),
             "geo_evidence": prospect_data.get("geo_evidence"),
             "language_evidence": prospect_data.get("language_evidence"),
             "cta_evidence": prospect_data.get("cta_evidence"),
             "structured_data_evidence": prospect_data.get("structured_data_evidence"),
             "discovery_evidence": prospect_data.get("discovery_evidence"),
+            "acceptance_decision": prospect_data.get("acceptance_decision"),
+            "entity_type_detected": prospect_data.get("entity_type_detected"),
+            "entity_type_confidence": prospect_data.get("entity_type_confidence"),
+            "entity_type_evidence": prospect_data.get("entity_type_evidence"),
+            "is_target_entity": prospect_data.get("is_target_entity"),
             "content_coverage": prospect_data.get("content_coverage"),
             "heuristic_signals": (
                 prospect_data.get("heuristic_trace", {}).get("signals")
@@ -100,8 +127,17 @@ def _extract_job_prospect_data(
             "whatsapp_url": prospect_data.get("whatsapp_url"),
             "contact_channels_json": prospect_data.get("contact_channels_json"),
             "contact_quality_score": prospect_data.get("contact_quality_score"),
+            "contact_consistency_status": prospect_data.get("contact_consistency_status"),
+            "primary_email_confidence": prospect_data.get("primary_email_confidence"),
+            "primary_phone_confidence": prospect_data.get("primary_phone_confidence"),
+            "primary_contact_source": prospect_data.get("primary_contact_source"),
             "company_size_signal": prospect_data.get("company_size_signal"),
             "service_keywords": prospect_data.get("service_keywords"),
+            "acceptance_decision": prospect_data.get("acceptance_decision"),
+            "entity_type_detected": prospect_data.get("entity_type_detected"),
+            "entity_type_confidence": prospect_data.get("entity_type_confidence"),
+            "entity_type_evidence": prospect_data.get("entity_type_evidence"),
+            "is_target_entity": prospect_data.get("is_target_entity"),
             "ai_trace": prospect_data.get("ai_trace"),
             "heuristic_trace": prospect_data.get("heuristic_trace"),
             "scoring_trace": prospect_data.get("scoring_trace"),
@@ -114,6 +150,11 @@ def _extract_job_prospect_data(
 def _build_contact_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> list[Dict[str, Any]]:
     now = datetime.utcnow()
     contacts = []
+    channel_index = {
+        (str(channel.get("type") or "").strip().lower(), str(channel.get("value") or "").strip()): channel
+        for channel in prospect_data.get("contact_channels_json", [])
+        if isinstance(channel, dict)
+    }
     candidates = [
         ("email", prospect_data.get("email"), "primary_email", True),
         ("phone", prospect_data.get("phone"), "primary_phone", True),
@@ -129,6 +170,7 @@ def _build_contact_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> li
     for contact_type, contact_value, label, is_primary in candidates:
         if not contact_value:
             continue
+        channel_data = channel_index.get((contact_type, str(contact_value).strip()), {})
         contacts.append(
             {
                 "prospect_id": prospect.id,
@@ -137,7 +179,7 @@ def _build_contact_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> li
                 "label": label,
                 "is_primary": is_primary,
                 "is_public": True,
-                "confidence": 1.0,
+                "confidence": _confidence_label_to_score(channel_data.get("confidence")),
                 "source_url": prospect_data.get("source_url"),
                 "created_at": now,
                 "updated_at": now,
@@ -289,7 +331,16 @@ async def save_scraped_prospect(
             "quality_status": job_stmt.excluded.quality_status,
             "quality_flags_json": job_stmt.excluded.quality_flags_json,
             "rejection_reason": job_stmt.excluded.rejection_reason,
+            "acceptance_decision": job_stmt.excluded.acceptance_decision,
+            "contact_consistency_status": job_stmt.excluded.contact_consistency_status,
+            "primary_email_confidence": job_stmt.excluded.primary_email_confidence,
+            "primary_phone_confidence": job_stmt.excluded.primary_phone_confidence,
+            "primary_contact_source": job_stmt.excluded.primary_contact_source,
             "discovery_confidence": job_stmt.excluded.discovery_confidence,
+            "entity_type_detected": job_stmt.excluded.entity_type_detected,
+            "entity_type_confidence": job_stmt.excluded.entity_type_confidence,
+            "entity_type_evidence": job_stmt.excluded.entity_type_evidence,
+            "is_target_entity": job_stmt.excluded.is_target_entity,
             "match_score": job_stmt.excluded.match_score,
             "confidence_level": job_stmt.excluded.confidence_level,
             "fit_summary": job_stmt.excluded.fit_summary,

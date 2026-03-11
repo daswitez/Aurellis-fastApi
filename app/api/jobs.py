@@ -247,9 +247,18 @@ async def _get_job_quality_summary(db: AsyncSession, job_id: int) -> JobQualityS
     return _summarize_quality_usage(rows)
 
 
+def _decision_dropoff_reason(rejection_reason: str | None, acceptance_decision: str | None) -> str | None:
+    normalized_decision = (acceptance_decision or "").strip().lower()
+    if normalized_decision.startswith("rejected_"):
+        return normalized_decision
+    if isinstance(rejection_reason, str) and rejection_reason:
+        return rejection_reason
+    return None
+
+
 def _summarize_capture_usage(
     *,
-    rows: list[tuple[str | None, str | None]],
+    rows: list[tuple[str | None, str | None, str | None]],
     total_processed: int,
     total_found: int,
     total_failed: int,
@@ -258,17 +267,20 @@ def _summarize_capture_usage(
     max_candidates_to_process: int,
     stopped_reason: str | None,
 ) -> JobCaptureSummary:
-    quality_summary = _summarize_quality_usage(rows)
+    quality_summary = _summarize_quality_usage([(quality_status, rejection_reason) for quality_status, rejection_reason, _ in rows])
     dropoff: dict[str, int] = {}
-    for _, rejection_reason in rows:
-        if isinstance(rejection_reason, str) and rejection_reason:
-            dropoff[rejection_reason] = dropoff.get(rejection_reason, 0) + 1
+    accepted_count = 0
+    for quality_status, rejection_reason, acceptance_decision in rows:
+        if acceptance_decision == "accepted_target":
+            accepted_count += 1
+        reason = _decision_dropoff_reason(rejection_reason, acceptance_decision)
+        if reason:
+            dropoff[reason] = dropoff.get(reason, 0) + 1
     if total_failed:
         dropoff["processing_failed"] = int(total_failed)
     if total_skipped:
         dropoff["processing_skipped"] = int(total_skipped)
 
-    accepted_count = quality_summary.accepted
     return JobCaptureSummary(
         target_accepted_results=target_accepted_results,
         max_candidates_to_process=max_candidates_to_process,
@@ -285,7 +297,7 @@ def _summarize_capture_usage(
 
 async def _get_job_capture_summary(db: AsyncSession, job: ScrapingJob) -> JobCaptureSummary:
     result = await db.execute(
-        select(JobProspect.quality_status, JobProspect.rejection_reason)
+        select(JobProspect.quality_status, JobProspect.rejection_reason, JobProspect.acceptance_decision)
         .where(JobProspect.job_id == job.id)
     )
     rows = list(result.all())
@@ -776,6 +788,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                         "evaluation_method": ai_trace.get("evaluation_method"),
                                         "fallback_reason": fallback_reason,
                                         "quality_status": prospect_dict.get("quality_status"),
+                                        "acceptance_decision": prospect_dict.get("acceptance_decision"),
                                     },
                                 )
                             elif ai_trace.get("selected_method") == "heuristic":
@@ -833,7 +846,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         saved_prospect = await save_scraped_prospect(db, prospect_dict, job_context)
                         if saved_prospect:
                             job.total_saved += 1
-                            if prospect_dict.get("quality_status") == "accepted":
+                            if prospect_dict.get("acceptance_decision") == "accepted_target":
                                 accepted_results += 1
                             await _append_job_log(
                                 db,
@@ -846,6 +859,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                     "domain": saved_prospect.domain,
                                     "rank_position": rank_position,
                                     "quality_status": prospect_dict.get("quality_status"),
+                                    "acceptance_decision": prospect_dict.get("acceptance_decision"),
                                     "rejection_reason": prospect_dict.get("rejection_reason"),
                                     "accepted_results_so_far": accepted_results,
                                 },
@@ -1279,13 +1293,26 @@ async def get_job_results(
             rank_position=job_prospect.rank_position,
             quality_status=job_prospect.quality_status,
             rejection_reason=job_prospect.rejection_reason,
+            acceptance_decision=job_prospect.acceptance_decision,
             email=prospect.email,
             phone=prospect.phone,
+            contact_consistency_status=job_prospect.contact_consistency_status or prospect.contact_consistency_status,
+            primary_email_confidence=job_prospect.primary_email_confidence or prospect.primary_email_confidence,
+            primary_phone_confidence=job_prospect.primary_phone_confidence or prospect.primary_phone_confidence,
+            primary_contact_source=job_prospect.primary_contact_source or prospect.primary_contact_source,
             linkedin_url=prospect.linkedin_url,
             instagram_url=prospect.instagram_url,
             facebook_url=prospect.facebook_url,
             score=job_prospect.match_score if job_prospect.match_score is not None else prospect.score,
             confidence_level=job_prospect.confidence_level or prospect.confidence_level,
+            entity_type_detected=job_prospect.entity_type_detected or prospect.entity_type_detected,
+            entity_type_confidence=job_prospect.entity_type_confidence or prospect.entity_type_confidence,
+            entity_type_evidence=job_prospect.entity_type_evidence or prospect.entity_type_evidence,
+            is_target_entity=(
+                job_prospect.is_target_entity
+                if job_prospect.is_target_entity is not None
+                else prospect.is_target_entity
+            ),
             inferred_niche=prospect.inferred_niche,
             inferred_tech_stack=prospect.inferred_tech_stack,
             generic_attributes=prospect.generic_attributes,
