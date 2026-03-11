@@ -1,154 +1,400 @@
-# Mapa de Módulos y Cambios Recientes
+# Mapa de Módulos y Lógica Actual
 
-Este documento aterriza, módulo por módulo, qué cambió en el refinamiento reciente del pipeline de scraping, calidad de datos y ahorro de tokens.
+Este documento explica qué hace cada módulo importante del proyecto, qué lógica concentra y cómo se conecta con el resto del pipeline.
 
-Sirve como complemento de:
+Complementa:
 
-- [03-arquitectura-tecnica.md](03-arquitectura-tecnica.md) para entender las capas;
-- [05-api-y-reglas.md](05-api-y-reglas.md) para el contrato visible;
-- [09-cambios-implementados-hasta-fase-b.md](09-cambios-implementados-hasta-fase-b.md) para el resumen ejecutivo del rollout.
+- [03-arquitectura-tecnica.md](03-arquitectura-tecnica.md)
+- [05-api-y-reglas.md](05-api-y-reglas.md)
+- [13-estado-actual-foda-y-pendientes.md](13-estado-actual-foda-y-pendientes.md)
 
-## 1. API y Contratos
+---
+
+## 1. Vista rápida del pipeline
+
+El flujo actual es:
+
+1. `POST /api/v1/jobs/scrape` recibe intención de búsqueda.
+2. `app/services/discovery.py` normaliza objetivo, ratio y batches de queries.
+3. `app/scraper/search_engines/ddg_search.py` ejecuta discovery, filtra ruido y pre-rankea resultados.
+4. `app/api/jobs.py` crea el job y lanza el worker.
+5. `app/scraper/engine.py` scrapea homepage y páginas clave del dominio.
+6. `app/scraper/parser.py` extrae metadata estructurada y señales visibles.
+7. `app/services/prospect_quality.py` decide `accepted`, `needs_review` o `rejected`.
+8. `app/services/heuristic_extractor.py` construye baseline comercial.
+9. `app/services/ai_extractor.py` enriquece solo si el gate lo permite.
+10. `app/services/scoring.py` combina heurística, IA y calidad.
+11. `app/services/db_upsert.py` persiste en `prospects`, `job_prospects`, contactos y páginas.
+12. `GET /jobs/...` expone estado, resultados, logs y métricas operativas.
+
+---
+
+## 2. API y orquestación
+
+### `app/main.py`
+
+Responsabilidad:
+
+- arrancar FastAPI;
+- registrar routers;
+- exponer `/health`.
+
+Lógica:
+
+- no contiene reglas de scraping;
+- sirve como punto de entrada y smoke check mínimo.
 
 ### `app/api/jobs.py`
-- centraliza la creación del `job_context`;
-- normaliza discovery y arma queries canónicas;
-- conserva metadata SERP del hallazgo;
-- coordina el worker de scraping;
-- agrega métricas de IA y trazas por job;
-- filtra `GET /jobs/{id}/results` para devolver solo prospectos `accepted`.
+
+Responsabilidad:
+
+- exponer el contrato HTTP principal;
+- crear jobs;
+- coordinar discovery inicial;
+- ejecutar el worker de scraping en background;
+- resumir métricas y observabilidad;
+- servir resultados, logs y KPIs operativos.
+
+Lógica importante:
+
+- resuelve la semántica nueva de captura con `target_accepted_results` y `max_candidates_to_process`;
+- arranca el worker con `job_context` explícito, sin defaults comerciales silenciosos;
+- procesa candidatos por tandas;
+- reabre discovery si faltan aceptados y todavía hay presupuesto;
+- consolida `ai_summary`, `quality_summary`, `capture_summary` y `operational_summary`;
+- expone `GET /jobs/metrics/operational` para seguimiento agregado.
+
+Qué cambio reciente consolidó:
+
+- filtro `quality` robusto en `/results`;
+- resumen de captura y métricas operativas;
+- reapertura incremental de discovery;
+- trazabilidad de exclusiones tempranas y batches procesados.
 
 ### `app/api/schemas.py`
-- amplía `ProspectOut` con campos públicos de calidad y accionabilidad:
-  - `validated_location`
-  - `location_match_status`
-  - `location_confidence`
-  - `detected_language`
-  - `language_match_status`
-  - `primary_cta`
-  - `booking_url`
-  - `pricing_page_url`
-- tipa resúmenes y métricas nuevas del job.
 
-## 2. Persistencia
+Responsabilidad:
+
+- definir el contrato de entrada y salida;
+- tipar los resúmenes operativos del job;
+- estabilizar el contrato visible hacia consumidores.
+
+Lógica importante:
+
+- `JobCreateRequest` modela el job desde intención comercial, nicho y objetivos de captura;
+- `ProspectOut` expone el resultado visible por job;
+- `JobCaptureSummary` y `JobOperationalSummary` explican por qué un job terminó con o sin aceptados;
+- `JobsOperationalMetricsResponse` resume recall y precisión en agregado.
+
+---
+
+## 3. Persistencia y modelo de datos
 
 ### `app/models.py`
-- agrega columnas nuevas en `prospects` para ubicación validada, idioma detectado, CTA, booking, pricing, canales de contacto y señales ICP;
-- agrega columnas en `job_prospects` para `quality_status`, `quality_flags_json`, `rejection_reason` y `discovery_confidence`;
-- deja el modelo preparado para distinguir entre dato visible del prospecto y calidad interna del hallazgo.
+
+Responsabilidad:
+
+- definir el esquema SQLAlchemy del runtime.
+
+Lógica estructural:
+
+- `ScrapingJob` representa la corrida;
+- `Prospect` representa la entidad canónica por dominio;
+- `JobProspect` representa la participación de un prospecto dentro de un job;
+- `ProspectContact` separa canales de contacto detectados;
+- `ProspectPage` conserva páginas visitadas o inferidas;
+- `ScrapingLog` guarda trazabilidad operativa.
+
+Por qué importa:
+
+- evita sobrescribir el historial cuando un mismo dominio aparece en múltiples jobs;
+- permite que el contrato visible salga por job sin perder entidad canónica.
 
 ### `app/services/db_upsert.py`
-- persiste evidencia estructurada y resultados enriquecidos sin duplicar por dominio;
-- guarda `quality_status`, `rejection_reason`, `quality_flags_json` y metadata de discovery;
-- conserva `contact_channels_json`, `contact_quality_score`, `service_keywords`, `heuristic_trace`, `ai_trace` y `scoring_trace`.
 
-### `migrations/versions/1f9e6b5c2a10_refine_scraping_quality_and_results.py`
-- crea el cambio de esquema para los campos nuevos;
-- backfillea `quality_status='accepted'` para registros previos donde aplica;
-- deja lista la base para exponer los resultados refinados sin romper compatibilidad.
+Responsabilidad:
 
-## 3. Discovery y Búsqueda
+- persistir prospectos y resultados sin duplicación accidental.
+
+Lógica importante:
+
+- separa dato canónico de dato contextual del job;
+- hace `upsert` por dominio en `Prospect`;
+- guarda `quality_status`, `rejection_reason`, evidence packs, AI trace y scoring trace en `JobProspect`;
+- persiste contactos y páginas deduplicadas.
+
+Qué habilita:
+
+- reusar un prospecto en varios jobs;
+- mantener trazabilidad de la decisión de calidad por corrida;
+- dejar base lista para CRM o historial analítico.
+
+---
+
+## 4. Discovery y búsqueda
 
 ### `app/services/discovery.py`
-- normaliza `search_query`, `target_location` y `target_language`;
-- sintetiza consultas cuando el usuario no manda un query explícito;
-- construye hasta 3 queries canónicas;
-- mantiene consistencia entre intención del usuario y consultas ejecutadas contra DDG.
+
+Responsabilidad:
+
+- construir la estrategia de discovery antes de tocar DDG.
+
+Lógica importante:
+
+- normaliza `search_query`, nicho, ubicación e idioma;
+- genera familias de queries;
+- aplica negativas para bajar ruido editorial;
+- define el ratio objetivo/candidatos;
+- define tamaño de batches de candidatos;
+- construye batches de queries canónicas y de reintento.
+
+Qué resolvió:
+
+- `H-001` / `H-002`: semántica correcta de captura;
+- `H-003` / `H-004`: query expansion y negativas;
+- `H-013` / `H-014` / `H-015`: batches, reapertura y ratio operativo.
 
 ### `app/scraper/search_engines/ddg_search.py`
-- transforma DDG en una capa de discovery menos ruidosa;
-- devuelve `query`, `position`, `title`, `snippet` y `discovery_confidence`;
-- endurece exclusiones de agregadores, directorios y redes;
-- permite usar el snippet como evidencia temprana para validación geo.
 
-## 4. Parsing y Crawl
+Responsabilidad:
+
+- ejecutar discovery real sobre DuckDuckGo HTML.
+
+Lógica importante:
+
+- parsea resultados SERP;
+- bloquea dominios claramente inútiles;
+- puntúa `business_likeness`;
+- excluye artículos y resultados demasiado informativos;
+- conserva metadata útil del hallazgo;
+- puede usar directorios como seed para resolver el sitio oficial.
+
+Señales que usa:
+
+- `title`;
+- `snippet`;
+- `path`;
+- profundidad de URL;
+- hints de contacto, servicios y “sitio oficial”;
+- patrones editoriales;
+- directorios conocidos.
+
+Por qué es crítico:
+
+- es la frontera entre “recall útil” y “ruido caro”.
+
+---
+
+## 5. Scraping, parsing y crawl
+
+### `app/scraper/http_client.py`
+
+Responsabilidad:
+
+- descargar HTML con control básico de retries y headers.
+
+Lógica importante:
+
+- rota user agents;
+- clasifica errores HTTP/red;
+- soporta verificación TLS configurable;
+- no pretende resolver anti-bot avanzado todavía.
 
 ### `app/scraper/parser.py`
-- amplía el parsing determinístico más allá del texto plano;
-- extrae `html lang`, `meta locale`, JSON-LD, direcciones, mapas, horarios, WhatsApp, booking, pricing, servicios y CTAs;
-- consolida `structured_data_evidence`, `cta_evidence`, `language_evidence` y `geo_evidence`;
-- prepara un output más compacto y accionable para heurística, scoring e IA.
+
+Responsabilidad:
+
+- convertir HTML en texto limpio y metadata estructurada.
+
+Lógica importante:
+
+- extrae `title`, `description`, idioma y locale;
+- parsea JSON-LD;
+- detecta direcciones, teléfonos, emails y mapas;
+- detecta CTA principal, booking, pricing, servicios y páginas internas;
+- consolida canales de contacto visibles y estructurados.
+
+Resultado:
+
+- un `clean_text` útil para heurística/IA;
+- un `metadata` rico para quality gate y scoring.
 
 ### `app/scraper/engine.py`
-- orquesta el crawl de homepage y hasta 5 páginas internas prioritarias;
-- aplica early stop cuando ya se cubrió contacto, ubicación y CTA;
-- ejecuta parser, baseline heurístico, quality gate, IA opcional y score final;
-- construye el prospecto persistible con trazas completas (`heuristic_trace`, `ai_trace`, `scoring_trace`);
-- evita llamar IA si el lead ya fue rechazado o si el baseline resolvió con suficiente confianza.
 
-## 5. Calidad, Heurística y Scoring
+Responsabilidad:
+
+- orquestar el scrape completo de un dominio.
+
+Lógica importante:
+
+- scrapea homepage;
+- selecciona páginas clave internas;
+- hace crawl limitado con early stop;
+- fusiona metadata de páginas relevantes;
+- corre baseline heurístico;
+- corre quality gate;
+- decide si llamar o no a IA;
+- construye el payload final persistible.
+
+Por qué importa:
+
+- es el punto donde discovery se convierte en prospecto evaluado.
+
+---
+
+## 6. Calidad, heurística y scoring
 
 ### `app/services/prospect_quality.py`
-- valida ubicación, idioma, contacto y señales mínimas del sitio;
-- clasifica el lead como `accepted`, `needs_review` o `rejected`;
+
+Responsabilidad:
+
+- validar si el candidato tiene valor visible y si coincide con el target.
+
+Lógica importante:
+
+- detecta idioma principal;
+- construye evidencia geográfica desde `address`, `areaServed`, `PostalAddress`, TLD, prefijos telefónicos, mapa, title y snippet;
+- calcula calidad de contacto;
+- clasifica `accepted`, `needs_review` o `rejected`;
 - define `rejection_reason`, `quality_flags` y `score_multiplier`;
-- arma el `evidence pack` compacto para IA;
-- implementa el `heuristic gate` que reduce gasto de tokens.
+- arma el `evidence pack` compacto para IA.
+
+Qué resolvió:
+
+- geo strict usable sin depender solo de coincidencia textual;
+- rechazo temprano de leads pobres;
+- ahorro de tokens cuando el lead no vale la pena.
 
 ### `app/services/heuristic_extractor.py`
-- mantiene el baseline comercial no dependiente de IA;
-- puntúa intención comercial, madurez digital, disponibilidad de contacto y ajuste contextual;
-- ahora no rellena ubicación copiando el target del usuario;
-- entrega señales reutilizables incluso cuando la IA se omite.
+
+Responsabilidad:
+
+- producir una lectura comercial local del sitio sin LLM.
+
+Lógica importante:
+
+- mide intención comercial, presencia de contacto, señales de madurez y contexto del negocio;
+- produce baseline aun cuando IA falle o se omita;
+- entrega trazas y atributos útiles para fallback.
 
 ### `app/services/scoring.py`
-- mezcla score heurístico e IA de forma estable;
-- incorpora `quality_data` para penalizar leads dudosos o fuera de objetivo;
-- deja trazabilidad del peso aplicado por confianza, acuerdo y calidad.
 
-## 6. IA y Optimización de Tokens
+Responsabilidad:
+
+- mezclar resultado heurístico, calidad y enriquecimiento IA.
+
+Lógica importante:
+
+- penaliza leads de baja calidad;
+- pondera distinto según confianza y método usado;
+- deja `scoring_trace` para explicar el score final.
+
+---
+
+## 7. IA y optimización de costo
 
 ### `app/services/ai_extractor.py`
-- valida la salida del proveedor con schema interno;
-- usa payload compacto basado en evidencia, no texto crudo de gran tamaño;
-- mide latencia, tokens y costo estimado;
-- cachea respuestas por firma de contenido y versión de prompt;
-- devuelve motivos explícitos cuando cae a fallback o cuando se decide `skipped`.
 
-## 7. Documentación relacionada
+Responsabilidad:
 
-### `docs/02-funcionalidades-core.md`
-- describe el comportamiento funcional del pipeline actual, incluyendo quality gate, crawl ampliado y enriquecimiento opcional.
+- encapsular la llamada a DeepSeek a través del SDK compatible.
 
-### `docs/03-arquitectura-tecnica.md`
-- documenta capas, flujo y responsabilidades técnicas.
+Lógica importante:
 
-### `docs/04-modelo-datos.md`
-- baja el contrato de datos a entidades y campos persistidos.
+- recibe un `evidence pack` compacto;
+- valida schema de salida;
+- mide tokens, latencia y costo;
+- aplica cache por firma de contenido y versión de prompt;
+- cae a fallback heurístico si la IA falla o responde mal.
 
-### `docs/05-api-y-reglas.md`
-- documenta el contrato consumible por integradores y el filtro de resultados aceptados.
+Qué evita:
 
-### `docs/06-estado-del-sistema.md`
-- resume el estado operativo real del MVP refinado.
-
-### `docs/07-observaciones-y-plan-de-mejora.md`
-- distingue lo ya resuelto de los riesgos o gaps que todavía quedan.
-
-### `docs/09-cambios-implementados-hasta-fase-b.md`
-- resume el rollout completo de estabilización y del refinamiento de scraping/calidad.
+- gastar tokens en leads rechazados;
+- meter texto innecesario en el prompt;
+- aceptar respuestas de IA sin shape controlado.
 
 ### `docs/10-diseno-prompt-deepseek.md`
-- deja explícito el cambio de prompt hacia `evidence pack` compacto y runtime con cache/gating.
 
-## 8. Tests de referencia
+Aunque no es código, funciona como contrato de esa capa.
+
+Describe:
+
+- qué contexto entra al modelo;
+- qué salida se espera;
+- qué decisiones siguen siendo determinísticas y no del LLM.
+
+---
+
+## 8. Observabilidad y pruebas
 
 ### `tests/test_discovery.py`
-- verifica queries canónicas, normalización y exclusiones básicas del discovery.
+
+Qué cubre:
+
+- construcción de queries;
+- ratio objetivo/candidatos;
+- batches de discovery;
+- fixtures SERP offline;
+- exclusión editorial y prioridad comercial;
+- directorios usados como seed.
 
 ### `tests/test_parser_and_quality.py`
-- cubre extracción estructurada de parser y reglas de calidad geo/idioma/contacto.
 
-### `tests/test_ai_extractor.py`
-- valida schema, normalización y cache del extractor IA.
+Qué cubre:
+
+- parser estructurado;
+- `areaServed`, `PostalAddress`, TLD, prefijos y mapas;
+- clasificación geo/idioma/contacto.
 
 ### `tests/test_ai_observability.py`
-- verifica observabilidad, resúmenes IA y skips por reglas de calidad.
 
-## 9. Lectura recomendada
+Qué cubre:
 
-Si necesitas seguir el flujo completo sin leer todo el código:
+- `quality` filter;
+- `capture_summary`;
+- skips y fallbacks IA;
+- métricas de observabilidad del enrich.
 
-1. Lee [05-api-y-reglas.md](05-api-y-reglas.md).
-2. Luego revisa [03-arquitectura-tecnica.md](03-arquitectura-tecnica.md).
-3. Después usa este documento para ubicar el archivo exacto que implementa cada comportamiento.
+### `tests/test_operational_metrics.py`
+
+Qué cubre:
+
+- conteo de exclusiones tempranas;
+- `operational_summary`;
+- agregación de métricas tipo `accepted=0`, candidatos por aceptado y ratio de ruido.
+
+---
+
+## 9. Documentos que explican el sistema desde distintos ángulos
+
+| Documento | Uso |
+|----------|-----|
+| [03-arquitectura-tecnica.md](03-arquitectura-tecnica.md) | visión de capas |
+| [05-api-y-reglas.md](05-api-y-reglas.md) | contrato consumible |
+| [06-estado-del-sistema.md](06-estado-del-sistema.md) | estado operativo resumido |
+| [07-observaciones-y-plan-de-mejora.md](07-observaciones-y-plan-de-mejora.md) | deuda técnica y backlog |
+| [09-cambios-implementados-hasta-fase-b.md](09-cambios-implementados-hasta-fase-b.md) | histórico de cambios ejecutados |
+| [12-plan-refinamiento-captura-y-recall.md](12-plan-refinamiento-captura-y-recall.md) | plan y estado de recall/captura |
+| [13-estado-actual-foda-y-pendientes.md](13-estado-actual-foda-y-pendientes.md) | lectura ejecutiva de fortalezas, debilidades, amenazas y próximos pasos |
+
+---
+
+## 10. Lectura recomendada por perfil
+
+Si eres integrador:
+
+1. [05-api-y-reglas.md](05-api-y-reglas.md)
+2. [06-quickstart.md](06-quickstart.md)
+3. [06-estado-del-sistema.md](06-estado-del-sistema.md)
+
+Si vas a tocar scraping o quality:
+
+1. [03-arquitectura-tecnica.md](03-arquitectura-tecnica.md)
+2. [12-plan-refinamiento-captura-y-recall.md](12-plan-refinamiento-captura-y-recall.md)
+3. este documento
+
+Si vas a planificar siguientes fases:
+
+1. [13-estado-actual-foda-y-pendientes.md](13-estado-actual-foda-y-pendientes.md)
+2. [07-observaciones-y-plan-de-mejora.md](07-observaciones-y-plan-de-mejora.md)
+3. [docs/backlog/plan-detallado-estabilizacion-y-mejora.md](backlog/plan-detallado-estabilizacion-y-mejora.md)

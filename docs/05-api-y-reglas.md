@@ -1,391 +1,397 @@
 # Documentación de Endpoints — Aurellis FastAPI
 
-**Base URL:** `http://localhost:8000`  
-**Docs interactivos (Swagger):** `http://localhost:8000/docs`
+**Base URL local:** `http://localhost:8000`  
+**Swagger:** `http://localhost:8000/docs`
 
 ---
 
-## Cómo Levantar el Servidor
+## 1. Puesta en marcha
 
 ```bash
-# 1. Base de datos (Docker)
 cp .env.example .env
 docker compose up -d postgres
-
-# 2. Entorno y servidor
 source venv/bin/activate
 python3 -m pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
----
+Chequeo rápido:
 
-## Cambios de Endpoints Respecto al MVP Inicial
+```bash
+curl http://localhost:8000/health
+```
 
-Esta documentación ya no describe endpoints “propuestos”, sino el contrato actual del servicio después de las mejoras de estabilización y confiabilidad.
+Respuesta esperada:
 
-Los cambios más importantes fueron:
-
-- `POST /api/v1/jobs/scrape`
-  - dejó de inyectar defaults de negocio silenciosos;
-  - distingue explícitamente resultados reales vs demo/mock;
-  - guarda mejor el origen del job desde su creación.
-- `GET /api/v1/jobs/{job_id}`
-  - pasó de ser un polling mínimo a un endpoint de monitoreo;
-  - ahora expone timestamps, métricas, resumen de calidad y errores recientes.
-- `GET /api/v1/jobs/{job_id}/results`
-  - ahora lee desde `job_prospects`, no desde la vieja asociación simple por `job_id`;
-  - expone trazabilidad de origen por resultado.
-- `GET /api/v1/jobs/{job_id}/logs`
-  - es nuevo;
-  - permite debugging operativo sin consultar Postgres manualmente.
-
-Si querés ver el resumen técnico más amplio de todo lo implementado hasta acá, está en [09-cambios-implementados-hasta-fase-b.md](09-cambios-implementados-hasta-fase-b.md).
+```json
+{
+  "status": "ok",
+  "message": "Scraping service is running"
+}
+```
 
 ---
 
-## Endpoints
+## 2. Flujo real recomendado
 
-### 1. `POST /api/v1/jobs/scrape` — Crear un Job de Scraping
+El flujo normal del servicio es:
 
-Crea un trabajo de prospección. Retorna inmediatamente (`202 Accepted`) y procesa en segundo plano.
+1. Crear un job con `POST /api/v1/jobs/scrape`.
+2. Hacer polling con `GET /api/v1/jobs/{job_id}` hasta que `status` sea `completed` o `failed`.
+3. Pedir los resultados visibles con `GET /api/v1/jobs/{job_id}/results`.
+4. Si hace falta auditar, revisar `GET /api/v1/jobs/{job_id}/logs` y `GET /api/v1/jobs/metrics/operational`.
 
-**Hay dos modos de uso:**
+---
 
-#### Modo A — Búsqueda Automática (recomendado)
-Le das un término de búsqueda y la API busca URLs en DuckDuckGo sola.
+## 3. Ejemplos reales con `curl`
+
+### 3.1. Caso real: Diseñador gráfico buscando negocios con necesidad visual
+
+Ejemplo orientado a un diseñador gráfico que busca clínicas estéticas en Madrid con señales de contacto y posibilidad de mejora visual.
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/jobs/scrape \
   -H "Content-Type: application/json" \
   -d '{
-    "search_query": "Clínicas dentales en Madrid",
+    "search_query": "clinicas esteticas madrid",
+    "user_profession": "Diseñador Gráfico",
+    "user_technologies": ["Adobe Illustrator", "Photoshop", "Figma"],
+    "user_value_proposition": "Ayudo a negocios de salud y belleza a mejorar su identidad visual, creatividades de anuncios y materiales comerciales.",
+    "user_past_successes": ["Rediseñe la identidad visual de una clinica dental y mejoró la conversion de sus campañas"],
+    "user_roi_metrics": ["Mejor CTR en anuncios", "Mayor coherencia visual de marca"],
+    "target_niche": "Clinicas Esteticas",
+    "target_location": "España",
+    "target_language": "es",
+    "target_company_size": "5-25 empleados",
+    "target_pain_points": ["Marca visual inconsistente", "Creatividades pobres", "Landing desactualizada"],
+    "target_budget_signals": ["Anuncios activos", "Reservas online", "Sitio con multiples servicios"],
+    "target_accepted_results": 5,
+    "max_candidates_to_process": 20
+  }'
+```
+
+Respuesta típica:
+
+```json
+{
+  "job_id": 41,
+  "status": "pending",
+  "message": "Trabajo encolado. Objetivo: 5 aceptados; candidatos a procesar: 10.",
+  "source_type": "duckduckgo_search",
+  "created_at": "2026-03-11T19:12:03.120000",
+  "updated_at": "2026-03-11T19:12:03.120000",
+  "total_found": 10,
+  "recent_errors": []
+}
+```
+
+Luego haces polling:
+
+```bash
+curl http://localhost:8000/api/v1/jobs/41
+```
+
+Y cuando termine:
+
+```bash
+curl "http://localhost:8000/api/v1/jobs/41/results?quality=accepted"
+```
+
+Para ver también los casos dudosos:
+
+```bash
+curl "http://localhost:8000/api/v1/jobs/41/results?quality=accepted,needs_review"
+```
+
+### 3.2. Caso real: Diseñador gráfico buscando restaurantes premium
+
+```bash
+curl -X POST http://localhost:8000/api/v1/jobs/scrape \
+  -H "Content-Type: application/json" \
+  -d '{
+    "search_query": "restaurantes gourmet lima",
+    "user_profession": "Diseñador Gráfico",
+    "user_technologies": ["Adobe Illustrator", "InDesign", "Figma"],
+    "user_value_proposition": "Diseño identidad visual, menus, piezas promocionales y contenido grafico para marcas gastronomicas.",
+    "target_niche": "Restaurantes Gourmet",
+    "target_location": "Perú",
+    "target_language": "es",
+    "target_pain_points": ["Marca poco memorable", "Material comercial improvisado"],
+    "target_budget_signals": ["Reservas online", "Varias sedes", "Presencia en redes"],
+    "target_accepted_results": 3
+  }'
+```
+
+### 3.3. Caso real: Diseñador gráfico con URLs semilla
+
+Cuando ya conoces dominios concretos y no quieres depender de discovery:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/jobs/scrape \
+  -H "Content-Type: application/json" \
+  -d '{
+    "urls": [
+      "https://www.clinicabaviera.com/",
+      "https://www.dorsia.es/",
+      "https://www.clinicasdh.com/"
+    ],
+    "user_profession": "Diseñador Gráfico",
+    "user_technologies": ["Photoshop", "Illustrator", "After Effects"],
+    "user_value_proposition": "Ayudo a clinicas con branding, diseno publicitario y creatividades digitales.",
+    "target_niche": "Clinicas",
+    "target_location": "España",
+    "target_language": "es",
+    "target_accepted_results": 2
+  }'
+```
+
+### 3.4. Caso real: Desarrollador web buscando clínicas dentales
+
+```bash
+curl -X POST http://localhost:8000/api/v1/jobs/scrape \
+  -H "Content-Type: application/json" \
+  -d '{
+    "search_query": "clinicas dentales madrid",
     "user_profession": "Desarrollador Web",
-    "user_technologies": ["WordPress", "SEO"],
-    "user_value_proposition": "Ayudo a clínicas a conseguir más pacientes con webs rápidas.",
+    "user_technologies": ["WordPress", "SEO", "Core Web Vitals"],
+    "user_value_proposition": "Ayudo a clinicas a conseguir mas pacientes con sitios web mas rapidos y orientados a conversion.",
     "target_niche": "Salud Dental",
     "target_location": "España",
     "target_language": "es",
     "target_company_size": "5-20 empleados",
-    "target_pain_points": ["Sin web profesional", "Sin reservas online"],
-    "target_budget_signals": ["Anuncios activos en Google"],
-    "max_results": 5
+    "target_pain_points": ["Sitio lento", "Sin reservas online", "Mala conversion"],
+    "target_budget_signals": ["Anuncios activos", "Multiples servicios"],
+    "target_accepted_results": 5,
+    "max_candidates_to_process": 20
   }'
 ```
-
-#### Modo B — URLs Directas ("Semillas")
-Le das los dominios exactos a scrapear.
-
-```bash
-curl -X POST http://localhost:8000/api/v1/jobs/scrape \
-  -H "Content-Type: application/json" \
-  -d '{
-    "urls": ["https://clinicadental.es", "https://smiledentist.es"],
-    "user_profession": "Desarrollador Web",
-    "user_value_proposition": "Ayudo a clínicas a conseguir más pacientes.",
-    "target_niche": "Salud Dental"
-  }'
-```
-
-**Respuesta `202 Accepted`:**
-```json
-{
-  "job_id": 1,
-  "status": "pending",
-  "message": "Trabajo encolado. Procesando 5 dominios encontrados.",
-  "source_type": "duckduckgo_search",
-  "created_at": "2026-03-10T21:10:30",
-  "updated_at": "2026-03-10T21:10:30",
-  "total_found": 5,
-  "recent_errors": []
-}
-```
-
-**Qué cambió en este endpoint:**
-
-- antes el payload podía heredar contexto comercial ficticio por default; ahora solo usa lo que realmente envías;
-- la búsqueda automática ya no “simula éxito” con fallback silencioso;
-- la respuesta ya devuelve parte del contexto operativo inicial del job.
-
-**Errores posibles:**
-
-| Código | Causa |
-|--------|-------|
-| `400` | No enviaste `urls` ni `search_query` |
-| `400` | DuckDuckGo no encontró resultados reales para tu query |
-| `422` | Algún campo tiene el tipo incorrecto (ej: `target_company_size` debe ser string `"15"`, no número) |
-
-**Nota sobre modo demo:** si activas `DEMO_MODE=true`, la búsqueda automática puede devolver URLs mock cuando DDG falla. En ese caso, el job queda etiquetado internamente con `source_type=mock_search`. Con `DEMO_MODE=false`, la API responde `400` y no mezcla resultados falsos con datos reales.
 
 ---
 
-#### Campos del Payload — Referencia Completa
+## 4. Endpoints disponibles
+
+### 4.1. `POST /api/v1/jobs/scrape`
+
+Crea un job y responde `202 Accepted`. El procesamiento ocurre en background.
+
+#### Payload soportado
 
 | Campo | Tipo | Obligatorio | Descripción |
 |-------|------|-------------|-------------|
-| `search_query` | `string` | No* | Término para buscar en DuckDuckGo. Ej: `"Veterinarias en Lima"` |
-| `urls` | `string[]` | No* | Lista de URLs directas a scrapear |
-| `user_profession` | `string` | No | Tu profesión. Ej: `"Desarrollador Web"` |
-| `user_technologies` | `string[]` | No | Tus herramientas. Ej: `["WordPress", "Shopify"]` |
-| `user_value_proposition` | `string` | No | Tu propuesta de valor. DeepSeek la usa para calcular el match score |
-| `user_past_successes` | `string[]` | No | Casos de éxito anteriores |
-| `user_roi_metrics` | `string[]` | No | Métricas de ROI que ofreces |
-| `target_niche` | `string` | No | Nicho objetivo. Ej: `"Salud Dental"` |
-| `target_location` | `string` | No | País/ciudad. Ej: `"España"` |
-| `target_language` | `string` | No | Idioma. Ej: `"es"` |
-| `target_company_size` | `string` | No | Tamaño. Ej: `"5-20 empleados"`, `"Solopreneur"` |
-| `target_pain_points` | `string[]` | No | Problemas que tiene el prospecto ideal |
-| `target_budget_signals` | `string[]` | No | Señales de que tiene presupuesto |
-| `max_results` | `int` | No | Máximo de URLs a procesar. Default: `10` |
+| `search_query` | `string` | No* | Query para discovery orgánico |
+| `urls` | `string[]` | No* | URLs semilla directas |
+| `user_profession` | `string` | No | Perfil del vendedor |
+| `user_technologies` | `string[]` | No | Herramientas o stack |
+| `user_value_proposition` | `string` | No | Propuesta de valor |
+| `user_past_successes` | `string[]` | No | Casos de éxito |
+| `user_roi_metrics` | `string[]` | No | Métricas comerciales |
+| `target_niche` | `string` | No | Nicho objetivo |
+| `target_location` | `string` | No | País o ciudad objetivo |
+| `target_language` | `string` | No | Idioma objetivo |
+| `target_company_size` | `string` | No | Rango de tamaño |
+| `target_pain_points` | `string[]` | No | Problemas del prospecto ideal |
+| `target_budget_signals` | `string[]` | No | Señales de presupuesto |
+| `max_results` | `int` | No | Alias legacy del objetivo |
+| `target_accepted_results` | `int` | No | Meta de prospectos `accepted` |
+| `max_candidates_to_process` | `int` | No | Tope duro de candidatos procesados |
 
-*Debes enviar **al menos uno** de los dos: `search_query` o `urls`.
+\* Debes enviar al menos `search_query` o `urls`.
 
-**Nota de contrato:** Si omites los campos de contexto comercial (`user_*`, `target_*`), la API no inyecta defaults de negocio. Esos campos quedan `null` y el job se procesa con el contexto realmente enviado.
+#### Reglas operativas actuales
 
----
+- Si omites `target_accepted_results`, se usa `max_results`.
+- Si omites `max_candidates_to_process`, el sistema deriva un cap aproximado de `4x` el objetivo, con piso de `5`.
+- El discovery usa batches de queries y reapertura incremental si faltan aceptados.
+- `search_query` no recibe defaults silenciosos de nicho o profesión.
 
-### 2. `GET /api/v1/jobs/{job_id}` — Estado del Job
+#### Errores comunes
 
-Consulta si el job terminó. Úsalo con polling cada 2-3 segundos hasta que `status` sea `"completed"`.
-
-```bash
-curl http://localhost:8000/api/v1/jobs/1
-```
-
-**Estados posibles:**
-
-| `status` | Significado |
-|----------|-------------|
-| `pending` | En cola, aún no arrancó |
-| `running` | Scrapeando activamente |
-| `completed` | Terminó bien — ya podés pedir los resultados |
-| `failed` | Error irrecuperable — revisar `error_message` |
-
-**Respuesta `200 OK`:**
-```json
-{
-  "job_id": 1,
-  "status": "completed",
-  "message": "Completado en 2026-03-10 21:10:50 | Procesadas: 5, guardadas: 4, omitidas: 1, fallidas: 0",
-  "source_type": "duckduckgo_search",
-  "created_at": "2026-03-10T21:10:30",
-  "updated_at": "2026-03-10T21:10:50",
-  "started_at": "2026-03-10T21:10:31",
-  "finished_at": "2026-03-10T21:10:50",
-  "total_found": 5,
-  "total_processed": 5,
-  "total_saved": 4,
-  "total_failed": 0,
-  "total_skipped": 1,
-  "ai_summary": {
-    "attempts": 4,
-    "successes": 3,
-    "fallbacks": 1,
-    "fallback_ratio": 0.25,
-    "total_prompt_tokens": 1820,
-    "total_completion_tokens": 320,
-    "total_tokens": 2140,
-    "total_latency_ms": 8420,
-    "average_latency_ms": 2105.0,
-    "estimated_cost_usd": 0.0003912,
-    "fallback_reasons": {
-      "invalid_schema": 1
-    }
-  },
-  "quality_summary": {
-    "accepted": 3,
-    "needs_review": 1,
-    "rejected": 0,
-    "rejection_reasons": {}
-  },
-  "recent_errors": []
-}
-```
-
-**Qué cambió en este endpoint:**
-
-- antes devolvía esencialmente un string de estado;
-- ahora sirve para monitoreo real del job;
-- incluye métricas operativas, resumen de uso de IA, distribución de calidad y errores recientes resumidos sin ir a `/logs`.
-
-**Nota sobre costo estimado:** `estimated_cost_usd` depende de que el entorno tenga configuradas `DEEPSEEK_INPUT_COST_PER_1M_TOKENS` y `DEEPSEEK_OUTPUT_COST_PER_1M_TOKENS`. Si no están definidas, ese campo puede venir como `null`.
-
-**Respuesta `404`:**
-```json
-{ "detail": "Job no encontrado." }
-```
+| Código | Causa |
+|--------|-------|
+| `400` | No enviaste `search_query` ni `urls` |
+| `400` | Discovery no encontró URLs válidas |
+| `422` | Algún campo no cumple el schema |
 
 ---
 
-### 3. `GET /api/v1/jobs/{job_id}/results` — Resultados del Job
+### 4.2. `GET /api/v1/jobs/{job_id}`
 
-Devuelve la lista paginada de prospectos analizados por DeepSeek y guardados en PostgreSQL.
+Devuelve el estado operativo del job y sus resúmenes.
 
 ```bash
-# Primeros 50 resultados (default)
-curl http://localhost:8000/api/v1/jobs/1/results
-
-# Con paginación
-curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
+curl http://localhost:8000/api/v1/jobs/41
 ```
 
-**Query params:**
+Campos importantes:
+
+- `ai_summary`: uso de IA, fallbacks, tokens y costo estimado.
+- `quality_summary`: distribución `accepted` / `needs_review` / `rejected`.
+- `capture_summary`: objetivo, procesados, acceptance rate y motivos de caída.
+- `operational_summary`: `accepted=0`, candidatos por aceptado y ruido de discovery.
+- `recent_errors`: últimos errores resumidos del job.
+
+Interpretación rápida:
+
+- `status=completed` no significa necesariamente que haya aceptados.
+- Si `results` devuelve `[]`, revisa `quality_summary`, `capture_summary` y `operational_summary`.
+- Si `stopped_reason=discovery_exhausted`, el pipeline agotó queries/candidatos antes de llegar al objetivo.
+
+---
+
+### 4.3. `GET /api/v1/jobs/{job_id}/results`
+
+Devuelve prospectos del job desde `job_prospects`.
+
+```bash
+curl "http://localhost:8000/api/v1/jobs/41/results"
+curl "http://localhost:8000/api/v1/jobs/41/results?limit=10&offset=0"
+curl "http://localhost:8000/api/v1/jobs/41/results?quality=accepted,needs_review"
+curl "http://localhost:8000/api/v1/jobs/41/results?quality=all"
+curl "http://localhost:8000/api/v1/jobs/41/results?quality=rejected"
+```
+
+#### Query params
 
 | Param | Tipo | Default | Descripción |
 |-------|------|---------|-------------|
-| `limit` | `int` | `50` | Máximo de resultados por página |
-| `offset` | `int` | `0` | Desde qué posición paginar |
+| `limit` | `int` | `50` | Tamaño de página |
+| `offset` | `int` | `0` | Desplazamiento |
+| `quality` | `string` | `accepted` | `accepted`, `accepted,needs_review`, `rejected`, `all` |
 
-**Respuesta `200 OK`:**
-```json
-[
-  {
-    "id": 42,
-    "company_name": "Clínica Sonrisas",
-    "domain": "clinica-sonrisas.es",
-    "source_type": "duckduckgo_search",
-    "discovery_method": "search_query",
-    "search_query_snapshot": "Clínicas dentales en Madrid",
-    "rank_position": 1,
-    "email": "contacto@clinica-sonrisas.es",
-    "score": 0.82,
-    "confidence_level": "high",
-    "validated_location": "Madrid",
-    "location_match_status": "match",
-    "location_confidence": "high",
-    "detected_language": "es",
-    "language_match_status": "match",
-    "primary_cta": "booking",
-    "booking_url": "https://clinica-sonrisas.es/reservas",
-    "pricing_page_url": "https://clinica-sonrisas.es/precios",
-    "inferred_niche": "Salud Dental",
-    "inferred_tech_stack": ["WordPress", "Google Analytics"],
-    "has_active_ads": true
-  },
-  {
-    "id": 43,
-    "company_name": null,
-    "domain": "dentistamadrid.com",
-    "source_type": "seed_url",
-    "discovery_method": "seed_url",
-    "search_query_snapshot": null,
-    "rank_position": 2,
-    "email": null,
-    "score": 0.55,
-    "confidence_level": "medium",
-    "validated_location": "Madrid",
-    "location_match_status": "match",
-    "location_confidence": "medium",
-    "detected_language": "es",
-    "language_match_status": "unknown",
-    "primary_cta": "contact_form",
-    "booking_url": null,
-    "pricing_page_url": null,
-    "inferred_niche": "Salud Dental",
-    "inferred_tech_stack": [],
-    "has_active_ads": false
-  }
-]
+#### Regla importante
+
+Si `quality` contiene un valor inválido, el endpoint responde `422`.  
+Ejemplo inválido:
+
+```bash
+curl "http://localhost:8000/api/v1/jobs/41/results?quality=accepted,foo"
 ```
-
-**Qué cambió en este endpoint:**
-
-- ahora los resultados se leen desde la relación contextual `job_prospects`;
-- cada resultado conserva trazabilidad del origen del lead;
-- solo se devuelven prospectos con `quality_status=accepted`;
-- si el array sale vacío, no implica necesariamente fallo del job: revisar `GET /jobs/{id}` y su `quality_summary` para ver cuántos leads quedaron `rejected` o `needs_review`;
-- el payload ahora incluye validación de ubicación/idioma y CTAs accionables (`validated_location`, `location_match_status`, `detected_language`, `primary_cta`, `booking_url`, `pricing_page_url`);
-- deja de depender del último `upsert` sobre el dominio para reconstruir una corrida.
 
 ---
 
-### 4. `GET /api/v1/jobs/{job_id}/logs` — Logs del Job
+### 4.4. `GET /api/v1/jobs/{job_id}/logs`
 
-Devuelve logs persistidos del job para debugging operativo, sin entrar a la base.
+Logs persistidos del job para debugging operativo.
 
 ```bash
-# Todos los logs
-curl "http://localhost:8000/api/v1/jobs/1/logs"
-
-# Solo errores, paginados
-curl "http://localhost:8000/api/v1/jobs/1/logs?level=ERROR&limit=10&offset=0"
+curl "http://localhost:8000/api/v1/jobs/41/logs"
+curl "http://localhost:8000/api/v1/jobs/41/logs?limit=20&offset=0"
+curl "http://localhost:8000/api/v1/jobs/41/logs?level=ERROR"
+curl "http://localhost:8000/api/v1/jobs/41/logs?level=WARNING"
 ```
 
-**Query params:**
+#### Query params
 
 | Param | Tipo | Default | Descripción |
 |-------|------|---------|-------------|
-| `limit` | `int` | `50` | Máximo de logs por página |
-| `offset` | `int` | `0` | Desde qué posición paginar |
-| `level` | `INFO \| WARNING \| ERROR` | `null` | Filtra por nivel de log |
+| `limit` | `int` | `50` | Tamaño de página |
+| `offset` | `int` | `0` | Desplazamiento |
+| `level` | `INFO \| WARNING \| ERROR` | `null` | Filtro opcional por nivel |
 
-**Respuesta `200 OK`:**
-```json
-{
-  "job_id": 1,
-  "total": 3,
-  "limit": 50,
-  "offset": 0,
-  "items": [
-    {
-      "id": 150,
-      "created_at": "2026-03-10T21:10:50",
-      "level": "ERROR",
-      "message": "Fallo procesando URL",
-      "source_name": "worker",
-      "stage": "fetch_html",
-      "error_type": "http_429",
-      "status_code": 429,
-      "retryable": true,
-      "attempts_made": 3,
-      "url": "https://example.com/contact",
-      "rank_position": 2,
-      "error": "HTTP 429 Too Many Requests al visitar https://example.com/contact"
-    }
-  ]
-}
-```
+Qué mirar aquí:
 
-**Qué cambió en este endpoint:**
-
-- este endpoint no existía en el MVP inicial;
-- ahora expone `scraping_logs` por API;
-- sirve para inspección operativa y debugging rápido por job.
+- exclusiones tempranas de discovery;
+- reaperturas incrementales de discovery;
+- fallos HTTP o anti-bot;
+- motivos de rechazo por URL;
+- fallbacks de IA.
 
 ---
 
-## Flujo Completo de Uso (para NestJS)
+### 4.5. `GET /api/v1/jobs/metrics/operational`
 
+KPIs agregados de jobs recientes para auditar recall y precisión operativa.
+
+```bash
+curl "http://localhost:8000/api/v1/jobs/metrics/operational"
+curl "http://localhost:8000/api/v1/jobs/metrics/operational?limit=200"
 ```
-1. POST /scrape          → Recibir { job_id: N }
-2. GET  /jobs/N          → Polling hasta { status: "completed" }
-3. GET  /jobs/N/results  → Descargar prospectos enriquecidos con IA
-4. GET  /jobs/N/logs     → Inspeccionar eventos y fallos si hace falta
-```
+
+#### Query params
+
+| Param | Tipo | Default | Descripción |
+|-------|------|---------|-------------|
+| `limit` | `int` | `100` | Cantidad de jobs recientes a agregar |
+
+#### Qué expone
+
+- `completed_jobs_with_zero_accepted`
+- `completed_jobs_with_zero_accepted_ratio`
+- `average_acceptance_rate`
+- `average_candidates_per_accepted`
+- `average_article_directory_exclusion_ratio`
+- `total_article_exclusions`
+- `total_directory_exclusions`
+
+Esto sirve para validar si el refinamiento está mejorando recall sin degradar precisión.
 
 ---
 
-## Notas Técnicas
+### 4.6. `GET /health`
 
-- **El scraping es asíncrono.** La API nunca bloquea — siempre retorna `202` de inmediato.
-- **`GET /jobs/{id}` enriquecido:** además del estado y mensaje, ahora devuelve timestamps, métricas, `quality_summary` y hasta 3 errores recientes resumidos.
-- **`GET /jobs/{id}/logs`:** expone `scraping_logs` paginados, con filtro por `INFO`, `WARNING` o `ERROR`.
-- **Hay un delay de 2 segundos entre cada URL** para no saturar los sitios objetivo.
-- **Contrato de scoring:** `score` es un `float` entre `0.0` y `1.0`; `confidence_level` es `low`, `medium` o `high`.
-- **Semántica actual del score:** el valor expuesto ya no es "solo IA". Si DeepSeek responde bien, el sistema combina score IA + baseline heurístico usando pesos por confianza y ajuste por nivel de acuerdo; si la IA falla, cae a `heuristic_only`.
-- **Trazabilidad interna del score:** cada prospecto persiste `scoring_trace` con `strategy`, `strategy_version`, pesos, delta de acuerdo y score final, aunque ese detalle no forme parte del payload resumido de `/results`.
-- **Filtro de calidad por defecto:** `GET /jobs/{id}/results` solo lista leads aceptados. Los rechazados o `needs_review` se conservan internamente con `quality_status`, `quality_flags_json` y `rejection_reason`.
-- **Resumen de calidad por job:** `GET /jobs/{id}` devuelve `quality_summary` con conteos de `accepted`, `needs_review`, `rejected` y `rejection_reasons`. Eso permite distinguir entre "job vacío" y "job completado sin leads aceptados".
-- **Ubicación validada:** `location` ya no replica automáticamente `target_location`. La salida visible usa `validated_location` y `location_match_status` según evidencia del sitio, mapas, structured data o snippet de discovery.
-- **Contrato de revenue signal:** `estimated_revenue_signal` usa `low`, `medium` o `high`.
-- **Trazabilidad de origen:** `source_type` distingue `duckduckgo_search`, `mock_search`, `seed_url`, `manual` o `enrichment`. `discovery_method` indica cómo entró ese lead al pipeline.
-- **TLS seguro por defecto:** el scraper valida certificados SSL/TLS por defecto. Solo desactívalo con `HTTP_VERIFY_TLS=false` en debugging controlado.
-- **Errores de red clasificados:** los fallos de scraping distinguen `timeout`, `dns_error`, `tls_error`, `http_403`, `http_429` y `http_5xx` en los logs persistidos del job.
-- **Retries controlados:** el cliente HTTP reintenta solo errores recuperables. Se parametriza con `HTTP_MAX_RETRIES` y `HTTP_BACKOFF_BASE_SECONDS`.
-- **Links internos normalizados:** el parser resuelve rutas relativas con `urljoin` y evita persistir links externos o no navegables como parte del sitio.
-- **Crawling limitado:** además de la homepage, el scraper puede visitar hasta 5 páginas clave del mismo dominio (`contact`, `about`, `services`, `pricing`, `book`, `locations`, `careers`) con early stop cuando ya obtuvo contacto, ubicación y CTA.
-- **Extracción de contacto mejorada:** además de `mailto:` y `tel:`, el parser busca emails visibles en texto, normaliza teléfonos y conserva detección de formularios.
-- **DeepSeek AI** ya no consume HTML crudo completo por defecto; recibe un `evidence pack` compacto con señales estructuradas, snippets y contexto heurístico.
-- **Los resultados por job** se leen desde la relación contextual `job_prospects`, no solo desde el snapshot canónico del prospecto.
-- **Si un sitio devuelve 403 (anti-bot)**, se loggea un warning y se salta — no rompe el job.
-- **Los prospectos se guardan con `ON CONFLICT (domain)`** — nunca se duplican por dominio.
+```bash
+curl http://localhost:8000/health
+```
+
+Útil para probes simples de disponibilidad.
+
+---
+
+## 5. Lectura operativa de respuestas
+
+### 5.1. Cómo distinguir un job sano de un job “vacío”
+
+Un job puede estar técnicamente bien y aun así devolver pocos o ningún `accepted`.
+
+Revisa:
+
+- `quality_summary.accepted`
+- `quality_summary.needs_review`
+- `capture_summary.stopped_reason`
+- `operational_summary.completed_with_zero_accepted`
+- `operational_summary.article_directory_exclusion_ratio`
+
+### 5.2. Cómo interpretar `stopped_reason`
+
+| Valor | Significado |
+|-------|-------------|
+| `target_reached` | Se alcanzó la meta de aceptados |
+| `candidate_cap_reached` | Se consumió el presupuesto máximo de candidatos |
+| `discovery_exhausted` | Se agotaron batches de discovery útiles |
+| `fatal_error` | El worker terminó por un error global |
+
+### 5.3. Qué significa cada estado de calidad
+
+| Estado | Significado |
+|--------|-------------|
+| `accepted` | Lead suficientemente alineado para ser visible por defecto |
+| `needs_review` | Hay valor potencial, pero falta evidencia o hay ambigüedad |
+| `rejected` | El sitio no cumple la calidad mínima o está fuera de objetivo |
+
+---
+
+## 6. Reglas de negocio visibles en la API
+
+- El endpoint de resultados usa `accepted` por defecto.
+- El quality gate puede rechazar por geografía, idioma o contacto pobre.
+- Discovery prioriza sitios oficiales y puede usar directorios como semilla, no como resultado final.
+- El sistema intenta ahorrar IA: no todos los leads pasan por DeepSeek.
+- Los resultados están ligados al job por `job_prospects`, no solo por el prospecto canónico.
+
+---
+
+## 7. Qué sigue pendiente
+
+Pendientes más relevantes fuera del contrato actual:
+
+- seguridad interna tipo `X-Internal-Token` o `Bearer` fijo para producción;
+- workers persistentes fuera de `BackgroundTasks`;
+- cache IA compartido entre procesos;
+- métricas históricas persistidas más allá del agregado “últimos N jobs”;
+- fuentes adicionales además de DDG cuando el mercado lo requiera.
+
+Para backlog vivo:
+
+- [07-observaciones-y-plan-de-mejora.md](07-observaciones-y-plan-de-mejora.md)
+- [12-plan-refinamiento-captura-y-recall.md](12-plan-refinamiento-captura-y-recall.md)
+- [13-estado-actual-foda-y-pendientes.md](13-estado-actual-foda-y-pendientes.md)

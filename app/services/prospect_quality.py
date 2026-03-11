@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from typing import Any
+from urllib.parse import urlparse
 
 
 LANGUAGE_HINTS = {
@@ -41,12 +43,132 @@ STOPWORDS = {
     "clinica",
     "clinic",
 }
+LOCATION_SIGNAL_RULES = {
+    "argentina": {
+        "display_name": "Argentina",
+        "target_aliases": ["argentina"],
+        "country_codes": ["ar"],
+        "match_aliases": ["argentina", "buenos aires"],
+        "tlds": [".ar"],
+        "phone_prefixes": ["+54"],
+    },
+    "espana": {
+        "display_name": "España",
+        "target_aliases": ["espana", "españa", "spain"],
+        "country_codes": ["es"],
+        "match_aliases": ["espana", "españa", "spain", "madrid", "barcelona", "valencia"],
+        "tlds": [".es"],
+        "phone_prefixes": ["+34"],
+    },
+    "mexico": {
+        "display_name": "México",
+        "target_aliases": ["mexico", "méxico"],
+        "country_codes": ["mx"],
+        "match_aliases": ["mexico", "méxico", "cdmx", "ciudad de mexico", "ciudad de méxico"],
+        "tlds": [".mx"],
+        "phone_prefixes": ["+52"],
+    },
+    "peru": {
+        "display_name": "Perú",
+        "target_aliases": ["peru", "perú"],
+        "country_codes": ["pe"],
+        "match_aliases": ["peru", "perú", "lima"],
+        "tlds": [".pe"],
+        "phone_prefixes": ["+51"],
+    },
+    "colombia": {
+        "display_name": "Colombia",
+        "target_aliases": ["colombia"],
+        "country_codes": ["co"],
+        "match_aliases": ["colombia", "bogota", "bogotá"],
+        "tlds": [".co"],
+        "phone_prefixes": ["+57"],
+    },
+    "chile": {
+        "display_name": "Chile",
+        "target_aliases": ["chile"],
+        "country_codes": ["cl"],
+        "match_aliases": ["chile", "santiago"],
+        "tlds": [".cl"],
+        "phone_prefixes": ["+56"],
+    },
+    "uruguay": {
+        "display_name": "Uruguay",
+        "target_aliases": ["uruguay"],
+        "country_codes": ["uy"],
+        "match_aliases": ["uruguay", "montevideo"],
+        "tlds": [".uy"],
+        "phone_prefixes": ["+598"],
+    },
+    "bolivia": {
+        "display_name": "Bolivia",
+        "target_aliases": ["bolivia"],
+        "country_codes": ["bo"],
+        "match_aliases": ["bolivia", "la paz", "santa cruz", "cochabamba"],
+        "tlds": [".bo"],
+        "phone_prefixes": ["+591"],
+    },
+}
+HIGH_CONFIDENCE_GEO_SOURCES = {"address", "map", "phone_prefix", "tld"}
+MEDIUM_CONFIDENCE_GEO_SOURCES = {
+    "area_served",
+    "postal_address_country",
+    "title",
+    "description",
+    "discovery_title",
+    "discovery_snippet",
+}
 
 
 def _normalize_text(value: str | None) -> str:
     normalized = (value or "").strip().lower()
     normalized = re.sub(r"\s+", " ", normalized)
     return f" {normalized} " if normalized else " "
+
+
+def _normalize_geo_token(value: str | None) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    normalized = normalized.encode("ascii", "ignore").decode("ascii").strip().lower()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def _resolve_location_signal_rule(target_location: str | None) -> dict[str, Any] | None:
+    normalized_target = _normalize_geo_token(target_location)
+    if not normalized_target:
+        return None
+
+    for rule in LOCATION_SIGNAL_RULES.values():
+        target_aliases = {
+            _normalize_geo_token(alias)
+            for alias in [*rule.get("target_aliases", []), *rule.get("country_codes", [])]
+        }
+        if normalized_target in target_aliases:
+            return rule
+    return None
+
+
+def _normalize_country_evidence(value: str | None) -> str | None:
+    normalized_value = _normalize_geo_token(value)
+    if not normalized_value:
+        return None
+
+    for canonical_name, rule in LOCATION_SIGNAL_RULES.items():
+        candidates = {
+            canonical_name,
+            *(_normalize_geo_token(alias) for alias in rule.get("target_aliases", [])),
+            *(_normalize_geo_token(code) for code in rule.get("country_codes", [])),
+        }
+        if normalized_value in candidates:
+            return str(rule.get("display_name") or canonical_name)
+    return normalized_value
+
+
+def _rule_match_aliases(rule: dict[str, Any]) -> set[str]:
+    aliases = {
+        _normalize_geo_token(alias)
+        for alias in [*rule.get("match_aliases", []), *rule.get("target_aliases", [])]
+    }
+    return {alias for alias in aliases if alias}
 
 
 def _detect_language(clean_text: str, metadata: dict[str, Any]) -> str | None:
@@ -67,12 +189,45 @@ def _detect_language(clean_text: str, metadata: dict[str, Any]) -> str | None:
     return detected_language if score > 1 else None
 
 
-def _extract_geo_evidence(metadata: dict[str, Any], discovery_metadata: dict[str, Any]) -> list[dict[str, str]]:
+def _extract_geo_evidence(
+    metadata: dict[str, Any],
+    discovery_metadata: dict[str, Any],
+    target_location: str | None,
+) -> list[dict[str, str]]:
     evidence: list[dict[str, str]] = []
     for address in metadata.get("addresses", []):
         evidence.append({"source": "address", "value": address})
     for map_link in metadata.get("map_links", []):
         evidence.append({"source": "map", "value": map_link})
+    for node in metadata.get("structured_data", []):
+        area_served = node.get("areaServed") if isinstance(node, dict) else None
+        if isinstance(area_served, list):
+            for item in area_served:
+                if isinstance(item, dict) and item.get("name"):
+                    evidence.append({"source": "area_served", "value": str(item["name"])})
+                elif isinstance(item, str):
+                    evidence.append({"source": "area_served", "value": item})
+        elif isinstance(area_served, dict) and area_served.get("name"):
+            evidence.append({"source": "area_served", "value": str(area_served["name"])})
+        elif isinstance(area_served, str):
+            evidence.append({"source": "area_served", "value": area_served})
+        if isinstance(node, dict):
+            address = node.get("address")
+            if isinstance(address, dict) and address.get("addressCountry"):
+                normalized_country = _normalize_country_evidence(str(address["addressCountry"]))
+                evidence.append({"source": "postal_address_country", "value": normalized_country or str(address["addressCountry"])})
+    normalized_target = _normalize_geo_token(target_location)
+    signal_rule = _resolve_location_signal_rule(target_location)
+    website_url = str(metadata.get("website_url") or "")
+    hostname = urlparse(website_url).netloc.lower().removeprefix("www.")
+    if signal_rule and hostname:
+        if any(hostname.endswith(tld) for tld in signal_rule["tlds"]):
+            evidence.append({"source": "tld", "value": f"{hostname} {normalized_target}"})
+    if signal_rule:
+        for phone in metadata.get("phones", []):
+            normalized_phone = str(phone or "").strip()
+            if any(normalized_phone.startswith(prefix) for prefix in signal_rule["phone_prefixes"]):
+                evidence.append({"source": "phone_prefix", "value": f"{normalized_phone} {normalized_target}"})
     for field_name in ["title", "description"]:
         field_value = metadata.get(field_name)
         if field_value:
@@ -127,7 +282,7 @@ def _has_strong_geo_evidence(geo_evidence: list[dict[str, str]]) -> bool:
     for evidence in geo_evidence:
         source = evidence.get("source")
         value = str(evidence.get("value") or "")
-        if source in {"address", "map"} and _looks_like_specific_location(value):
+        if source in HIGH_CONFIDENCE_GEO_SOURCES and _looks_like_specific_location(value):
             return True
     return False
 
@@ -141,10 +296,18 @@ def _assess_location(target_location: str | None, geo_evidence: list[dict[str, s
             "geo_evidence": geo_evidence,
         }
 
-    normalized_target = _normalize_text(target_location)
+    normalized_target = _normalize_geo_token(target_location)
+    signal_rule = _resolve_location_signal_rule(target_location)
+    signal_aliases = _rule_match_aliases(signal_rule) if signal_rule else set()
     for evidence in geo_evidence:
-        if normalized_target.strip() and normalized_target in _normalize_text(evidence["value"]):
-            confidence = "high" if evidence["source"] in {"address", "map"} else "medium"
+        normalized_value = _normalize_geo_token(evidence["value"])
+        matches_target = bool(normalized_target) and (
+            normalized_value == normalized_target or f" {normalized_target} " in f" {normalized_value} "
+        )
+        if not matches_target and signal_rule:
+            matches_target = any(f" {alias} " in f" {normalized_value} " for alias in signal_aliases)
+        if matches_target:
+            confidence = "high" if evidence["source"] in HIGH_CONFIDENCE_GEO_SOURCES else "medium"
             return {
                 "validated_location": evidence["value"][:160],
                 "location_match_status": "match",
@@ -154,7 +317,7 @@ def _assess_location(target_location: str | None, geo_evidence: list[dict[str, s
 
     if _has_strong_geo_evidence(geo_evidence):
         for evidence in geo_evidence:
-            if evidence.get("source") in {"address", "map"} and _looks_like_specific_location(str(evidence.get("value") or "")):
+            if evidence.get("source") in HIGH_CONFIDENCE_GEO_SOURCES and _looks_like_specific_location(str(evidence.get("value") or "")):
                 candidate = str(evidence["value"])[:160]
                 break
         else:
@@ -162,7 +325,9 @@ def _assess_location(target_location: str | None, geo_evidence: list[dict[str, s
         return {
             "validated_location": candidate,
             "location_match_status": "mismatch",
-            "location_confidence": "medium",
+            "location_confidence": "high" if any(
+                evidence.get("source") in HIGH_CONFIDENCE_GEO_SOURCES for evidence in geo_evidence
+            ) else "medium",
             "geo_evidence": geo_evidence,
         }
 
@@ -341,7 +506,7 @@ def evaluate_prospect_quality(
 ) -> dict[str, Any]:
     detected_language = _detect_language(clean_text, metadata)
     language_data = _assess_language(context.get("target_language"), detected_language)
-    geo_evidence = _extract_geo_evidence(metadata, discovery_metadata)
+    geo_evidence = _extract_geo_evidence(metadata, discovery_metadata, context.get("target_location"))
     location_data = _assess_location(context.get("target_location"), geo_evidence)
     contact_quality_score, contact_channels = _build_contact_quality(metadata)
     company_size_signal = _infer_company_size_signal(metadata, heuristic_data)

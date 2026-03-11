@@ -234,6 +234,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     key_pages_text, key_pages_metadata, crawled_pages = await _crawl_key_pages(html_metadata)
     combined_text = clean_text if not key_pages_text else f"{clean_text}\n\n{key_pages_text}"
     merged_metadata = _merge_html_metadata(html_metadata, key_pages_metadata)
+    merged_metadata["website_url"] = target_url
     heuristic_baseline = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
 
     discovery_metadata = build_discovery_metadata(

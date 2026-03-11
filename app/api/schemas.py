@@ -7,6 +7,7 @@ JobStatus = Literal["pending", "running", "completed", "failed"]
 RevenueSignal = Literal["low", "medium", "high"]
 ConfidenceLevel = Literal["low", "medium", "high"]
 MatchStatus = Literal["match", "mismatch", "unknown"]
+ProspectQualityStatus = Literal["accepted", "needs_review", "rejected"]
 ResultSourceType = Literal["duckduckgo_search", "mock_search", "seed_url", "manual", "enrichment"]
 DiscoveryMethod = Literal["search_query", "seed_url", "manual", "enrichment"]
 ScrapingLogLevel = Literal["INFO", "WARNING", "ERROR"]
@@ -35,6 +36,8 @@ class JobCreateRequest(BaseModel):
     
     # 4. Meta del Trabajo (Opcional, previene que se desborde al inicio)
     max_results: int = Field(default=10, ge=1, le=100)
+    target_accepted_results: Optional[int] = Field(default=None, ge=1, le=100)
+    max_candidates_to_process: Optional[int] = Field(default=None, ge=1, le=300)
     
     
 class JobLogOut(BaseModel):
@@ -83,6 +86,41 @@ class JobQualitySummary(BaseModel):
     rejection_reasons: Dict[str, int] = Field(default_factory=dict)
 
 
+class JobCaptureSummary(BaseModel):
+    target_accepted_results: int = 0
+    max_candidates_to_process: int = 0
+    accepted_count: int = 0
+    needs_review_count: int = 0
+    rejected_count: int = 0
+    candidates_processed: int = 0
+    candidates_discovered: int = 0
+    acceptance_rate: float = 0.0
+    candidate_dropoff_by_reason: Dict[str, int] = Field(default_factory=dict)
+    stopped_reason: Optional[str] = None
+
+
+class JobOperationalSummary(BaseModel):
+    completed_with_zero_accepted: bool = False
+    candidates_per_accepted: Optional[float] = None
+    article_exclusion_count: int = 0
+    directory_exclusion_count: int = 0
+    article_directory_exclusion_ratio: float = 0.0
+
+
+class JobsOperationalMetricsResponse(BaseModel):
+    total_jobs: int = 0
+    completed_jobs: int = 0
+    completed_jobs_with_zero_accepted: int = 0
+    completed_jobs_with_zero_accepted_ratio: float = 0.0
+    average_acceptance_rate: float = 0.0
+    average_candidates_per_accepted: float = 0.0
+    average_article_directory_exclusion_ratio: float = 0.0
+    total_candidates_processed: int = 0
+    total_accepted: int = 0
+    total_article_exclusions: int = 0
+    total_directory_exclusions: int = 0
+
+
 class JobResponse(BaseModel):
     """Estructura de la respuesta al crear o consultar un Job"""
     job_id: int
@@ -101,6 +139,8 @@ class JobResponse(BaseModel):
     error_message: Optional[str] = None
     ai_summary: Optional[JobAISummary] = None
     quality_summary: Optional[JobQualitySummary] = None
+    capture_summary: Optional[JobCaptureSummary] = None
+    operational_summary: Optional[JobOperationalSummary] = None
     recent_errors: List[JobLogOut] = Field(default_factory=list)
     
 class ProspectOut(BaseModel):
@@ -115,6 +155,8 @@ class ProspectOut(BaseModel):
     discovery_method: Optional[DiscoveryMethod]
     search_query_snapshot: Optional[str]
     rank_position: Optional[int]
+    quality_status: Optional[ProspectQualityStatus]
+    rejection_reason: Optional[str]
 
     # Contacto
     email: Optional[str]

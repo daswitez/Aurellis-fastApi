@@ -3,12 +3,14 @@ import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
+
 if "openai" not in sys.modules:
     openai_stub = types.ModuleType("openai")
     openai_stub.AsyncOpenAI = object
     sys.modules["openai"] = openai_stub
 
-from app.api.jobs import _summarize_ai_usage, _summarize_quality_usage
+from app.api.jobs import _parse_results_quality_filter, _summarize_ai_usage, _summarize_capture_usage, _summarize_quality_usage
 from app.scraper.engine import scrape_single_prospect
 from app.services.ai_extractor import AIExtractionFallbackError
 
@@ -96,6 +98,42 @@ class AISummaryTestCase(unittest.TestCase):
         self.assertEqual(summary.rejection_reasons["geo_mismatch"], 2)
         self.assertEqual(summary.rejection_reasons["geo_unknown"], 1)
         self.assertEqual(summary.rejection_reasons["low_contact_quality"], 1)
+
+    def test_parses_results_quality_filter(self) -> None:
+        self.assertEqual(_parse_results_quality_filter(None), ["accepted"])
+        self.assertEqual(_parse_results_quality_filter("accepted,needs_review"), ["accepted", "needs_review"])
+        self.assertEqual(_parse_results_quality_filter("all"), ["accepted", "needs_review", "rejected"])
+
+    def test_rejects_partially_invalid_results_quality_filter(self) -> None:
+        with self.assertRaises(HTTPException):
+            _parse_results_quality_filter("accepted,foo")
+
+    def test_summarizes_capture_distribution(self) -> None:
+        summary = _summarize_capture_usage(
+            rows=[
+                ("accepted", None),
+                ("needs_review", "geo_unknown"),
+                ("rejected", "geo_mismatch"),
+                ("rejected", "low_contact_quality"),
+            ],
+            total_processed=6,
+            total_found=8,
+            total_failed=1,
+            total_skipped=1,
+            target_accepted_results=3,
+            max_candidates_to_process=12,
+            stopped_reason="candidate_cap_reached",
+        )
+
+        self.assertEqual(summary.accepted_count, 1)
+        self.assertEqual(summary.needs_review_count, 1)
+        self.assertEqual(summary.rejected_count, 2)
+        self.assertEqual(summary.candidates_processed, 6)
+        self.assertEqual(summary.candidates_discovered, 8)
+        self.assertEqual(summary.acceptance_rate, 0.1667)
+        self.assertEqual(summary.candidate_dropoff_by_reason["geo_mismatch"], 1)
+        self.assertEqual(summary.candidate_dropoff_by_reason["processing_failed"], 1)
+        self.assertEqual(summary.candidate_dropoff_by_reason["processing_skipped"], 1)
 
 
 class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):

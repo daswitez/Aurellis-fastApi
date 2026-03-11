@@ -268,6 +268,29 @@ No se mezcla más modo demo con modo real.
 - El parser ya extrae JSON-LD, idioma HTML, direcciones, mapas, WhatsApp, booking, pricing y CTA principal.
 - El sistema ya clasifica cada lead como `accepted`, `needs_review` o `rejected` según evidencia geo/idioma/contacto.
 - Sigue pendiente endurecer mejor la verificación geográfica cuando el sitio no publica dirección clara o usa presencia multi-sede.
+- Sigue pendiente resolver mejor el **recall controlado**: hoy un job puede completarse, procesar candidatos válidos desde el punto de vista técnico y aun así devolver `[]` si no logró ningún `accepted`.
+
+### Gap abierto: captura insuficiente bajo filtros correctos
+
+El problema operativo más importante de esta etapa ya no es el fallback silencioso, sino este:
+
+- la calidad del gate subió;
+- el sistema rechaza mejor los sitios fuera de target;
+- pero discovery y estrategia de parada todavía no buscan lo suficiente para compensar esos rechazos.
+
+Eso genera jobs técnicamente “correctos” pero pobres en captura útil.
+
+La mejora recomendada no es aflojar el filtro geo ni mezclar resultados basura. Es:
+
+1. separar “cantidad deseada de aceptados” de “cantidad máxima de candidatos a intentar”;
+2. ampliar y reranquear discovery para priorizar sitios oficiales y comerciales;
+3. permitir auditar `needs_review` y rechazados por API;
+4. reabrir discovery por tandas cuando no se alcanza el objetivo de captación.
+
+Este trabajo quedó bajado a backlog en:
+
+- `docs/12-plan-refinamiento-captura-y-recall.md`
+- `docs/backlog/plan-detallado-estabilizacion-y-mejora.md` sección `Fase H`
 
 ### Resultado actual
 

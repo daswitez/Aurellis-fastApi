@@ -180,6 +180,152 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertEqual(quality["quality_status"], "needs_review")
         self.assertIsNone(quality["validated_location"])
 
+    def test_quality_uses_tld_phone_and_area_served_as_geo_signals(self) -> None:
+        clean_text = "Clinica con reservas online y contacto por telefono."
+        metadata = {
+            "title": "Clinica Ejemplo",
+            "description": "Clinica dental con area de servicio en Argentina",
+            "html_lang": "es",
+            "meta_locale": "es_ar",
+            "emails": ["hola@clinicaejemplo.com.ar"],
+            "phones": ["+541144445555"],
+            "social_links": [],
+            "internal_links": [],
+            "map_links": [],
+            "addresses": [],
+            "form_detected": True,
+            "whatsapp_url": None,
+            "booking_url": None,
+            "pricing_page_url": None,
+            "service_page_url": None,
+            "structured_data": [
+                {"@type": "Dentist", "areaServed": {"name": "Argentina"}},
+            ],
+            "structured_data_evidence": ["json_ld_detected"],
+            "contact_channels": [{"type": "phone", "value": "+541144445555"}],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+            "website_url": "https://clinicaejemplo.com.ar",
+        }
+        heuristic_data = {
+            "score": 0.63,
+            "confidence_level": "medium",
+            "inferred_niche": "Dental",
+            "inferred_tech_stack": ["WordPress"],
+            "generic_attributes": {"pain_points_detected": []},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={"target_location": "Argentina", "target_language": "es"},
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "clinicas argentina", "title": "Clinica Ejemplo"},
+        )
+
+        self.assertEqual(quality["location_match_status"], "match")
+        self.assertIn(quality["location_confidence"], {"high", "medium"})
+        self.assertTrue(
+            any(item["source"] in {"area_served", "phone_prefix", "tld"} for item in quality["geo_evidence"])
+        )
+
+    def test_quality_uses_postal_address_country_code_as_geo_signal(self) -> None:
+        clean_text = "Clinica con reservas online y formulario de contacto."
+        metadata = {
+            "title": "Clinica Ejemplo",
+            "description": "Clinica dental",
+            "html_lang": "es",
+            "meta_locale": "es_es",
+            "emails": ["hola@clinicaejemplo.es"],
+            "phones": [],
+            "social_links": [],
+            "internal_links": [],
+            "map_links": [],
+            "addresses": [],
+            "form_detected": True,
+            "whatsapp_url": None,
+            "booking_url": None,
+            "pricing_page_url": None,
+            "service_page_url": None,
+            "structured_data": [
+                {"@type": "Dentist", "address": {"addressCountry": "ES"}},
+            ],
+            "structured_data_evidence": ["json_ld_detected"],
+            "contact_channels": [{"type": "email", "value": "hola@clinicaejemplo.es"}],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+            "website_url": "https://clinicaejemplo.com",
+        }
+        heuristic_data = {
+            "score": 0.63,
+            "confidence_level": "medium",
+            "inferred_niche": "Dental",
+            "inferred_tech_stack": ["WordPress"],
+            "generic_attributes": {"pain_points_detected": []},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={"target_location": "España", "target_language": "es"},
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "clinicas espana", "title": "Clinica Ejemplo"},
+        )
+
+        self.assertEqual(quality["location_match_status"], "match")
+        self.assertTrue(
+            any(item["source"] == "postal_address_country" for item in quality["geo_evidence"])
+        )
+
+    def test_quality_uses_tld_and_phone_prefix_for_bolivia_without_title_match(self) -> None:
+        clean_text = "Clinica con reservas online y contacto por telefono."
+        metadata = {
+            "title": "Clinica Ejemplo",
+            "description": "Clinica dental",
+            "html_lang": "es",
+            "meta_locale": "es_bo",
+            "emails": ["hola@clinicaejemplo.com.bo"],
+            "phones": ["+59171234567"],
+            "social_links": [],
+            "internal_links": [],
+            "map_links": [],
+            "addresses": [],
+            "form_detected": True,
+            "whatsapp_url": None,
+            "booking_url": None,
+            "pricing_page_url": None,
+            "service_page_url": None,
+            "structured_data": [],
+            "structured_data_evidence": [],
+            "contact_channels": [{"type": "phone", "value": "+59171234567"}],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+            "website_url": "https://clinicaejemplo.com.bo",
+        }
+        heuristic_data = {
+            "score": 0.63,
+            "confidence_level": "medium",
+            "inferred_niche": "Dental",
+            "inferred_tech_stack": ["WordPress"],
+            "generic_attributes": {"pain_points_detected": []},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={"target_location": "Bolivia", "target_language": "es"},
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "clinicas bolivia", "title": "Clinica Ejemplo"},
+        )
+
+        self.assertEqual(quality["location_match_status"], "match")
+        self.assertTrue(
+            any(item["source"] in {"phone_prefix", "tld"} for item in quality["geo_evidence"])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

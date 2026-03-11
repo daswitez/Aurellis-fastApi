@@ -16,12 +16,16 @@ A continuación, puedes encontrar la información de forma estructurada:
 - [09. Cambios Implementados Hasta Fase B](09-cambios-implementados-hasta-fase-b.md) - Resumen ejecutivo y técnico de la estabilización inicial y de la mejora posterior del scraping/calidad.
 - [10. Diseño del Prompt de DeepSeek](10-diseno-prompt-deepseek.md) - Reglas, versión activa y criterio de calidad del extractor IA.
 - [11. Mapa de Módulos y Cambios Recientes](11-mapa-de-modulos-y-cambios-recientes.md) - Inventario módulo por módulo de los cambios recientes en discovery, parsing, quality gate, IA, persistencia y tests.
+- [12. Plan de Refinamiento de Captura y Recall](12-plan-refinamiento-captura-y-recall.md) - Plan específico para aumentar prospectos útiles, mejorar discovery y evitar jobs vacíos por falta de recall.
+- [13. Estado Actual, FODA y Pendientes](13-estado-actual-foda-y-pendientes.md) - Resumen ejecutivo del estado real del sistema, fortalezas, debilidades, oportunidades, amenazas y próximos pasos.
 
 ## Documentos clave para el estado actual
 - [05. API y Reglas](05-api-y-reglas.md) - Contrato visible para integradores y resultados aceptados por calidad.
 - [06. Estado del Sistema](06-estado-del-sistema.md) - Resumen operativo del pipeline actual.
 - [09. Cambios Implementados](09-cambios-implementados-hasta-fase-b.md) - Qué se cambió realmente en scraping, quality gate, IA y persistencia.
 - [11. Mapa de Módulos](11-mapa-de-modulos-y-cambios-recientes.md) - Dónde vive cada comportamiento en el código actual.
+- [12. Plan de Captura y Recall](12-plan-refinamiento-captura-y-recall.md) - Qué falta para capturar más leads sin bajar calidad.
+- [13. Estado Actual y FODA](13-estado-actual-foda-y-pendientes.md) - Qué está fuerte, qué falta y cuáles son los riesgos y oportunidades actuales.
 
 ## Planeación y Backlog
 - [Plan de Trabajo por Fases](backlog/README.md) - Desglose detallado de todos los pasos, desde el Setup inicial (Fase 1) hasta la Integración Oficial en producción con Supabase y NestJS (Fase 5).

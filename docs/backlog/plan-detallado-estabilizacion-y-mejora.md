@@ -415,7 +415,128 @@ La documentación funcional de esta actualización vive principalmente en:
 
 ---
 
-## 10. Orden sugerido de ejecución
+## 10. Fase H — Captura de prospectos y recall controlado (P1/P2)
+
+**Objetivo:** aumentar la cantidad de prospectos útiles capturados sin degradar la precisión del quality gate ni disparar el costo de IA.
+
+Este bloque responde a un problema operativo ya visible:
+
+- el pipeline puede completar un job técnicamente;
+- puede incluso guardar candidatos;
+- pero `/results` puede devolver `[]` si no hubo leads `accepted`;
+- y `max_results` hoy sigue siendo demasiado cercano a “URLs a intentar” en vez de “leads aceptados a capturar”.
+
+La especificación detallada de esta fase vive en:
+
+- `docs/12-plan-refinamiento-captura-y-recall.md`
+
+### Estado de implementación 2026-03-11
+
+Ya quedó implementado el primer bloque de esta fase:
+
+- nueva semántica de captura en el payload (`target_accepted_results`, `max_candidates_to_process`);
+- compatibilidad legacy con `max_results`;
+- estrategia de parada por objetivo de aceptados o cap de candidatos;
+- expansión sistemática de queries canonizadas para discovery;
+- queries con exclusiones negativas;
+- pre-ranking de business-likeness para priorizar sitios oficiales;
+- persistencia de exclusiones tempranas en logs del job;
+- resolución de sitio oficial desde directorios semilla;
+- heurísticas más fuertes para dominios oficiales y exclusión editorial.
+- filtro `quality` en `/results` para auditoría controlada;
+- `capture_summary` agregado a `GET /jobs/{id}`;
+- geo strict reforzado con `areaServed`, TLD y prefijos telefónicos.
+
+### H.1. Semántica de cantidad pedida
+
+- [x] **H-001 Separar objetivo de aceptados vs tope de candidatos**
+  - Introducir `target_accepted_results` y `max_candidates_to_process`.
+  - Mantener compatibilidad temporal con `max_results`.
+  - **Criterio de cierre:** el usuario puede pedir leads aceptados, no solo “URLs a intentar”.
+
+- [x] **H-002 Cambiar estrategia de parada del worker**
+  - Seguir buscando hasta cumplir objetivo o alcanzar cap duro.
+  - Persistir `stopped_reason`.
+  - **Criterio de cierre:** el job deja de frenarse demasiado pronto.
+
+### H.2. Discovery con mayor recall útil
+
+- [x] **H-003 Expandir queries de discovery**
+  - Query base, geo, comercial, sitio oficial, contacto/CTA y variantes léxicas.
+  - **Criterio de cierre:** el job no depende de una sola redacción del query.
+
+- [x] **H-004 Agregar términos negativos y exclusiones explícitas**
+  - Penalizar artículos, medios, directorios y redes desde discovery.
+  - **Criterio de cierre:** baja el ruido entre los primeros candidatos.
+
+- [x] **H-005 Crear ranking previo de business-likeness**
+  - Puntuar `title`, `snippet`, `url`, señales de sitio oficial y señales editoriales.
+  - **Criterio de cierre:** se scrapean primero los candidatos más prometedores.
+
+- [x] **H-006 Guardar razones de exclusión temprana**
+  - Persistir por qué un candidato fue descartado antes del scrape profundo.
+  - **Criterio de cierre:** discovery deja trazabilidad verificable.
+
+### H.3. Mejor selección del dominio oficial
+
+- [x] **H-007 Usar directorios solo como semilla**
+  - Permitirlos para descubrir el sitio oficial, no como prospecto final.
+  - **Criterio de cierre:** se gana recall sin contaminar resultados.
+
+- [x] **H-008 Detectar y priorizar dominios oficiales**
+  - Favorecer marca consistente, structured data, contacto propio y páginas institucionales.
+  - **Criterio de cierre:** sube la proporción de negocios reales.
+
+- [x] **H-009 Excluir contenido editorial no prospectable**
+  - Detectar blog posts, listicles, guías, categorías, medios y comparativas.
+  - **Criterio de cierre:** baja la tasa de candidatos imposibles de convertir en lead.
+
+### H.4. Auditabilidad y UX del resultado
+
+- [x] **H-010 Exponer filtro de calidad en `/results`**
+  - Soportar `accepted`, `accepted,needs_review` y `all`.
+  - Mantener `accepted` como default.
+  - **Criterio de cierre:** se puede auditar por API sin entrar a la base.
+
+- [x] **H-011 Persistir y exponer resumen de captura**
+  - `accepted_count`, `needs_review_count`, `rejected_count`, `acceptance_rate`, `candidate_dropoff_by_reason`.
+  - **Criterio de cierre:** un job vacío queda explicado desde `GET /jobs/{id}`.
+
+- [x] **H-012 Afinar geo strict con mejor evidencia previa**
+  - Reforzar decisión geo con snippet, TLD, prefijo telefónico, `areaServed`, mapa y páginas `locations`.
+  - **Criterio de cierre:** se mantienen mismatches reales y baja rechazo por evidencia débil.
+
+### H.5. Procesamiento incremental
+
+- [ ] **H-013 Procesar candidatos por tandas**
+  - Controlar costo y decidir si abrir más queries según aceptación observada.
+  - **Criterio de cierre:** el job puede adaptarse al comportamiento real del mercado.
+
+- [ ] **H-014 Reabrir discovery si faltan aceptados**
+  - Relanzar variantes de query antes de terminar vacío.
+  - **Criterio de cierre:** el pipeline intenta recuperar recall antes de rendirse.
+
+- [ ] **H-015 Definir ratio inicial objetivo/candidatos**
+  - Formalizar heurística inicial de cuántos candidatos probar por lead aceptado deseado.
+  - **Criterio de cierre:** el sistema deja de asumir equivalencia entre candidatos intentados y leads logrados.
+
+### H.6. Testing, métricas y rollout
+
+- [x] **H-016 Crear fixtures SERP y discovery offline**
+  - Casos con artículos, directorios, sitios oficiales y mismatches geo.
+  - **Criterio de cierre:** discovery y ranking previo se pueden validar sin internet.
+
+- [x] **H-017 Medir recall y precision operativa**
+  - KPIs: `accepted=0`, acceptance rate, candidatos por aceptado, proporción de sitios oficiales.
+  - **Criterio de cierre:** el refinamiento se evalúa con métricas, no por intuición.
+
+- [x] **H-018 Hacer rollout por etapas**
+  - Transparencia → nueva semántica → query expansion → tandas adaptativas.
+  - **Criterio de cierre:** el cambio se despliega sin romper el contrato de golpe.
+
+---
+
+## 11. Orden sugerido de ejecución
 
 ### Sprint 1
 
@@ -439,11 +560,18 @@ La documentación funcional de esta actualización vive principalmente en:
 ### Sprint 4
 
 - F-001 a F-004
+- H-010 a H-012
+- H-001 a H-005
+
+### Sprint 5
+
+- H-006 a H-009
+- H-013 a H-018
 - G-001 a G-004
 
 ---
 
-## 11. Definición de cierre del plan
+## 12. Definición de cierre del plan
 
 Se puede considerar que este plan está correctamente ejecutado cuando:
 
@@ -452,5 +580,6 @@ Se puede considerar que este plan está correctamente ejecutado cuando:
 - Un dominio puede participar en múltiples jobs sin corromper historial.
 - Los jobs tienen trazabilidad completa.
 - El pipeline falla de forma explícita y observable.
+- El sistema puede capturar prospectos con mejor recall sin degradar precisión.
 - Existen tests automáticos para los puntos críticos.
 - El sistema puede operar localmente con confianza y tiene camino claro a producción.

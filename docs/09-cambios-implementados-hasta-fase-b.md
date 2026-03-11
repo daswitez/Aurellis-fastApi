@@ -1,7 +1,7 @@
 # Cambios Implementados Hasta Fase B
 
-**Fecha de corte:** 2026-03-10  
-**Alcance:** tareas ejecutadas desde la estabilización base (`Fase A`) hasta confiabilidad del pipeline (`Fase B`).
+**Fecha de corte:** 2026-03-11  
+**Alcance:** tareas ejecutadas desde la estabilización base (`Fase A`) hasta el refinamiento operativo de captura, recall y observabilidad.
 
 ---
 
@@ -304,12 +304,27 @@ Después de la Fase B y del endurecimiento inicial de IA/scoring, el pipeline re
 
 ---
 
-## 8. Siguiente bloque natural
+## 8. Actualización más reciente: Captura, recall y operación
 
-El siguiente frente lógico es **Fase C**:
+Después de ese bloque, el servicio también incorporó:
 
-- `C-001 Revisar el prompt de DeepSeek`
-- `C-002 Validar respuesta de IA con schema`
-- `C-003 Propagar mejor el contexto útil al extractor`
+- semántica explícita entre objetivo de aceptados y cap de candidatos;
+- procesamiento por tandas;
+- reapertura incremental de discovery;
+- ratio inicial objetivo/candidatos;
+- fixtures SERP offline para validar discovery sin internet;
+- `operational_summary` por job;
+- endpoint agregado `GET /jobs/metrics/operational`;
+- documentación de rollout por etapas.
 
-Ese bloque ya no trata de “que funcione” sino de que la calidad del enriquecimiento sea defendible.
+Eso movió el sistema desde “pipeline razonable” a “pipeline operable con auditoría”.
+
+## 9. Siguiente bloque natural
+
+El siguiente frente lógico ya no es solo scraping básico. Los temas con más retorno ahora son:
+
+- endurecimiento de seguridad interna;
+- migración de `BackgroundTasks` a workers persistentes;
+- cache IA compartido entre procesos;
+- estrategia multi-fuente para discovery;
+- analítica histórica más fuerte para ajustar recall por nicho.
