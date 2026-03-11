@@ -8,7 +8,7 @@ if "openai" not in sys.modules:
     openai_stub.AsyncOpenAI = object
     sys.modules["openai"] = openai_stub
 
-from app.api.jobs import _summarize_ai_usage
+from app.api.jobs import _summarize_ai_usage, _summarize_quality_usage
 from app.scraper.engine import scrape_single_prospect
 from app.services.ai_extractor import AIExtractionFallbackError
 
@@ -19,6 +19,7 @@ class AISummaryTestCase(unittest.TestCase):
             [
                 {
                     "ai_trace": {
+                        "status": "success",
                         "selected_method": "ai",
                         "prompt_tokens": 100,
                         "completion_tokens": 20,
@@ -29,6 +30,7 @@ class AISummaryTestCase(unittest.TestCase):
                 },
                 {
                     "ai_trace": {
+                        "status": "fallback",
                         "selected_method": "heuristic",
                         "fallback_reason": "invalid_schema",
                         "prompt_tokens": 80,
@@ -40,6 +42,7 @@ class AISummaryTestCase(unittest.TestCase):
                 },
                 {
                     "ai_trace": {
+                        "status": "fallback",
                         "selected_method": "heuristic",
                         "fallback_reason": "provider_error",
                         "latency_ms": 300,
@@ -47,6 +50,7 @@ class AISummaryTestCase(unittest.TestCase):
                 },
                 {
                     "ai_trace": {
+                        "status": "fallback",
                         "selected_method": "heuristic",
                         "fallback_reason": "invalid_schema",
                         "prompt_tokens": 60,
@@ -57,6 +61,7 @@ class AISummaryTestCase(unittest.TestCase):
                 },
                 None,
                 {"other": "ignored"},
+                {"ai_trace": {"status": "skipped", "selected_method": "heuristic", "fallback_reason": "quality_rejected"}},
             ]
         )
 
@@ -73,17 +78,45 @@ class AISummaryTestCase(unittest.TestCase):
         self.assertEqual(summary.average_latency_ms, 600.0)
         self.assertEqual(summary.estimated_cost_usd, 0.00003)
 
+    def test_summarizes_quality_distribution(self) -> None:
+        summary = _summarize_quality_usage(
+            [
+                ("accepted", None),
+                ("rejected", "geo_mismatch"),
+                ("rejected", "geo_mismatch"),
+                ("needs_review", "geo_unknown"),
+                ("rejected", "low_contact_quality"),
+                (None, None),
+            ]
+        )
+
+        self.assertEqual(summary.accepted, 1)
+        self.assertEqual(summary.needs_review, 1)
+        self.assertEqual(summary.rejected, 3)
+        self.assertEqual(summary.rejection_reasons["geo_mismatch"], 2)
+        self.assertEqual(summary.rejection_reasons["geo_unknown"], 1)
+        self.assertEqual(summary.rejection_reasons["low_contact_quality"], 1)
+
 
 class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_blends_ai_score_with_heuristic_baseline_on_success(self) -> None:
         metadata = {
             "title": "Dental Home",
             "description": "Clinica dental",
-            "emails": [],
+            "emails": ["hola@example.com"],
             "phones": [],
             "social_links": [],
             "internal_links": [],
-            "form_detected": False,
+            "form_detected": True,
+            "contact_channels": [
+                {"type": "contact_form", "value": "https://example.com/contacto"},
+                {"type": "email", "value": "hola@example.com"},
+            ],
+            "addresses": [],
+            "map_links": [],
+            "cta_candidates": [],
+            "structured_data_evidence": [],
+            "structured_data": [],
         }
         heuristic_result = {
             "company_name": "Dental Home",
@@ -144,16 +177,26 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["scoring_trace"]["strategy"], "hybrid")
         self.assertEqual(result["scoring_trace"]["ai_weight"], 0.85)
         self.assertEqual(result["scoring_trace"]["heuristic_weight"], 0.15)
+        self.assertEqual(result["quality_status"], "accepted")
 
     async def test_uses_heuristic_and_attaches_ai_trace_on_fallback(self) -> None:
         metadata = {
             "title": "Dental Home",
             "description": "Clinica dental",
-            "emails": [],
+            "emails": ["hola@example.com"],
             "phones": [],
             "social_links": [],
             "internal_links": [],
-            "form_detected": False,
+            "form_detected": True,
+            "contact_channels": [
+                {"type": "contact_form", "value": "https://example.com/contacto"},
+                {"type": "email", "value": "hola@example.com"},
+            ],
+            "addresses": [],
+            "map_links": [],
+            "cta_candidates": [],
+            "structured_data_evidence": [],
+            "structured_data": [],
         }
         heuristic_result = {
             "company_name": "Dental Home",
@@ -205,6 +248,69 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["ai_trace"]["error_type"], "invalid_response")
         self.assertEqual(result["generic_attributes"]["fallback_reason"], "invalid_schema")
         self.assertEqual(result["generic_attributes"]["ai_error_type"], "invalid_response")
+
+    async def test_skips_ai_for_rejected_geo_mismatch(self) -> None:
+        metadata = {
+            "title": "Clinica Dental Barcelona",
+            "description": "Clinica dental en Barcelona",
+            "emails": [],
+            "phones": [],
+            "social_links": [],
+            "internal_links": [],
+            "form_detected": False,
+            "addresses": ["Carrer Mallorca 1, Barcelona, ES"],
+            "map_links": ["https://google.com/maps?q=Barcelona"],
+            "html_lang": "es",
+            "contact_channels": [],
+            "cta_candidates": [],
+            "structured_data_evidence": [],
+            "structured_data": [],
+        }
+        heuristic_result = {
+            "company_name": "Dental Home",
+            "category": "Clinica",
+            "location": "Barcelona",
+            "description": "Clinica dental",
+            "inferred_tech_stack": ["WordPress"],
+            "inferred_niche": "Dental",
+            "hiring_signals": False,
+            "estimated_revenue_signal": "medium",
+            "has_active_ads": False,
+            "score": 0.7,
+            "confidence_level": "medium",
+            "fit_summary": "Fit heuristico fuerte; destacan stack, contacto.",
+            "heuristic_trace": {"component_scores": {"stack_fit": 0.8}, "signals": {}},
+            "generic_attributes": {
+                "evaluation_method": "Heuristic Code (No LLM)",
+                "pain_points_detected": [],
+            },
+        }
+
+        with patch("app.scraper.engine.fetch_html", new=AsyncMock(return_value="<html></html>")):
+            with patch("app.scraper.engine.parse_html_basic", return_value=("x" * 250, metadata)):
+                with patch(
+                    "app.scraper.engine._crawl_key_pages",
+                    new=AsyncMock(return_value=("", metadata, [])),
+                ):
+                    with patch(
+                        "app.scraper.engine.extract_business_entity_heuristic",
+                        new=AsyncMock(return_value=heuristic_result),
+                    ):
+                        with patch(
+                            "app.scraper.engine.extract_business_entity_ai",
+                            new=AsyncMock(side_effect=AssertionError("AI no deberia ejecutarse")),
+                        ):
+                            result = await scrape_single_prospect(
+                                "https://example.com",
+                                {"job_id": 9, "target_location": "Madrid", "target_language": "es"},
+                            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["quality_status"], "rejected")
+        self.assertEqual(result["rejection_reason"], "geo_mismatch")
+        self.assertEqual(result["ai_trace"]["status"], "skipped")
+        self.assertEqual(result["ai_trace"]["fallback_reason"], "quality_rejected")
 
 
 if __name__ == "__main__":

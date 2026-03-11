@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import JobProspect, Prospect, ScrapingJob, ScrapingLog
-from app.api.schemas import JobAISummary, JobCreateRequest, JobLogOut, JobLogsResponse, JobResponse, ProspectOut, ScrapingLogLevel
+from app.api.schemas import JobAISummary, JobCreateRequest, JobLogOut, JobLogsResponse, JobQualitySummary, JobResponse, ProspectOut, ScrapingLogLevel
 from app.scraper.engine import scrape_single_prospect
 from app.scraper.http_client import FetchHtmlError
-from app.scraper.search_engines.ddg_search import SearchDiscoveryResult, find_prospect_urls_by_query
+from app.scraper.search_engines.ddg_search import SearchDiscoveryEntry, SearchDiscoveryResult, find_prospect_urls_by_queries
+from app.services.discovery import build_discovery_queries
 from app.services.db_upsert import save_scraped_prospect
 from app.services.source_metadata import normalize_discovery_method, normalize_source_type
 
@@ -86,6 +87,7 @@ def _build_job_context(
         "target_pain_points": job.target_pain_points,
         "target_budget_signals": job.target_budget_signals,
         "search_query": search_query,
+        "discovery_queries": [],
         "discovery_method": normalize_discovery_method(discovery_method),
         "source_type": normalize_source_type(source_type),
         "search_warning": search_warning,
@@ -131,6 +133,8 @@ def _summarize_ai_usage(raw_extractions: list[dict | None]) -> JobAISummary:
         ai_trace = raw_extraction.get("ai_trace")
         if not isinstance(ai_trace, dict):
             continue
+        if ai_trace.get("status") == "skipped":
+            continue
 
         attempts += 1
         total_prompt_tokens += int(ai_trace.get("prompt_tokens") or 0)
@@ -170,6 +174,40 @@ async def _get_job_ai_summary(db: AsyncSession, job_id: int) -> JobAISummary:
     )
     raw_extractions = list(result.scalars().all())
     return _summarize_ai_usage(raw_extractions)
+
+
+def _summarize_quality_usage(rows: list[tuple[str | None, str | None]]) -> JobQualitySummary:
+    accepted = 0
+    needs_review = 0
+    rejected = 0
+    rejection_reasons: dict[str, int] = {}
+
+    for quality_status, rejection_reason in rows:
+        if quality_status == "accepted":
+            accepted += 1
+        elif quality_status == "needs_review":
+            needs_review += 1
+        elif quality_status == "rejected":
+            rejected += 1
+
+        if isinstance(rejection_reason, str) and rejection_reason:
+            rejection_reasons[rejection_reason] = rejection_reasons.get(rejection_reason, 0) + 1
+
+    return JobQualitySummary(
+        accepted=accepted,
+        needs_review=needs_review,
+        rejected=rejected,
+        rejection_reasons=rejection_reasons,
+    )
+
+
+async def _get_job_quality_summary(db: AsyncSession, job_id: int) -> JobQualitySummary:
+    result = await db.execute(
+        select(JobProspect.quality_status, JobProspect.rejection_reason)
+        .where(JobProspect.job_id == job_id)
+    )
+    rows = list(result.all())
+    return _summarize_quality_usage(rows)
 
 
 async def _get_recent_job_errors(db: AsyncSession, job_id: int, limit: int = 3) -> list[JobLogOut]:
@@ -232,10 +270,28 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             )
             await db.commit()
             
-            for rank_position, url in enumerate(urls, start=1):
+            for rank_position, entry in enumerate(urls, start=1):
+                if isinstance(entry, SearchDiscoveryEntry):
+                    discovery_entry = {
+                        "url": entry.url,
+                        "query": entry.query,
+                        "position": entry.position or rank_position,
+                        "title": entry.title,
+                        "snippet": entry.snippet,
+                        "discovery_confidence": entry.discovery_confidence,
+                    }
+                elif isinstance(entry, dict):
+                    discovery_entry = dict(entry)
+                else:
+                    discovery_entry = {"url": str(entry)}
+
+                url = str(discovery_entry.get("url"))
                 job.total_processed += 1
                 try:
-                    prospect_dict = await scrape_single_prospect(str(url), job_context)
+                    prospect_dict = await scrape_single_prospect(
+                        url,
+                        {**job_context, "discovery_entry": discovery_entry},
+                    )
 
                     if not prospect_dict:
                         job.total_skipped += 1
@@ -245,7 +301,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                             "WARNING",
                             "URL omitida por falta de contenido scrapeable",
                             source_name="worker",
-                            context_json={"url": str(url), "rank_position": rank_position},
+                            context_json={"url": url, "rank_position": rank_position, "discovery_query": discovery_entry.get("query")},
                         )
                         await db.commit()
                         await asyncio.sleep(2)
@@ -255,16 +311,35 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     prospect_dict["rank_position"] = rank_position
                     ai_trace = prospect_dict.get("ai_trace")
                     if isinstance(ai_trace, dict):
-                        ai_attempts += 1
-                        ai_prompt_tokens += int(ai_trace.get("prompt_tokens") or 0)
-                        ai_completion_tokens += int(ai_trace.get("completion_tokens") or 0)
-                        ai_total_tokens += int(ai_trace.get("total_tokens") or 0)
-                        ai_total_latency_ms += int(ai_trace.get("latency_ms") or 0)
-                        if ai_trace.get("estimated_cost_usd") is not None:
-                            ai_estimated_cost_usd += float(ai_trace.get("estimated_cost_usd") or 0.0)
-                            ai_cost_samples += 1
+                        if ai_trace.get("status") != "skipped":
+                            ai_attempts += 1
+                            ai_prompt_tokens += int(ai_trace.get("prompt_tokens") or 0)
+                            ai_completion_tokens += int(ai_trace.get("completion_tokens") or 0)
+                            ai_total_tokens += int(ai_trace.get("total_tokens") or 0)
+                            ai_total_latency_ms += int(ai_trace.get("latency_ms") or 0)
+                            if ai_trace.get("estimated_cost_usd") is not None:
+                                ai_estimated_cost_usd += float(ai_trace.get("estimated_cost_usd") or 0.0)
+                                ai_cost_samples += 1
                         fallback_reason = ai_trace.get("fallback_reason")
-                        if ai_trace.get("selected_method") == "heuristic":
+                        if ai_trace.get("status") == "skipped":
+                            await _append_job_log(
+                                db,
+                                job_id,
+                                "INFO",
+                                "Enriquecimiento IA omitido por gate de calidad",
+                                source_name="ai_enrichment",
+                                context_json={
+                                    "stage": "ai_enrichment",
+                                    "url": url,
+                                    "domain": prospect_dict.get("domain"),
+                                    "rank_position": rank_position,
+                                    "selected_method": ai_trace.get("selected_method"),
+                                    "evaluation_method": ai_trace.get("evaluation_method"),
+                                    "fallback_reason": fallback_reason,
+                                    "quality_status": prospect_dict.get("quality_status"),
+                                },
+                            )
+                        elif ai_trace.get("selected_method") == "heuristic":
                             ai_fallbacks += 1
                             if isinstance(fallback_reason, str) and fallback_reason:
                                 ai_fallback_reasons[fallback_reason] = ai_fallback_reasons.get(fallback_reason, 0) + 1
@@ -276,7 +351,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 source_name="ai_enrichment",
                                 context_json={
                                     "stage": "ai_enrichment",
-                                    "url": str(url),
+                                    "url": url,
                                     "domain": prospect_dict.get("domain"),
                                     "rank_position": rank_position,
                                     "provider": ai_trace.get("provider"),
@@ -302,7 +377,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 source_name="ai_enrichment",
                                 context_json={
                                     "stage": "ai_enrichment",
-                                    "url": str(url),
+                                    "url": url,
                                     "domain": prospect_dict.get("domain"),
                                     "rank_position": rank_position,
                                     "provider": ai_trace.get("provider"),
@@ -326,9 +401,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                             "Prospecto persistido",
                             source_name="worker",
                             context_json={
-                                "url": str(url),
+                                "url": url,
                                 "domain": saved_prospect.domain,
                                 "rank_position": rank_position,
+                                "quality_status": prospect_dict.get("quality_status"),
+                                "rejection_reason": prospect_dict.get("rejection_reason"),
                             },
                         )
                     else:
@@ -339,14 +416,14 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                             "ERROR",
                             "No se pudo persistir el prospecto",
                             source_name="worker",
-                            context_json={"url": str(url), "rank_position": rank_position},
+                            context_json={"url": url, "rank_position": rank_position},
                         )
                     await db.commit()
                 except Exception as e:
                     job.total_failed += 1
                     logger.error(f"Error procesando prospect {url}: {e}")
                     error_context = {
-                        "url": str(url),
+                        "url": url,
                         "rank_position": rank_position,
                         "error": str(e),
                     }
@@ -428,18 +505,25 @@ async def create_scraping_job(
     """
     
     # 0. Lógica de "Buscador Automático" vs "URLs Directas"
-    final_urls = [str(u) for u in payload.urls] if payload.urls else []
+    final_urls = [SearchDiscoveryEntry(url=str(u), position=index, discovery_confidence="high") for index, u in enumerate(payload.urls or [], start=1)]
     discovery_result = SearchDiscoveryResult(
-        urls=final_urls,
+        entries=final_urls,
         source_type=normalize_source_type("seed_url") or "seed_url",
         discovery_method=normalize_discovery_method("seed_url") or "seed_url",
     )
     
-    if not final_urls and payload.search_query:
+    canonical_queries = build_discovery_queries(
+        search_query=payload.search_query,
+        target_niche=payload.target_niche,
+        target_location=payload.target_location,
+        target_language=payload.target_language,
+    )
+
+    if not final_urls and canonical_queries:
         # Modo Búsqueda: Descubrir URLs asíncronamente antes de guardar el Job
-        logger.info(f"Modo Buscador Activado para: {payload.search_query}")
-        discovery_result = await find_prospect_urls_by_query(payload.search_query, max_results=payload.max_results)
-        final_urls = discovery_result.urls
+        logger.info("Modo Buscador Activado para queries canonicas: %s", canonical_queries)
+        discovery_result = await find_prospect_urls_by_queries(canonical_queries, max_results=payload.max_results)
+        final_urls = discovery_result.entries
         
     if not final_urls:
         raise HTTPException(
@@ -478,9 +562,11 @@ async def create_scraping_job(
         context_json={
             "search_query": payload.search_query,
             "urls_count": len(final_urls),
+            "discovery_queries": discovery_result.queries or canonical_queries,
             "discovery_method": normalize_discovery_method(discovery_result.discovery_method),
             "source_type": normalize_source_type(discovery_result.source_type),
             "warning_message": discovery_result.warning_message,
+            "excluded_results_count": len(discovery_result.excluded_results),
         },
     )
     await db.commit()
@@ -492,12 +578,13 @@ async def create_scraping_job(
         source_type=discovery_result.source_type,
         search_warning=discovery_result.warning_message,
     )
+    job_context["discovery_queries"] = discovery_result.queries or canonical_queries
     
     # Encolar la tarea en FastAPI usando las URLs finales descubiertas
     background_tasks.add_task(
         background_scraping_worker, 
         job_id=new_job.id, 
-        urls=final_urls, 
+        urls=final_urls,
         job_context=job_context,
     )
     
@@ -523,6 +610,7 @@ async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Job no encontrado.")
     recent_errors = await _get_recent_job_errors(db, job_id)
     ai_summary = await _get_job_ai_summary(db, job_id)
+    quality_summary = await _get_job_quality_summary(db, job_id)
         
     return JobResponse(
         job_id=job.id,
@@ -540,6 +628,7 @@ async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
         total_skipped=job.total_skipped,
         error_message=job.error_message,
         ai_summary=ai_summary,
+        quality_summary=quality_summary,
         recent_errors=recent_errors,
     )
     
@@ -553,7 +642,7 @@ async def get_job_results(job_id: int, limit: int = 50, offset: int = 0, db: Asy
     query = (
         select(JobProspect, Prospect)
         .join(Prospect, Prospect.id == JobProspect.prospect_id)
-        .where(JobProspect.job_id == job_id)
+        .where(JobProspect.job_id == job_id, JobProspect.quality_status == "accepted")
         .order_by(JobProspect.rank_position.asc(), JobProspect.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -587,6 +676,14 @@ async def get_job_results(job_id: int, limit: int = 50, offset: int = 0, db: Asy
             hiring_signals=prospect.hiring_signals,
             description=prospect.description,
             location=prospect.location,
+            validated_location=prospect.validated_location,
+            location_match_status=prospect.location_match_status,
+            location_confidence=prospect.location_confidence,
+            detected_language=prospect.detected_language,
+            language_match_status=prospect.language_match_status,
+            primary_cta=prospect.primary_cta,
+            booking_url=prospect.booking_url,
+            pricing_page_url=prospect.pricing_page_url,
             category=prospect.category,
         )
         for job_prospect, prospect in rows

@@ -264,19 +264,21 @@ No se mezcla más modo demo con modo real.
 
 ### Limitaciones adicionales del scraping actual
 
-- Se scrapea esencialmente la página inicial y no una exploración más rica del sitio.
-- Ya existe crawling limitado de páginas clave (`contact`, `about`, `nosotros`, `equipo`, `careers`) sobre el mismo dominio.
-- La normalización de URLs internas ya usa `urljoin`; sigue pendiente ampliar ese crawling sin convertirlo en un crawler profundo.
+- El crawling ya creció a homepage + hasta 5 páginas clave (`contact`, `about`, `services`, `pricing`, `booking`, `locations`, `careers`), pero sigue siendo deliberadamente acotado.
+- El parser ya extrae JSON-LD, idioma HTML, direcciones, mapas, WhatsApp, booking, pricing y CTA principal.
+- El sistema ya clasifica cada lead como `accepted`, `needs_review` o `rejected` según evidencia geo/idioma/contacto.
+- Sigue pendiente endurecer mejor la verificación geográfica cuando el sitio no publica dirección clara o usa presencia multi-sede.
 
 ### Resultado actual
 
 1. Se quitó el fallback silencioso.
 2. Se implementó un modo demo explícito.
-3. Los resultados del job exponen `source_type`, `discovery_method`, `search_query_snapshot` y `rank_position`.
-4. La normalización de links internos ya no concatena URLs manualmente.
-5. El scraper ahora visita homepage + hasta 3 páginas clave para mejorar contacto y señales sin hacer crawling profundo.
-6. La extracción de contacto ya busca emails visibles en texto, normaliza teléfonos y mantiene detección de formularios.
-7. Sigue pendiente ampliar ese crawling sin convertirlo en un crawler profundo.
+3. El discovery ahora puede construir queries canónicas y conserva metadata SERP por hallazgo.
+4. Los resultados del job exponen `source_type`, `discovery_method`, `search_query_snapshot` y `rank_position`.
+5. La normalización de links internos ya no concatena URLs manualmente.
+6. El scraper ahora visita homepage + hasta 5 páginas clave para mejorar contacto, geo, CTA y pricing sin hacer crawling profundo.
+7. La extracción de contacto ya busca emails visibles en texto, normaliza teléfonos y mantiene detección de formularios.
+8. `/results` ya no devuelve por defecto leads rechazados: solo lista los `accepted`.
 
 ---
 
@@ -322,10 +324,19 @@ La integración con DeepSeek es útil para el MVP, pero todavía necesita más e
 
 ### Problemas principales
 
-- El prompt pide un JSON muy estricto, pero mezcla ejemplo de JSON con comentarios semánticos dentro del bloque, algo que conceptualmente no es JSON válido.
-- No hay una validación fuerte de la respuesta más allá del `json.loads`.
-- Parte del contexto de negocio que se captura no siempre llega al prompt final.
-- La caída al modo heurístico es correcta como idea, pero falta medir cuándo, cuánto y por qué se activa.
+Muchos de los problemas originales ya quedaron resueltos:
+
+- el prompt ya no usa pseudo-JSON ambiguo;
+- la salida ya pasa por schema fuerte;
+- el contexto comercial ya se propaga al prompt;
+- ya existe trazabilidad de fallbacks, latencia, costo y score híbrido;
+- la IA ya no se ejecuta ciegamente en todos los leads.
+
+Lo que sigue pendiente es más fino:
+
+- mejorar la calidad del `evidence pack`,
+- robustecer el cache IA entre procesos,
+- y seguir afinando cuándo conviene usar IA vs resolver todo con heurística.
 
 ### Mejora recomendada
 

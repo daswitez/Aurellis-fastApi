@@ -13,8 +13,15 @@ A continuación, puedes encontrar la información de forma estructurada:
 - [06. Quickstart / Setup](06-quickstart.md) - Cómo clonar y levantar este proyecto localmente.
 - [07. Observaciones y Plan de Mejora](07-observaciones-y-plan-de-mejora.md) - Revisión técnica detallada del MVP, inconsistencias detectadas y prioridades de mejora.
 - [08. Diseño Base Prospección y CRM](08-diseno-base-prospeccion-y-crm.md) - Modelo objetivo para escalar prospección, scoring, contactos y futura integración con CRM.
-- [09. Cambios Implementados Hasta Fase B](09-cambios-implementados-hasta-fase-b.md) - Resumen ejecutivo y técnico de todo lo implementado hasta este punto.
+- [09. Cambios Implementados Hasta Fase B](09-cambios-implementados-hasta-fase-b.md) - Resumen ejecutivo y técnico de la estabilización inicial y de la mejora posterior del scraping/calidad.
 - [10. Diseño del Prompt de DeepSeek](10-diseno-prompt-deepseek.md) - Reglas, versión activa y criterio de calidad del extractor IA.
+- [11. Mapa de Módulos y Cambios Recientes](11-mapa-de-modulos-y-cambios-recientes.md) - Inventario módulo por módulo de los cambios recientes en discovery, parsing, quality gate, IA, persistencia y tests.
+
+## Documentos clave para el estado actual
+- [05. API y Reglas](05-api-y-reglas.md) - Contrato visible para integradores y resultados aceptados por calidad.
+- [06. Estado del Sistema](06-estado-del-sistema.md) - Resumen operativo del pipeline actual.
+- [09. Cambios Implementados](09-cambios-implementados-hasta-fase-b.md) - Qué se cambió realmente en scraping, quality gate, IA y persistencia.
+- [11. Mapa de Módulos](11-mapa-de-modulos-y-cambios-recientes.md) - Dónde vive cada comportamiento en el código actual.
 
 ## Planeación y Backlog
 - [Plan de Trabajo por Fases](backlog/README.md) - Desglose detallado de todos los pasos, desde el Setup inicial (Fase 1) hasta la Integración Oficial en producción con Supabase y NestJS (Fase 5).

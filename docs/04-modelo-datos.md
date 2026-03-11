@@ -11,6 +11,10 @@ Para que este servicio sea útil, cada prospecto debería intentar capturar como
 - URL del sitio web
 - categoría o nicho aparente
 - ubicación si está disponible
+- ubicación validada por evidencia
+- match de ubicación (`match`, `mismatch`, `unknown`)
+- idioma detectado
+- match de idioma (`match`, `mismatch`, `unknown`)
 - descripción breve del negocio si es detectable
 
 ### Datos de contacto
@@ -20,6 +24,11 @@ Para que este servicio sea útil, cada prospecto debería intentar capturar como
 - formulario de contacto detectado
 - teléfono si está disponible
 - redes sociales relevantes
+- CTA principal
+- URL de reservas
+- URL de precios
+- canal de WhatsApp público si existe
+- score de calidad de contacto
 
 ### Datos de contexto comercial
 
@@ -28,6 +37,8 @@ Para que este servicio sea útil, cada prospecto debería intentar capturar como
 - tamaño aparente o señales de escala
 - idioma principal del sitio
 - resumen corto del negocio
+- keywords de servicios detectados
+- estado de calidad del lead
 
 ### Señales de oportunidad
 
@@ -42,16 +53,18 @@ Para que este servicio sea útil, cada prospecto debería intentar capturar como
 - fuente de origen
 - fecha de scraping
 - estado de validación
+- estado de calidad (`accepted`, `needs_review`, `rejected`)
+- razón de rechazo si aplica
 - score inicial *(numérico entre `0.0` y `1.0`)*
 - nivel de confianza del dato *(semántico: `low`, `medium`, `high`)*
 - flags de deduplicación
 
-## Entidades sugeridas
+## Entidades actuales
 
 ### scraping_jobs
 Representa cada solicitud de scraping lanzada por el sistema principal.
 
-**Campos sugeridos:**
+**Campos actuales relevantes:**
 - id
 - workspace_id
 - requested_by
@@ -83,7 +96,7 @@ Representa cada solicitud de scraping lanzada por el sistema principal.
 ### prospects
 Registro principal del prospecto ya normalizado.
 
-**Campos sugeridos:**
+**Campos actuales relevantes:**
 - id
 - workspace_id
 - company_name
@@ -91,11 +104,24 @@ Registro principal del prospecto ya normalizado.
 - website_url
 - category
 - location
+- validated_location
+- location_match_status
+- location_confidence
+- detected_language
+- language_match_status
 - description
 - email
 - phone
 - contact_page_url
 - form_detected
+- primary_cta
+- booking_url
+- pricing_page_url
+- whatsapp_url
+- contact_channels_json
+- contact_quality_score
+- company_size_signal
+- service_keywords
 - linkedin_url
 - instagram_url
 - facebook_url
@@ -112,10 +138,72 @@ Registro principal del prospecto ya normalizado.
 - created_at
 - updated_at
 
-### prospect_signals
-Señales detectadas durante el análisis del prospecto.
+### job_prospects
+Resultado contextual del prospecto dentro de un job.
 
-**Campos sugeridos:**
+**Campos actuales relevantes:**
+- id
+- job_id
+- prospect_id
+- source_url
+- source_type
+- discovery_method
+- search_query_snapshot
+- rank_position
+- processing_status
+- quality_status
+- quality_flags_json
+- rejection_reason
+- discovery_confidence
+- match_score
+- confidence_level
+- fit_summary
+- pain_points_json
+- evidence_json
+- raw_extraction_json
+- error_message
+- created_at
+- updated_at
+
+### prospect_contacts
+Canales de contacto detectados y normalizados.
+
+**Campos actuales relevantes:**
+- id
+- prospect_id
+- contact_type
+- contact_value
+- label
+- is_primary
+- is_public
+- confidence
+- source_url
+- created_at
+- updated_at
+
+### prospect_pages
+Inventario de páginas visitadas o inferidas durante el crawl.
+
+**Campos actuales relevantes:**
+- id
+- prospect_id
+- url
+- page_type
+- http_status
+- title
+- meta_description
+- detected_language
+- text_hash
+- content_signals_json
+- last_seen_at
+- last_scraped_at
+- created_at
+- updated_at
+
+### prospect_signals
+Señales detectadas durante el análisis del prospecto o reservadas para etapas posteriores.
+
+**Campos actuales relevantes:**
 - id
 - prospect_id
 - signal_type
@@ -127,7 +215,7 @@ Señales detectadas durante el análisis del prospecto.
 ### scraping_logs
 Eventos técnicos o mensajes relevantes por job.
 
-**Campos sugeridos:**
+**Campos actuales relevantes:**
 - id
 - job_id
 - level
@@ -138,19 +226,13 @@ Eventos técnicos o mensajes relevantes por job.
 
 ---
 
-## Evolución recomendada del modelo
+## Estado actual del modelo
 
-Para escalar correctamente la plataforma hacia prospección multi-workspace y futura integración con CRM, el modelo debería evolucionar a una separación más clara entre:
+La evolución propuesta ya está parcialmente aplicada:
 
-- prospecto canónico,
-- resultado contextual por job,
-- contactos detectados,
-- y páginas analizadas.
+- `prospects` funciona como entidad canónica del dominio;
+- `job_prospects` conserva score, evidencia, discovery y calidad por corrida;
+- `prospect_contacts` normaliza canales detectados;
+- `prospect_pages` registra páginas vistas o inferidas.
 
-### Nuevas entidades objetivo
-
-- `job_prospects`: relación entre `scraping_jobs` y `prospects` con score, confianza, evidencia y contexto de búsqueda.
-- `prospect_contacts`: tabla normalizada de canales de contacto detectados.
-- `prospect_pages`: inventario de páginas visitadas y sus señales.
-
-La justificación completa y los campos recomendados están documentados en [08-diseno-base-prospeccion-y-crm.md](08-diseno-base-prospeccion-y-crm.md).
+La justificación completa y el diseño objetivo siguen documentados en [08-diseno-base-prospeccion-y-crm.md](08-diseno-base-prospeccion-y-crm.md).

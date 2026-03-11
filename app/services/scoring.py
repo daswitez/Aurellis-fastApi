@@ -72,18 +72,21 @@ def build_final_score(
     ai_data: Dict[str, Any],
     ai_trace: Dict[str, Any],
     heuristic_data: Dict[str, Any],
+    quality_data: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     heuristic_score = float(heuristic_data.get("score") or 0.0)
     heuristic_confidence = str(heuristic_data.get("confidence_level") or "low")
     heuristic_summary = heuristic_data.get("fit_summary")
+    quality_data = quality_data or {}
+    score_multiplier = float(quality_data.get("score_multiplier") or 1.0)
 
     if ai_trace.get("selected_method") != "ai":
         return {
-            "score": round(heuristic_score, 4),
+            "score": round(heuristic_score * score_multiplier, 4),
             "confidence_level": heuristic_confidence,
             "fit_summary": _build_fit_summary(
                 strategy="heuristic_only",
-                final_score=heuristic_score,
+                final_score=heuristic_score * score_multiplier,
                 ai_score=None,
                 heuristic_score=heuristic_score,
                 agreement_band="n/a",
@@ -100,8 +103,9 @@ def build_final_score(
                 "heuristic_weight": 1.0,
                 "agreement_delta": None,
                 "agreement_band": None,
-                "final_score": round(heuristic_score, 4),
+                "final_score": round(heuristic_score * score_multiplier, 4),
                 "final_confidence_level": heuristic_confidence,
+                "score_multiplier": round(score_multiplier, 4),
             },
         }
 
@@ -117,7 +121,7 @@ def build_final_score(
 
     ai_weight = _clamp(ai_weight, 0.35, 0.85)
     heuristic_weight = round(1.0 - ai_weight, 4)
-    final_score = round((ai_score * ai_weight) + (heuristic_score * heuristic_weight), 4)
+    final_score = round(((ai_score * ai_weight) + (heuristic_score * heuristic_weight)) * score_multiplier, 4)
 
     agreement_band = _agreement_band(delta)
     blended_confidence_numeric = (
@@ -153,5 +157,6 @@ def build_final_score(
             "agreement_band": agreement_band,
             "final_score": final_score,
             "final_confidence_level": final_confidence_level,
+            "score_multiplier": round(score_multiplier, 4),
         },
     }

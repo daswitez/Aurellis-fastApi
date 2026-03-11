@@ -58,12 +58,25 @@ class Prospect(Base):
     website_url = Column(String, nullable=True)
     category = Column(String, nullable=True)
     location = Column(String, nullable=True)
+    validated_location = Column(String, nullable=True)
+    location_match_status = Column(String, nullable=True)
+    location_confidence = Column(String, nullable=True)
+    detected_language = Column(String, nullable=True)
+    language_match_status = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True)
     contact_page_url = Column(String, nullable=True)
     form_detected = Column(Boolean, default=False)
+    primary_cta = Column(String, nullable=True)
+    booking_url = Column(String, nullable=True)
+    pricing_page_url = Column(String, nullable=True)
+    whatsapp_url = Column(String, nullable=True)
+    contact_channels_json = Column(JSON, nullable=True)
+    contact_quality_score = Column(Float, nullable=True)
+    company_size_signal = Column(String, nullable=True)
+    service_keywords = Column(JSON, nullable=True)
     
     linkedin_url = Column(String, nullable=True)
     instagram_url = Column(String, nullable=True)
@@ -111,6 +124,10 @@ class JobProspect(Base):
     search_query_snapshot = Column(Text, nullable=True)
     rank_position = Column(Integer, nullable=True)
     processing_status = Column(String, default="processed")  # pending, processed, skipped, failed
+    quality_status = Column(String, nullable=True)
+    quality_flags_json = Column(JSON, nullable=True)
+    rejection_reason = Column(String, nullable=True)
+    discovery_confidence = Column(String, nullable=True)
 
     match_score = Column(Float, default=0.0)  # rango esperado: 0.0 a 1.0
     confidence_level = Column(String, nullable=True)  # low, medium, high

@@ -129,6 +129,24 @@ Además:
 - se normalizan listas de tecnologías y pains,
 - `estimated_revenue_signal` se normaliza a `low|medium|high`.
 
+### 3.7. La IA ya no recibe solo texto crudo
+
+Después del rediseño inicial del prompt, el runtime evolucionó para mandar a DeepSeek un `evidence pack` compacto en lugar de depender siempre de una ventana grande de texto plano.
+
+Ese paquete puede incluir:
+
+- resumen compacto del contenido visible,
+- título y descripción,
+- ubicación validada y estado del match geográfico,
+- idioma detectado,
+- CTA principal,
+- `booking_url` y `pricing_page_url`,
+- canales de contacto consolidados,
+- score y confianza heurística,
+- stack detectado,
+- nicho inferido,
+- metadata de discovery.
+
 ---
 
 ## 4. Contrato esperado de salida
@@ -163,7 +181,17 @@ Con este rediseño, el extractor IA queda mejor orientado para:
 - usar más contexto comercial real,
 - producir scores más defendibles,
 - facilitar comparación entre versiones,
-- preparar el terreno para validación por schema en `C-002`.
+- preparar el terreno para validación por schema en `C-002`,
+- y soportar mejor el gate heurístico que decide si vale llamar a IA.
+
+## 5.1. Qué cambió alrededor del prompt
+
+Aunque el prompt sigue siendo `deepseek_prospect_v2`, hoy corre dentro de un flujo más estricto:
+
+- si el lead queda rechazado por calidad, la IA no se ejecuta;
+- si la heurística ya resolvió con alta confianza, la IA puede omitirse;
+- si la IA sí corre, puede reutilizar cache por firma de contenido;
+- si falla, el sistema cae al baseline heurístico con trazabilidad completa.
 
 ---
 

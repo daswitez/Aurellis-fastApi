@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, HttpUrl
 JobStatus = Literal["pending", "running", "completed", "failed"]
 RevenueSignal = Literal["low", "medium", "high"]
 ConfidenceLevel = Literal["low", "medium", "high"]
+MatchStatus = Literal["match", "mismatch", "unknown"]
 ResultSourceType = Literal["duckduckgo_search", "mock_search", "seed_url", "manual", "enrichment"]
 DiscoveryMethod = Literal["search_query", "seed_url", "manual", "enrichment"]
 ScrapingLogLevel = Literal["INFO", "WARNING", "ERROR"]
@@ -75,6 +76,13 @@ class JobAISummary(BaseModel):
     estimated_cost_usd: Optional[float] = None
 
 
+class JobQualitySummary(BaseModel):
+    accepted: int = 0
+    needs_review: int = 0
+    rejected: int = 0
+    rejection_reasons: Dict[str, int] = Field(default_factory=dict)
+
+
 class JobResponse(BaseModel):
     """Estructura de la respuesta al crear o consultar un Job"""
     job_id: int
@@ -92,6 +100,7 @@ class JobResponse(BaseModel):
     total_skipped: Optional[int] = None
     error_message: Optional[str] = None
     ai_summary: Optional[JobAISummary] = None
+    quality_summary: Optional[JobQualitySummary] = None
     recent_errors: List[JobLogOut] = Field(default_factory=list)
     
 class ProspectOut(BaseModel):
@@ -129,6 +138,14 @@ class ProspectOut(BaseModel):
     # Descripción y ubicación
     description: Optional[str]
     location: Optional[str]
+    validated_location: Optional[str]
+    location_match_status: Optional[MatchStatus]
+    location_confidence: Optional[ConfidenceLevel]
+    detected_language: Optional[str]
+    language_match_status: Optional[MatchStatus]
+    primary_cta: Optional[str]
+    booking_url: Optional[str]
+    pricing_page_url: Optional[str]
     category: Optional[str]
 
     class Config:

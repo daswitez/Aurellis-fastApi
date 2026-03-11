@@ -32,7 +32,7 @@ Los cambios más importantes fueron:
   - guarda mejor el origen del job desde su creación.
 - `GET /api/v1/jobs/{job_id}`
   - pasó de ser un polling mínimo a un endpoint de monitoreo;
-  - ahora expone timestamps, métricas y errores recientes.
+  - ahora expone timestamps, métricas, resumen de calidad y errores recientes.
 - `GET /api/v1/jobs/{job_id}/results`
   - ahora lee desde `job_prospects`, no desde la vieja asociación simple por `job_id`;
   - expone trazabilidad de origen por resultado.
@@ -192,6 +192,12 @@ curl http://localhost:8000/api/v1/jobs/1
       "invalid_schema": 1
     }
   },
+  "quality_summary": {
+    "accepted": 3,
+    "needs_review": 1,
+    "rejected": 0,
+    "rejection_reasons": {}
+  },
   "recent_errors": []
 }
 ```
@@ -200,7 +206,7 @@ curl http://localhost:8000/api/v1/jobs/1
 
 - antes devolvía esencialmente un string de estado;
 - ahora sirve para monitoreo real del job;
-- incluye métricas operativas, resumen de uso de IA y errores recientes resumidos sin ir a `/logs`.
+- incluye métricas operativas, resumen de uso de IA, distribución de calidad y errores recientes resumidos sin ir a `/logs`.
 
 **Nota sobre costo estimado:** `estimated_cost_usd` depende de que el entorno tenga configuradas `DEEPSEEK_INPUT_COST_PER_1M_TOKENS` y `DEEPSEEK_OUTPUT_COST_PER_1M_TOKENS`. Si no están definidas, ese campo puede venir como `null`.
 
@@ -244,6 +250,14 @@ curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
     "email": "contacto@clinica-sonrisas.es",
     "score": 0.82,
     "confidence_level": "high",
+    "validated_location": "Madrid",
+    "location_match_status": "match",
+    "location_confidence": "high",
+    "detected_language": "es",
+    "language_match_status": "match",
+    "primary_cta": "booking",
+    "booking_url": "https://clinica-sonrisas.es/reservas",
+    "pricing_page_url": "https://clinica-sonrisas.es/precios",
     "inferred_niche": "Salud Dental",
     "inferred_tech_stack": ["WordPress", "Google Analytics"],
     "has_active_ads": true
@@ -257,8 +271,16 @@ curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
     "search_query_snapshot": null,
     "rank_position": 2,
     "email": null,
-    "score": 0.21,
-    "confidence_level": "low",
+    "score": 0.55,
+    "confidence_level": "medium",
+    "validated_location": "Madrid",
+    "location_match_status": "match",
+    "location_confidence": "medium",
+    "detected_language": "es",
+    "language_match_status": "unknown",
+    "primary_cta": "contact_form",
+    "booking_url": null,
+    "pricing_page_url": null,
     "inferred_niche": "Salud Dental",
     "inferred_tech_stack": [],
     "has_active_ads": false
@@ -270,6 +292,9 @@ curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
 
 - ahora los resultados se leen desde la relación contextual `job_prospects`;
 - cada resultado conserva trazabilidad del origen del lead;
+- solo se devuelven prospectos con `quality_status=accepted`;
+- si el array sale vacío, no implica necesariamente fallo del job: revisar `GET /jobs/{id}` y su `quality_summary` para ver cuántos leads quedaron `rejected` o `needs_review`;
+- el payload ahora incluye validación de ubicación/idioma y CTAs accionables (`validated_location`, `location_match_status`, `detected_language`, `primary_cta`, `booking_url`, `pricing_page_url`);
 - deja de depender del último `upsert` sobre el dominio para reconstruir una corrida.
 
 ---
@@ -343,21 +368,24 @@ curl "http://localhost:8000/api/v1/jobs/1/logs?level=ERROR&limit=10&offset=0"
 ## Notas Técnicas
 
 - **El scraping es asíncrono.** La API nunca bloquea — siempre retorna `202` de inmediato.
-- **`GET /jobs/{id}` enriquecido:** además del estado y mensaje, ahora devuelve timestamps, métricas y hasta 3 errores recientes resumidos.
+- **`GET /jobs/{id}` enriquecido:** además del estado y mensaje, ahora devuelve timestamps, métricas, `quality_summary` y hasta 3 errores recientes resumidos.
 - **`GET /jobs/{id}/logs`:** expone `scraping_logs` paginados, con filtro por `INFO`, `WARNING` o `ERROR`.
 - **Hay un delay de 2 segundos entre cada URL** para no saturar los sitios objetivo.
 - **Contrato de scoring:** `score` es un `float` entre `0.0` y `1.0`; `confidence_level` es `low`, `medium` o `high`.
 - **Semántica actual del score:** el valor expuesto ya no es "solo IA". Si DeepSeek responde bien, el sistema combina score IA + baseline heurístico usando pesos por confianza y ajuste por nivel de acuerdo; si la IA falla, cae a `heuristic_only`.
 - **Trazabilidad interna del score:** cada prospecto persiste `scoring_trace` con `strategy`, `strategy_version`, pesos, delta de acuerdo y score final, aunque ese detalle no forme parte del payload resumido de `/results`.
+- **Filtro de calidad por defecto:** `GET /jobs/{id}/results` solo lista leads aceptados. Los rechazados o `needs_review` se conservan internamente con `quality_status`, `quality_flags_json` y `rejection_reason`.
+- **Resumen de calidad por job:** `GET /jobs/{id}` devuelve `quality_summary` con conteos de `accepted`, `needs_review`, `rejected` y `rejection_reasons`. Eso permite distinguir entre "job vacío" y "job completado sin leads aceptados".
+- **Ubicación validada:** `location` ya no replica automáticamente `target_location`. La salida visible usa `validated_location` y `location_match_status` según evidencia del sitio, mapas, structured data o snippet de discovery.
 - **Contrato de revenue signal:** `estimated_revenue_signal` usa `low`, `medium` o `high`.
 - **Trazabilidad de origen:** `source_type` distingue `duckduckgo_search`, `mock_search`, `seed_url`, `manual` o `enrichment`. `discovery_method` indica cómo entró ese lead al pipeline.
 - **TLS seguro por defecto:** el scraper valida certificados SSL/TLS por defecto. Solo desactívalo con `HTTP_VERIFY_TLS=false` en debugging controlado.
 - **Errores de red clasificados:** los fallos de scraping distinguen `timeout`, `dns_error`, `tls_error`, `http_403`, `http_429` y `http_5xx` en los logs persistidos del job.
 - **Retries controlados:** el cliente HTTP reintenta solo errores recuperables. Se parametriza con `HTTP_MAX_RETRIES` y `HTTP_BACKOFF_BASE_SECONDS`.
 - **Links internos normalizados:** el parser resuelve rutas relativas con `urljoin` y evita persistir links externos o no navegables como parte del sitio.
-- **Crawling limitado:** además de la homepage, el scraper puede visitar hasta 3 páginas clave del mismo dominio (`contact`, `about`, `nosotros`, `equipo`, `careers`) para enriquecer contacto y señales.
+- **Crawling limitado:** además de la homepage, el scraper puede visitar hasta 5 páginas clave del mismo dominio (`contact`, `about`, `services`, `pricing`, `book`, `locations`, `careers`) con early stop cuando ya obtuvo contacto, ubicación y CTA.
 - **Extracción de contacto mejorada:** además de `mailto:` y `tel:`, el parser busca emails visibles en texto, normaliza teléfonos y conserva detección de formularios.
-- **DeepSeek AI** analiza el HTML de cada sitio para extraer `inferred_niche`, `pain_points` y `score`.
+- **DeepSeek AI** ya no consume HTML crudo completo por defecto; recibe un `evidence pack` compacto con señales estructuradas, snippets y contexto heurístico.
 - **Los resultados por job** se leen desde la relación contextual `job_prospects`, no solo desde el snapshot canónico del prospecto.
 - **Si un sitio devuelve 403 (anti-bot)**, se loggea un warning y se salta — no rompe el job.
 - **Los prospectos se guardan con `ON CONFLICT (domain)`** — nunca se duplican por dominio.

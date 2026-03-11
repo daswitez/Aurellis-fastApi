@@ -574,7 +574,7 @@ async def extract_business_entity_heuristic(
     return {
         "company_name": metadata.get("title", "").split("|")[0].strip(),
         "category": inferred_niche or "Desconocido",
-        "location": context.get("target_location") or "No disponible sin API",
+        "location": metadata.get("addresses", [None])[0] if metadata.get("addresses") else None,
         "description": metadata.get("description", "Sin descripcion META encontrada."),
         "inferred_tech_stack": heuristic_trace["inferred_tech_stack"],
         "inferred_niche": inferred_niche,

@@ -1,13 +1,69 @@
+import json
 import re
+from typing import Any, Dict, Tuple
+from urllib.parse import parse_qs, urljoin, urlparse
+
 from bs4 import BeautifulSoup
-from typing import Dict, List, Set, Tuple
-from urllib.parse import urljoin, urlparse
 
 
-INTERNAL_LINK_KEYWORDS = ["contact", "contacto", "about", "nosotros", "equipo", "careers", "trabajo", "empleo"]
+INTERNAL_LINK_KEYWORDS = [
+    "contact",
+    "contacto",
+    "about",
+    "nosotros",
+    "equipo",
+    "careers",
+    "trabajo",
+    "empleo",
+    "services",
+    "servicios",
+    "pricing",
+    "precios",
+    "book",
+    "booking",
+    "reserv",
+    "locations",
+    "ubicaciones",
+]
 EMAIL_REGEX = re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b")
 PHONE_REGEX = re.compile(r"(?:(?:\+|00)\d{1,3}[\s\-./]?)?(?:\(?\d{2,4}\)?[\s\-./]?){2,5}\d{2,4}")
 EMAIL_BLOCKLIST_TOKENS = {"example.com", "yourdomain", "domain.com", "email.com", "test.com", "localhost"}
+ADDRESS_HINT_REGEX = re.compile(
+    r"((?<![a-z])(?:calle|av(?:\.|enida)?|street|st\.|road|rd\.|plaza|paseo|carrera|camino)\s+[^|]{8,120})",
+    re.IGNORECASE,
+)
+ADDRESS_CONFIRMATION_HINTS = (
+    " argentina",
+    " madrid",
+    " mexico",
+    " méxico",
+    " españa",
+    " spain",
+    " buenos aires",
+    " barcelona",
+    " valencia",
+    " cdmx",
+    " ciudad de mexico",
+    " ciudad de méxico",
+)
+JSON_LD_TYPES_OF_INTEREST = {
+    "localbusiness",
+    "organization",
+    "medicalbusiness",
+    "dentist",
+    "physician",
+    "attorney",
+    "store",
+    "postaladdress",
+}
+CTA_PATTERNS = {
+    "booking": ["book", "booking", "reserve", "reservar", "reserva", "agenda", "agendar", "cita"],
+    "contact_form": ["contact", "contacto", "habla", "hablemos", "escribenos", "escríbenos"],
+    "whatsapp": ["whatsapp", "wa.me", "api.whatsapp.com"],
+    "call": ["call", "llamar", "telefono", "teléfono"],
+    "quote": ["quote", "cotiza", "cotizar", "presupuesto"],
+    "signup": ["signup", "sign up", "registrate", "regístrate", "suscribete", "suscríbete"],
+}
 
 
 def _normalize_href(base_url: str, href: str) -> str | None:
@@ -69,86 +125,267 @@ def _extract_visible_contacts(text: str) -> tuple[set[str], set[str]]:
 
     return emails, phones
 
-def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
-    """
-    Toma un HTML crudo y lo transforma en dos cosas:
-    1. Un texto plano súper limpio preparado para análisis local basado en heurísticas.
-    2. Un diccionario de metadatos exactos (links, emails directos, redes sociales).
-    """
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # 1. Extraer Metadatos directos
-    metadata = {
-        "title": "",
-        "description": "",
-        "emails": set(),
-        "phones": set(),
-        "social_links": set(),
-        "internal_links": set(), # Para buscar la página de "Contacto" si es necesario
-        "form_detected": False,
-    }
-    
-    # Title
-    if soup.title and soup.title.string:
-        metadata["title"] = soup.title.string.strip()
-        
-    # Meta Description
-    meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
-    if meta_desc and meta_desc.get("content"):
-        metadata["description"] = meta_desc["content"].strip()
 
-    # Detectar si la página tiene formulario visible
-    metadata["form_detected"] = soup.find("form") is not None
-        
-    # Extraer enlaces clave (Correos y Redes)
-    for a_tag in soup.find_all('a', href=True):
-        href = a_tag['href'].strip()
-        
-        # Correos directos en enlaces mailto
-        if href.lower().startswith('mailto:'):
-            email = href[7:].split('?')[0] # quitar parametros como ?subject=x
-            if '@' in email:
-                metadata["emails"].add(email.lower())
-                
-        # Teléfonos directos
-        elif href.lower().startswith('tel:'):
+def _add_unique(container: list[str], value: str | None, *, limit: int = 10) -> None:
+    normalized = " ".join((value or "").strip().split())
+    if not normalized or normalized in container:
+        return
+    if len(container) >= limit:
+        return
+    container.append(normalized)
+
+
+def _flatten_json_ld(candidate: Any) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    if isinstance(candidate, dict):
+        if any(key in candidate for key in ["@type", "address", "areaServed", "telephone", "email"]):
+            flattened.append(candidate)
+        graph = candidate.get("@graph")
+        if isinstance(graph, list):
+            for item in graph:
+                flattened.extend(_flatten_json_ld(item))
+    elif isinstance(candidate, list):
+        for item in candidate:
+            flattened.extend(_flatten_json_ld(item))
+    return flattened
+
+
+def _parse_json_ld_blocks(soup: BeautifulSoup) -> tuple[list[dict[str, Any]], list[str], list[str], list[str], list[str]]:
+    structured_blocks: list[dict[str, Any]] = []
+    addresses: list[str] = []
+    phones: list[str] = []
+    emails: list[str] = []
+    opening_hours: list[str] = []
+
+    for script_tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        if not script_tag.string:
+            continue
+        try:
+            parsed = json.loads(script_tag.string)
+        except json.JSONDecodeError:
+            continue
+
+        for node in _flatten_json_ld(parsed):
+            node_type = str(node.get("@type") or "").lower()
+            if node_type and node_type not in JSON_LD_TYPES_OF_INTEREST:
+                continue
+            structured_blocks.append(node)
+
+            address = node.get("address")
+            if isinstance(address, dict):
+                address_parts = [
+                    str(address.get(key)).strip()
+                    for key in ["streetAddress", "addressLocality", "addressRegion", "postalCode", "addressCountry"]
+                    if address.get(key)
+                ]
+                _add_unique(addresses, ", ".join(address_parts), limit=5)
+            elif isinstance(address, str):
+                _add_unique(addresses, address, limit=5)
+
+            area_served = node.get("areaServed")
+            if isinstance(area_served, list):
+                for item in area_served:
+                    if isinstance(item, dict):
+                        _add_unique(addresses, item.get("name"), limit=5)
+                    else:
+                        _add_unique(addresses, str(item), limit=5)
+            elif isinstance(area_served, dict):
+                _add_unique(addresses, area_served.get("name"), limit=5)
+            elif isinstance(area_served, str):
+                _add_unique(addresses, area_served, limit=5)
+
+            for raw_phone in [node.get("telephone"), node.get("phone")]:
+                normalized_phone = _normalize_phone(str(raw_phone)) if raw_phone else None
+                if normalized_phone and normalized_phone not in phones:
+                    phones.append(normalized_phone)
+
+            normalized_email = _normalize_email(str(node.get("email"))) if node.get("email") else None
+            if normalized_email and normalized_email not in emails:
+                emails.append(normalized_email)
+
+            opening_data = node.get("openingHours") or node.get("openingHoursSpecification")
+            if isinstance(opening_data, list):
+                for item in opening_data:
+                    _add_unique(opening_hours, str(item), limit=7)
+            elif opening_data:
+                _add_unique(opening_hours, str(opening_data), limit=7)
+
+    return structured_blocks, addresses, phones, emails, opening_hours
+
+
+def _extract_address_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    for match in ADDRESS_HINT_REGEX.findall(text):
+        normalized_match = " ".join(match.split())
+        lowered_match = normalized_match.lower()
+        if not any(char.isdigit() for char in normalized_match) and not any(
+            hint in lowered_match for hint in ADDRESS_CONFIRMATION_HINTS
+        ):
+            continue
+        _add_unique(candidates, normalized_match, limit=5)
+    return candidates
+
+
+def _classify_page_url(url: str) -> str:
+    lowered = url.lower()
+    if any(token in lowered for token in ["book", "booking", "reserv", "agenda", "cita"]):
+        return "booking"
+    if any(token in lowered for token in ["pricing", "precio", "precios", "quote", "cotiza"]):
+        return "pricing"
+    if "service" in lowered or "servicio" in lowered:
+        return "services"
+    if "location" in lowered or "ubicacion" in lowered or "locations" in lowered or "sede" in lowered:
+        return "locations"
+    if "contact" in lowered or "contacto" in lowered:
+        return "contact"
+    if "about" in lowered or "nosotros" in lowered or "equipo" in lowered:
+        return "about"
+    if "career" in lowered or "trabajo" in lowered or "empleo" in lowered:
+        return "careers"
+    return "other"
+
+
+def _detect_primary_cta(text: str, href: str) -> str | None:
+    lowered_blob = f"{text} {href}".lower()
+    for cta_type, patterns in CTA_PATTERNS.items():
+        if any(pattern in lowered_blob for pattern in patterns):
+            return cta_type
+    return None
+
+
+def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
+    soup = BeautifulSoup(html_content, "html.parser")
+    html_lang = (soup.html.get("lang") if soup.html else None) or ""
+    meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
+    meta_locale = soup.find("meta", attrs={"property": "og:locale"})
+    structured_data, structured_addresses, structured_phones, structured_emails, opening_hours = _parse_json_ld_blocks(soup)
+
+    metadata = {
+        "title": soup.title.string.strip() if soup.title and soup.title.string else "",
+        "description": meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else "",
+        "emails": set(structured_emails),
+        "phones": set(structured_phones),
+        "social_links": set(),
+        "internal_links": set(),
+        "map_links": set(),
+        "whatsapp_url": None,
+        "booking_url": None,
+        "pricing_page_url": None,
+        "service_page_url": None,
+        "social_links_count": 0,
+        "form_detected": soup.find("form") is not None,
+        "html_lang": html_lang.strip().lower() or None,
+        "meta_locale": meta_locale["content"].strip().lower() if meta_locale and meta_locale.get("content") else None,
+        "structured_data": structured_data,
+        "structured_data_evidence": [],
+        "addresses": structured_addresses,
+        "opening_hours": opening_hours,
+        "contact_channels": [],
+        "cta_candidates": [],
+        "primary_cta": None,
+    }
+
+    if structured_data:
+        metadata["structured_data_evidence"].append("json_ld_detected")
+    if structured_addresses:
+        metadata["structured_data_evidence"].append("structured_address_detected")
+
+    for a_tag in soup.find_all("a", href=True):
+        href = a_tag["href"].strip()
+        anchor_text = a_tag.get_text(" ", strip=True)
+        lowered_href = href.lower()
+        normalized_href = _normalize_href(base_url, href)
+        cta_type = _detect_primary_cta(anchor_text, href)
+
+        if cta_type and cta_type not in metadata["cta_candidates"]:
+            metadata["cta_candidates"].append(cta_type)
+            metadata["primary_cta"] = metadata["primary_cta"] or cta_type
+
+        if lowered_href.startswith("mailto:"):
+            email = href[7:].split("?")[0]
+            normalized_email = _normalize_email(email)
+            if normalized_email:
+                metadata["emails"].add(normalized_email)
+                metadata["contact_channels"].append({"type": "email", "value": normalized_email})
+            continue
+
+        if lowered_href.startswith("tel:"):
             normalized_phone = _normalize_phone(href[4:])
             if normalized_phone:
                 metadata["phones"].add(normalized_phone)
-            
-        # Enlaces a Redes Sociales o "Páginas de Contacto"
-        elif any(social in href.lower() for social in ['linkedin.com', 'instagram.com', 'facebook.com', 'twitter.com']):
-            normalized_social = _normalize_href(base_url, href)
-            if normalized_social:
-                metadata["social_links"].add(normalized_social)
-            
-        # Links internos (buscar 'contacto', 'about', 'nosotros')
-        else:
-            text = a_tag.get_text().lower()
-            if hasattr(text, 'strip') and _looks_like_internal_key_page(text, href):
-                normalized_link = _normalize_href(base_url, href)
-                if normalized_link and _is_same_site(base_url, normalized_link):
-                    metadata["internal_links"].add(normalized_link)
+                metadata["contact_channels"].append({"type": "phone", "value": normalized_phone})
+            continue
 
-    # 2. Limpiar todo lo irrelevante para dejar puro texto listo para RegEx
-    # Destruir scripts, estilos, svgs e imágenes
-    for element in soup(["script", "style", "svg", "img", "noscript", "iframe", "header", "footer"]):
+        if "wa.me" in lowered_href or "api.whatsapp.com" in lowered_href or "whatsapp" in lowered_href:
+            metadata["whatsapp_url"] = normalized_href or href
+            metadata["contact_channels"].append({"type": "whatsapp", "value": metadata["whatsapp_url"]})
+
+        if any(social in lowered_href for social in ["linkedin.com", "instagram.com", "facebook.com", "twitter.com", "x.com"]):
+            if normalized_href:
+                metadata["social_links"].add(normalized_href)
+            continue
+
+        if "google.com/maps" in lowered_href or "maps.app.goo.gl" in lowered_href or "goo.gl/maps" in lowered_href:
+            if normalized_href:
+                metadata["map_links"].add(normalized_href)
+
+        if normalized_href and _is_same_site(base_url, normalized_href):
+            page_type = _classify_page_url(normalized_href)
+            if page_type != "other":
+                metadata["internal_links"].add(normalized_href)
+            if page_type == "booking" and not metadata["booking_url"]:
+                metadata["booking_url"] = normalized_href
+            elif page_type == "pricing" and not metadata["pricing_page_url"]:
+                metadata["pricing_page_url"] = normalized_href
+            elif page_type == "services" and not metadata["service_page_url"]:
+                metadata["service_page_url"] = normalized_href
+            elif _looks_like_internal_key_page(anchor_text.lower(), href):
+                metadata["internal_links"].add(normalized_href)
+
+    for button_tag in soup.find_all(["button", "a"]):
+        button_text = button_tag.get_text(" ", strip=True)
+        cta_type = _detect_primary_cta(button_text, button_tag.get("href", ""))
+        if cta_type and cta_type not in metadata["cta_candidates"]:
+            metadata["cta_candidates"].append(cta_type)
+            metadata["primary_cta"] = metadata["primary_cta"] or cta_type
+
+    for element in soup(["script", "style", "svg", "img", "noscript", "iframe"]):
         element.decompose()
-        
-    # Obtener el texto que queda
-    raw_text = soup.get_text(separator=' ', strip=True)
-    
-    # Limpiador Regex de espacios redundantes
-    clean_text = re.sub(r'\s+', ' ', raw_text)
+
+    raw_text = soup.get_text(separator=" ", strip=True)
+    clean_text = re.sub(r"\s+", " ", raw_text)
 
     visible_emails, visible_phones = _extract_visible_contacts(clean_text)
     metadata["emails"].update(visible_emails)
     metadata["phones"].update(visible_phones)
-    
-    # Convertir sets a listas para que sea JSON serializable
+    for address_candidate in _extract_address_candidates(clean_text):
+        _add_unique(metadata["addresses"], address_candidate, limit=5)
+
+    for phone in sorted(metadata["phones"]):
+        metadata["contact_channels"].append({"type": "phone", "value": phone})
+    for email in sorted(metadata["emails"]):
+        metadata["contact_channels"].append({"type": "email", "value": email})
+    if metadata["form_detected"]:
+        metadata["contact_channels"].append({"type": "contact_form", "value": base_url})
+    if metadata["booking_url"]:
+        metadata["contact_channels"].append({"type": "booking", "value": metadata["booking_url"]})
+
+    deduped_channels: list[dict[str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for channel in metadata["contact_channels"]:
+        pair = (channel["type"], channel["value"])
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        deduped_channels.append(channel)
+
     metadata["emails"] = sorted(metadata["emails"])
     metadata["phones"] = sorted(metadata["phones"])
     metadata["social_links"] = sorted(metadata["social_links"])
     metadata["internal_links"] = sorted(metadata["internal_links"])
-    
+    metadata["map_links"] = sorted(metadata["map_links"])
+    metadata["addresses"] = list(metadata["addresses"])
+    metadata["contact_channels"] = deduped_channels
+    metadata["social_links_count"] = len(metadata["social_links"])
+
     return clean_text, metadata

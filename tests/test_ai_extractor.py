@@ -10,7 +10,7 @@ if "openai" not in sys.modules:
     openai_stub.AsyncOpenAI = object
     sys.modules["openai"] = openai_stub
 
-from app.services.ai_extractor import AIExtractionFallbackError, extract_business_entity_ai
+from app.services.ai_extractor import AIExtractionFallbackError, _AI_CACHE, extract_business_entity_ai
 
 
 class _FakeCompletions:
@@ -30,6 +30,9 @@ class _FakeClient:
 
 
 class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
+    def tearDown(self) -> None:
+        _AI_CACHE.clear()
+
     async def test_normalizes_valid_ai_payload(self) -> None:
         payload = json.dumps(
             {
@@ -88,6 +91,32 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["_ai_metrics"]["completion_tokens"], 45)
         self.assertEqual(result["_ai_metrics"]["total_tokens"], 165)
         self.assertEqual(result["_ai_metrics"]["estimated_cost_usd"], 0.0000294)
+
+    async def test_reuses_cached_payload_without_reconsuming_tokens(self) -> None:
+        payload = json.dumps(
+            {
+                "inferred_niche": "Clinica",
+                "inferred_tech_stack": ["WordPress"],
+                "generic_attributes": {"pain_points_detected": ["Sin CTA clara"]},
+                "hiring_signals": False,
+                "estimated_revenue_signal": "medium",
+                "score": 0.7,
+                "confidence_level": "medium",
+            }
+        )
+
+        with patch("app.services.ai_extractor._get_deepseek_api_key", return_value="test-key"):
+            with patch(
+                "app.services.ai_extractor._build_deepseek_client",
+                return_value=_FakeClient(payload),
+            ) as client_builder:
+                first = await extract_business_entity_ai("example.com", "x" * 200, {}, cache_key="cache-key")
+                second = await extract_business_entity_ai("example.com", "x" * 200, {}, cache_key="cache-key")
+
+        self.assertEqual(first["inferred_niche"], second["inferred_niche"])
+        self.assertEqual(second["_ai_metrics"]["total_tokens"], 0)
+        self.assertTrue(second["_ai_metrics"]["cache_hit"])
+        self.assertEqual(client_builder.call_count, 1)
 
     async def test_rejects_incomplete_ai_payload(self) -> None:
         payload = json.dumps(

@@ -40,6 +40,24 @@ Mejoras que suben la calidad de los datos y del scoring comercial.
 
 Cambios de escalabilidad, integración oficial y endurecimiento de producción.
 
+### Actualización operativa 2026-03-11
+
+Además del cierre de `C-002` a `C-007`, ya se implementó un refinamiento transversal del scraping y calidad de datos:
+
+- discovery con queries canónicas y metadata SERP;
+- parser estructurado con JSON-LD, idioma, direcciones, mapas, CTA, booking y pricing;
+- quality gate con `quality_status = accepted | needs_review | rejected`;
+- `GET /jobs/{id}/results` filtrado por leads aceptados;
+- `evidence pack` compacto para IA, gate heurístico y cache local por firma de contenido;
+- persistencia de `validated_location`, `location_match_status`, `detected_language`, `primary_cta`, `booking_url`, `pricing_page_url`, `contact_channels_json`, `contact_quality_score`, `company_size_signal` y `service_keywords`.
+
+La documentación funcional de esta actualización vive principalmente en:
+
+- `docs/03-arquitectura-tecnica.md`
+- `docs/04-modelo-datos.md`
+- `docs/05-api-y-reglas.md`
+- `docs/09-cambios-implementados-hasta-fase-b.md`
+
 ---
 
 ## 3. Fase A — Estabilización de base técnica (P0)

@@ -24,13 +24,11 @@ La API debe crear o reconocer un job de scraping y procesarlo de forma asíncron
 La API debe ser capaz de consultar fuentes digitales públicas relevantes, tales como:
 
 - sitios web corporativos
-- directorios empresariales
-- listados públicos
-- portfolios
-- marketplaces
 - páginas de contacto
-- perfiles públicos relevantes
-- otras fuentes que el producto autorice según el nicho
+- páginas "about", "services", "pricing", "booking" y "locations" del mismo dominio
+- structured data público (`schema.org` / JSON-LD)
+- snippets del buscador cuando ayuden a validar ubicación o tipo de resultado
+- otras fuentes públicas de bajo costo que el producto autorice según el nicho
 
 La extracción debe enfocarse en información visible y utilizable, evitando depender de datos altamente inestables o estructuras demasiado frágiles sin necesidad.
 
@@ -43,10 +41,17 @@ Debe poder analizar, cuando sea posible:
 - página principal
 - página de contacto
 - página "about"
+- página de servicios
+- página de precios
+- página de reservas
+- página de ubicaciones
 - footer
 - metadatos básicos
 - links externos relevantes
 - señales visibles de negocio
+- structured data embebido
+- CTA principal y canales de contacto
+- evidencia geográfica e idioma principal
 
 El objetivo es enriquecer el perfil del prospecto con contexto suficiente para segmentación y outreach.
 
@@ -68,6 +73,9 @@ Ejemplos:
 - unificar categorías
 - deduplicar redes sociales
 - normalizar ubicación si es posible
+- distinguir ubicación detectada de ubicación objetivo
+- consolidar canales de contacto y CTA
+- clasificar match de ubicación e idioma
 
 ## 6. Deduplicar prospectos
 
@@ -90,12 +98,17 @@ Por ejemplo:
 - detectar si tiene formulario de contacto
 - detectar si tiene email visible
 - detectar si tiene redes sociales
+- detectar si tiene WhatsApp público
+- detectar si tiene CTA principal
+- detectar `booking_url` y `pricing_page_url`
 - detectar si tiene sitio moderno o muy desactualizado
 - detectar servicios aparentes
 - detectar señales de oportunidad comercial
 - resumir de forma breve la actividad del negocio
+- validar si el sitio realmente coincide con la ubicación e idioma objetivo
+- clasificar cada lead como `accepted`, `needs_review` o `rejected`
 
-Este enriquecimiento debe ser inicialmente simple y basado en reglas claras. La IA puede incorporarse después en casos concretos.
+Este enriquecimiento hoy combina parser estructurado, heurística local, validación determinística y una capa IA opcional con gate de calidad para no gastar tokens sin valor.
 
 ## 8. Persistir resultados y actualizar estado de jobs
 
@@ -110,6 +123,10 @@ Debe registrar:
 - cantidad de prospectos válidos
 - detalles de fuentes consultadas
 - resultados finales
+- queries canónicas de discovery
+- razones de exclusión o rechazo
+- métricas de IA ejecutada, omitida o en fallback
+- evidencia usada para aceptar o rechazar un lead
 
 ## 9. Exponer estado y trazabilidad
 

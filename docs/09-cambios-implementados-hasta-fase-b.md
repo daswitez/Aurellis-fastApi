@@ -256,7 +256,55 @@ Lo que sigue ya entra en otra categoría:
 
 ---
 
-## 7. Siguiente bloque natural
+## 7. Actualización Posterior: Refinamiento de Scraping y Calidad
+
+Después de la Fase B y del endurecimiento inicial de IA/scoring, el pipeline recibió una mejora transversal orientada a calidad real de datos y ahorro de tokens.
+
+### Discovery más alineado con la intención
+
+- se agregaron queries canónicas derivadas de `search_query`, `target_niche`, `target_location` y `target_language`;
+- DDG ahora conserva metadata SERP útil (`query`, `title`, `snippet`, `position`, `discovery_confidence`);
+- se endureció el bloqueo de agregadores, directorios y redes para reducir ruido.
+
+### Parser y crawling estructurado
+
+- el parser ya no solo devuelve texto limpio;
+- ahora extrae `html_lang`, `meta_locale`, JSON-LD, direcciones, mapas, WhatsApp, booking, pricing y CTA principal;
+- el engine visita hasta 5 páginas clave con early stop cuando ya reunió suficientes señales.
+
+### Quality gate por lead
+
+- `target_location` ahora actúa como validación fuerte dentro del sitio cuando hay evidencia;
+- cada lead se clasifica como `accepted`, `needs_review` o `rejected`;
+- se persisten `quality_status`, `quality_flags_json`, `rejection_reason` y evidencia geo/idioma/contacto;
+- `GET /jobs/{id}/results` devuelve solo los leads aceptados por defecto.
+
+### IA más eficiente
+
+- la IA ya no consume texto plano largo por defecto;
+- ahora recibe un `evidence pack` compacto con señales ya extraídas;
+- existe `heuristic gate` para omitir IA en leads rechazados o ya resueltos con alta confianza;
+- existe cache local por firma de contenido para evitar reconsumo de tokens en el mismo proceso.
+
+### Nuevos campos relevantes de producto
+
+- `validated_location`
+- `location_match_status`
+- `location_confidence`
+- `detected_language`
+- `language_match_status`
+- `primary_cta`
+- `booking_url`
+- `pricing_page_url`
+- `whatsapp_url`
+- `contact_channels_json`
+- `contact_quality_score`
+- `company_size_signal`
+- `service_keywords`
+
+---
+
+## 8. Siguiente bloque natural
 
 El siguiente frente lógico es **Fase C**:
 

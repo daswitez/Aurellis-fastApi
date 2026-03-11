@@ -1,5 +1,6 @@
 import json
 import logging
+from copy import deepcopy
 from time import perf_counter
 from typing import Any, Dict, Literal
 
@@ -15,8 +16,10 @@ logger = logging.getLogger(__name__)
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 PROMPT_VERSION = "deepseek_prospect_v2"
 MAX_INPUT_CHARS = 10000
+MAX_EVIDENCE_PACK_CHARS = 4000
 RevenueSignal = Literal["low", "medium", "high"]
 ConfidenceLevel = Literal["low", "medium", "high"]
+_AI_CACHE: dict[str, Dict[str, Any]] = {}
 
 
 class AIExtractionFallbackError(Exception):
@@ -50,6 +53,7 @@ def _build_ai_usage(
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
     total_tokens: int | None = None,
+    cache_hit: bool = False,
 ) -> Dict[str, Any]:
     if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
         total_tokens = prompt_tokens + completion_tokens
@@ -71,6 +75,7 @@ def _build_ai_usage(
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
         "estimated_cost_usd": estimated_cost_usd,
+        "cache_hit": cache_hit,
     }
 
 
@@ -328,10 +333,19 @@ def _validate_ai_response_payload(parsed_data: Any) -> Dict[str, Any]:
     }
 
 
+def _serialize_evidence_pack(evidence_pack: Dict[str, Any] | None, clean_text: str) -> str:
+    if evidence_pack:
+        return json.dumps(evidence_pack, ensure_ascii=False)[:MAX_EVIDENCE_PACK_CHARS]
+    return clean_text[:MAX_INPUT_CHARS] if clean_text else ""
+
+
 async def extract_business_entity_ai(
     domain: str, 
     clean_text: str, 
-    job_context: Dict[str, Any]
+    job_context: Dict[str, Any],
+    *,
+    evidence_pack: Dict[str, Any] | None = None,
+    cache_key: str | None = None,
 ) -> Dict[str, Any]:
     """
     Usa DeepSeek-Chat (V3) para analizar el texto de la web y devolver un JSON estricto
@@ -341,7 +355,7 @@ async def extract_business_entity_ai(
     # 1. OPTIMIZACIÓN DE TOKENS
     # El texto ya viene limpio y enriquecido por crawling limitado.
     # Conservamos una ventana razonable para no disparar costo ni ruido.
-    truncated_text = clean_text[:MAX_INPUT_CHARS] if clean_text else ""
+    truncated_text = _serialize_evidence_pack(evidence_pack, clean_text)
     
     if not truncated_text or len(truncated_text) < 100:
         logger.warning(f"Texto insuficiente para IA en {domain}. Activando heurística.")
@@ -351,6 +365,17 @@ async def extract_business_entity_ai(
             error_type="input_validation",
             retryable=False,
         )
+
+    if cache_key and cache_key in _AI_CACHE:
+        cached_payload = deepcopy(_AI_CACHE[cache_key])
+        cached_payload["_ai_metrics"] = _build_ai_usage(
+            latency_ms=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cache_hit=True,
+        )
+        return cached_payload
 
     deepseek_api_key = _get_deepseek_api_key()
     if not deepseek_api_key:
@@ -376,7 +401,7 @@ async def extract_business_entity_ai(
             model="deepseek-chat",
             messages=[
                 {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": f"TEXTO EXTRAIDO DE {domain}:\n\n{truncated_text}"}
+                {"role": "user", "content": f"EVIDENCIA ESTRUCTURADA DE {domain}:\n\n{truncated_text}"}
             ],
             temperature=0.1, # Baja temperatura para JSON predecible
             max_tokens=500,  # Respuesta JSON debe ser corta (menos coste salida)
@@ -393,6 +418,8 @@ async def extract_business_entity_ai(
         # Intentar parsear
         parsed_data = json.loads(raw_output)
         validated_payload = _validate_ai_response_payload(parsed_data)
+        if cache_key:
+            _AI_CACHE[cache_key] = deepcopy(validated_payload)
         validated_payload["_ai_metrics"] = usage_metrics
         return validated_payload
 

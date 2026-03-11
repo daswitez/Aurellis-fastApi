@@ -1,6 +1,6 @@
 # Estado del Sistema — Aurellis FastAPI MVP
 
-**Última actualización:** 2026-03-10 | **Versión:** MVP 1.0
+**Última actualización:** 2026-03-11 | **Versión:** MVP 1.1
 
 ---
 
@@ -20,17 +20,21 @@ Ese documento detalla problemas de contrato, persistencia, procesamiento en back
 El flujo completo de prospección automática está operativo:
 
 ```
-[Usuario] → POST /scrape → [DuckDuckGo] → [HTTP Scraper] → [DeepSeek AI] → [PostgreSQL]
+[Usuario] → POST /scrape → [Discovery Normalizer] → [DuckDuckGo]
+→ [HTTP Scraper + Parser Estructurado] → [Quality Gate]
+→ [DeepSeek AI opcional] → [PostgreSQL]
 ```
 
 | Componente | Estado | Notas |
 |---|---|---|
 | **API FastAPI** | ✅ OK | `http://localhost:8000` · Swagger en `/docs` |
 | **Postgres local (Docker)** | ✅ OK | Requiere `docker compose up -d postgres` |
-| **Buscador DuckDuckGo** | ✅ OK | Encuentra URLs reales para cualquier búsqueda |
-| **Scraper HTTP** | ✅ OK | Descarga página completa con `httpx` + rotación de User-Agents |
-| **DeepSeek AI** | ✅ **ACTIVO** | HTTP 200 en producción · ~2-3s por URL |
-| **Parser de Respuesta IA** | ✅ OK | JSON parseado y mapeado a los campos del modelo |
+| **Buscador DuckDuckGo** | ✅ OK | Usa queries canónicas, bloquea agregadores y conserva metadata SERP |
+| **Scraper HTTP** | ✅ OK | Descarga homepage + hasta 5 páginas clave del mismo dominio |
+| **Parser Estructurado** | ✅ OK | Extrae JSON-LD, idioma, direcciones, CTAs, booking, pricing, WhatsApp y mapas |
+| **Quality Gate** | ✅ OK | Valida ubicación/idioma/contacto y clasifica `accepted`, `needs_review`, `rejected` |
+| **DeepSeek AI** | ✅ **ACTIVO** | Solo se invoca cuando el lead pasa el gate heurístico y de calidad |
+| **Parser de Respuesta IA** | ✅ OK | JSON parseado, validado con schema y cacheado por firma de contenido |
 | **DB Upsert (PostgreSQL)** | ✅ OK | `ON CONFLICT` — nunca duplica por dominio |
 | **Endpoint `GET /jobs/{id}`** | ✅ OK | Polling asíncrono con timestamps, métricas y resumen de errores recientes |
 | **Endpoint `GET /jobs/{id}/results`** | ✅ OK | Lista de prospectos guardados |
@@ -42,24 +46,22 @@ El flujo completo de prospección automática está operativo:
 
 ## ⚠️ Limitaciones Actuales (pendientes de mejora)
 
-### 1. Score híbrido resuelto recientemente
-**Estado actual:** si DeepSeek falla, no hay `DEEPSEEK_API_KEY`, o la respuesta del proveedor es inválida, el sistema cae a `heuristic_only`. Si la IA responde bien, el score final se calcula con una combinación ponderada entre score IA y baseline heurístico.
+### 1. Validación geográfica estricta sigue siendo heurística
+**Estado actual:** `target_location` ya actúa como criterio duro de aceptación usando evidencia del sitio, mapas, snippets y structured data.
 
-**Qué usa hoy la fórmula:** `confidence_level` de IA, baseline heurístico local y nivel de acuerdo entre ambos scores para subir o bajar el peso de la IA.
+**Limitación real:** si el sitio no publica ubicación clara, el lead puede quedar como `needs_review` o rechazado aunque el negocio sí opere allí.
 
-**Qué mejora esto:** el score final ya tiene semántica estable, conserva valor sin IA y además deja `scoring_trace` persistido para auditoría. Ya no es una limitación abierta del MVP.
-
-### 2. `inferred_tech_stack` vacío `[]`
-**Causa probable:** El prompt no pide explícitamente detectar tecnologías web (WordPress, Shopify, etc.).
-
-**Solución sugerida:** Añadir al prompt: *"Detecta en el HTML si usa WordPress (wp-content), Shopify, Wix, Elementor, Google Analytics, Meta Pixel u otras tecnologías. Devuelve como array en `inferred_tech_stack`."*
-
-### 3. Sitios con bloqueo Anti-bot (403 Forbidden)
+### 2. Sitios con bloqueo Anti-bot (403 Forbidden)
 Algunos sitios (ej: `vetivet.pe`) bloquean scrapers básicos.
 
 **Comportamiento actual:** Se loggea un `WARNING` y se salta el sitio — correcto.
 
 **Mejora futura:** Agregar rotación de proxies o delays aleatorios más agresivos.
+
+### 3. Cache IA actual es local al proceso
+**Estado actual:** el cache evita reconsumo de tokens dentro del proceso actual usando firma por dominio + contenido + versión de prompt.
+
+**Mejora futura:** moverlo a persistencia compartida si se pasa a múltiples workers.
 
 ### 4. pgAdmin crashea al iniciar
 **Causa:** El email `admin@aurellis.local` no es válido según la nueva validación de pgAdmin.
@@ -80,14 +82,18 @@ aurellis-fastApi/
 │   │   ├── jobs.py              # Endpoints REST (POST /scrape, GET /jobs/...)
 │   │   └── schemas.py           # Schemas Pydantic de entrada/salida
 │   ├── scraper/
-│   │   ├── engine.py            # Orquestador principal del pipeline
+│   │   ├── engine.py            # Orquestador principal con quality gate y AI gating
 │   │   ├── http_client.py       # Cliente HTTP con User-Agent rotatorio
-│   │   ├── parser.py            # BeautifulSoup → texto limpio
+│   │   ├── parser.py            # HTML → texto + metadata estructurada
 │   │   └── search_engines/
-│   │       └── ddg_search.py    # Buscador DuckDuckGo automático
+│   │       └── ddg_search.py    # Discovery DDG con metadata SERP y exclusiones
 │   └── services/
-│       ├── ai_extractor.py      # ⭐ Integración DeepSeek API
-│       └── db_upsert.py         # Guardado en PostgreSQL con upsert
+│       ├── ai_extractor.py      # ⭐ Integración DeepSeek API con schema, cache y métricas
+│       ├── db_upsert.py         # Guardado en PostgreSQL con upsert
+│       ├── discovery.py         # Construcción de queries canónicas
+│       ├── heuristic_extractor.py # Baseline heurístico comercial
+│       ├── prospect_quality.py  # Validación geo/idioma/contacto
+│       └── scoring.py           # Score híbrido final
 ├── docs/
 │   ├── 05-api-y-reglas.md       # Endpoints y cURLs para usar la API
 │   └── 06-estado-del-sistema.md # Este archivo
@@ -122,11 +128,11 @@ python3 test_mvp.py
 
 ## 🔜 Próximos Pasos Sugeridos
 
-1. **Arreglar el Score (prioritario):** Loggear respuesta raw de DeepSeek y ajustar el mapeo de campos.
-2. **Mejorar el Prompt:** Incluir detección de stack tecnológico.
-3. **Fix pgAdmin:** Cambiar el email en `docker-compose.yml` a uno con dominio válido (ej. `admin@example.com`).
-4. **Rate Limiting:** Añadir un delay de 0.5-1s entre llamadas a DeepSeek para evitar throttling.
-5. **Observabilidad avanzada:** si hace falta, extender `GET /jobs/{id}/logs` con agregados o métricas resumidas por etapa.
+1. **Persistir cache IA compartido:** mover cache de memoria local a una capa común si se migra a workers reales.
+2. **Mejorar validación geo:** añadir reglas por prefijos telefónicos, TLD y diccionarios de ciudades/países.
+3. **Fix pgAdmin:** cambiar el email en `docker-compose.yml` a uno con dominio válido (ej. `admin@example.com`).
+4. **Observabilidad avanzada:** agregar métricas resumidas de `accepted`, `needs_review`, `rejected` por job.
+5. **Dataset offline de scraping:** ampliar fixtures HTML para validar parser y quality gate sin depender de internet.
 
 ## Nota de alcance
 

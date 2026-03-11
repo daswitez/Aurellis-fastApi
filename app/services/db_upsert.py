@@ -44,6 +44,10 @@ def _extract_job_prospect_data(
         "search_query_snapshot": job_context.get("search_query"),
         "rank_position": prospect_data.get("rank_position"),
         "processing_status": "processed",
+        "quality_status": prospect_data.get("quality_status") or "accepted",
+        "quality_flags_json": prospect_data.get("quality_flags"),
+        "rejection_reason": prospect_data.get("rejection_reason"),
+        "discovery_confidence": prospect_data.get("discovery_confidence"),
         "match_score": prospect_data.get("score", 0.0),
         "confidence_level": prospect_data.get("confidence_level"),
         "fit_summary": prospect_data.get("fit_summary"),
@@ -65,6 +69,12 @@ def _extract_job_prospect_data(
             ],
             "contact_page_url": prospect_data.get("contact_page_url"),
             "form_detected": prospect_data.get("form_detected", False),
+            "geo_evidence": prospect_data.get("geo_evidence"),
+            "language_evidence": prospect_data.get("language_evidence"),
+            "cta_evidence": prospect_data.get("cta_evidence"),
+            "structured_data_evidence": prospect_data.get("structured_data_evidence"),
+            "discovery_evidence": prospect_data.get("discovery_evidence"),
+            "content_coverage": prospect_data.get("content_coverage"),
             "heuristic_signals": (
                 prospect_data.get("heuristic_trace", {}).get("signals")
                 if isinstance(prospect_data.get("heuristic_trace"), dict)
@@ -79,6 +89,19 @@ def _extract_job_prospect_data(
             "estimated_revenue_signal": prospect_data.get("estimated_revenue_signal"),
             "has_active_ads": prospect_data.get("has_active_ads"),
             "hiring_signals": prospect_data.get("hiring_signals"),
+            "validated_location": prospect_data.get("validated_location"),
+            "location_match_status": prospect_data.get("location_match_status"),
+            "location_confidence": prospect_data.get("location_confidence"),
+            "detected_language": prospect_data.get("detected_language"),
+            "language_match_status": prospect_data.get("language_match_status"),
+            "primary_cta": prospect_data.get("primary_cta"),
+            "booking_url": prospect_data.get("booking_url"),
+            "pricing_page_url": prospect_data.get("pricing_page_url"),
+            "whatsapp_url": prospect_data.get("whatsapp_url"),
+            "contact_channels_json": prospect_data.get("contact_channels_json"),
+            "contact_quality_score": prospect_data.get("contact_quality_score"),
+            "company_size_signal": prospect_data.get("company_size_signal"),
+            "service_keywords": prospect_data.get("service_keywords"),
             "ai_trace": prospect_data.get("ai_trace"),
             "heuristic_trace": prospect_data.get("heuristic_trace"),
             "scoring_trace": prospect_data.get("scoring_trace"),
@@ -94,6 +117,8 @@ def _build_contact_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> li
     candidates = [
         ("email", prospect_data.get("email"), "primary_email", True),
         ("phone", prospect_data.get("phone"), "primary_phone", True),
+        ("whatsapp", prospect_data.get("whatsapp_url"), "whatsapp", False),
+        ("booking", prospect_data.get("booking_url"), "booking_link", False),
         ("linkedin", prospect_data.get("linkedin_url"), "linkedin_profile", False),
         ("instagram", prospect_data.get("instagram_url"), "instagram_profile", False),
         ("facebook", prospect_data.get("facebook_url"), "facebook_profile", False),
@@ -141,6 +166,8 @@ def _build_page_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> list[
 
     add_page(prospect_data.get("website_url"), "home")
     add_page(prospect_data.get("contact_page_url"), "contact")
+    add_page(prospect_data.get("booking_url"), "booking")
+    add_page(prospect_data.get("pricing_page_url"), "pricing")
 
     for crawled_page in prospect_data.get("crawled_pages", []):
         if not isinstance(crawled_page, dict):
@@ -152,6 +179,12 @@ def _build_page_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> list[
         page_type = "other"
         if "contact" in lowered or "contacto" in lowered:
             page_type = "contact"
+        elif "book" in lowered or "reserv" in lowered or "agenda" in lowered:
+            page_type = "booking"
+        elif "pricing" in lowered or "precio" in lowered or "precios" in lowered or "cotiza" in lowered:
+            page_type = "pricing"
+        elif "service" in lowered or "servicio" in lowered:
+            page_type = "services"
         elif "about" in lowered or "nosotros" in lowered or "equipo" in lowered:
             page_type = "about"
         elif "career" in lowered or "trabajo" in lowered or "empleo" in lowered:
@@ -253,6 +286,10 @@ async def save_scraped_prospect(
             "search_query_snapshot": job_stmt.excluded.search_query_snapshot,
             "rank_position": job_stmt.excluded.rank_position,
             "processing_status": job_stmt.excluded.processing_status,
+            "quality_status": job_stmt.excluded.quality_status,
+            "quality_flags_json": job_stmt.excluded.quality_flags_json,
+            "rejection_reason": job_stmt.excluded.rejection_reason,
+            "discovery_confidence": job_stmt.excluded.discovery_confidence,
             "match_score": job_stmt.excluded.match_score,
             "confidence_level": job_stmt.excluded.confidence_level,
             "fit_summary": job_stmt.excluded.fit_summary,
