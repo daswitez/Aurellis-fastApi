@@ -92,6 +92,7 @@ En términos prácticos, el sistema ya puede:
 - persistir cache IA compartido;
 - endurecer manejo de anti-bot para sitios más hostiles;
 - ampliar catálogo de señales geo y compatibilidad internacional;
+- clasificar explícitamente tipo de entidad y separar negocio real de directorios, medios y agregadores;
 - incorporar métricas históricas persistidas, no solo cálculo “on demand”.
 
 ### Pendientes de producto
@@ -169,4 +170,4 @@ Si quieres planificar roadmap:
 
 1. este documento;
 2. [docs/backlog/plan-detallado-estabilizacion-y-mejora.md](backlog/plan-detallado-estabilizacion-y-mejora.md);
-3. [09-cambios-implementados-hasta-fase-b.md](09-cambios-implementados-hasta-fase-b.md).
+3. [14-plan-clasificacion-entidad-y-normalizacion-comercial.md](14-plan-clasificacion-entidad-y-normalizacion-comercial.md).

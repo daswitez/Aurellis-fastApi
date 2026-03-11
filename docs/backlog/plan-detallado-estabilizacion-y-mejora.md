@@ -534,6 +534,73 @@ Ya quedó implementado el primer bloque de esta fase:
   - Transparencia → nueva semántica → query expansion → tandas adaptativas.
   - **Criterio de cierre:** el cambio se despliega sin romper el contrato de golpe.
 
+## 10. Fase I — Clasificación de entidad y normalización comercial (P1/P2)
+
+**Objetivo:** separar negocio objetivo real de ruido semántico y endurecer la calidad comercial de contactos, ubicación e inferencias.
+
+Documento de referencia:
+
+- `docs/14-plan-clasificacion-entidad-y-normalizacion-comercial.md`
+
+### I.1. Tipo de entidad
+
+- [ ] **I-001 Definir taxonomía cerrada de tipo de entidad**
+  - `direct_business`, `directory`, `aggregator`, `marketplace`, `media`, `blog_post`, `association`, `agency`, `unknown`.
+  - **Criterio de cierre:** el sistema deja de depender de categorías implícitas.
+
+- [ ] **I-002 Crear clasificador determinístico de tipo de entidad**
+  - Usar dominio, path, title, snippet, estructura de navegación y señales visibles.
+  - **Criterio de cierre:** medios, directorios y comparadores se distinguen antes del score final.
+
+- [ ] **I-003 Persistir `entity_type_detected`, confianza y evidencia**
+  - **Criterio de cierre:** la clasificación queda auditable por job result.
+
+- [ ] **I-004 Incorporar `is_target_entity` y `acceptance_decision`**
+  - **Criterio de cierre:** se separa claramente calidad técnica de decisión comercial.
+
+### I.2. Score y rechazo estructural
+
+- [ ] **I-005 Penalizar estructuralmente medios, listados y comparadores**
+  - **Criterio de cierre:** baja la tasa de falsos positivos aceptados.
+
+- [ ] **I-006 Rebalancear pesos del score**
+  - Bajar peso relativo de `tech_stack`, keywords y señales superficiales.
+  - **Criterio de cierre:** el score premia más identidad empresarial real que apariencia semántica.
+
+### I.3. Contacto y ubicación
+
+- [ ] **I-007 Validar consistencia entre email y dominio**
+  - **Criterio de cierre:** emails ajenos no salen como contacto principal confiable.
+
+- [ ] **I-008 Endurecer validación de teléfono**
+  - Rechazar fechas, ruido numérico y patrones implausibles.
+  - **Criterio de cierre:** baja la tasa de teléfonos basura aceptados.
+
+- [ ] **I-009 Separar ubicación cruda de ubicación parseada**
+  - `raw_location_text`, `city`, `region`, `country`, `postal_code`.
+  - **Criterio de cierre:** el texto contaminado no se expone como ubicación final.
+
+### I.4. Observaciones vs inferencias
+
+- [ ] **I-010 Separar `observed_signals` e `inferred_opportunities`**
+  - **Criterio de cierre:** el output comercial distingue hechos de hipótesis.
+
+- [ ] **I-011 Acotar lenguaje inferencial en IA y heurística**
+  - **Criterio de cierre:** baja la “invención elegante” sin evidencia suficiente.
+
+### I.5. Taxonomía comercial y rollout
+
+- [ ] **I-012 Definir taxonomía cerrada para nicho y tipo de negocio**
+  - **Criterio de cierre:** `inferred_niche` deja de ser solo texto libre.
+
+- [ ] **I-013 Crear fixtures y casos reales problemáticos**
+  - Directorio, comparador, medio, asociación, contacto inconsistente, teléfono falso, ubicación contaminada.
+  - **Criterio de cierre:** los percances observados quedan cubiertos por tests.
+
+- [ ] **I-014 Medir impacto y hacer rollout por capas**
+  - Clasificar primero, luego penalizar, luego rechazar duro y finalmente exponer nuevos campos.
+  - **Criterio de cierre:** el cambio se despliega sin romper compatibilidad.
+
 ---
 
 ## 11. Orden sugerido de ejecución
@@ -568,6 +635,12 @@ Ya quedó implementado el primer bloque de esta fase:
 - H-006 a H-009
 - H-013 a H-018
 - G-001 a G-004
+
+### Sprint 6
+
+- I-001 a I-004
+- I-007 a I-011
+- I-013 a I-014
 
 ---
 

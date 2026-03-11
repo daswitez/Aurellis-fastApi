@@ -23,6 +23,24 @@ La mejora no pasa por reescribir todo. Pasa por **cerrar huecos concretos** en c
 4. Calidad real del scraping y descubrimiento.
 5. Observabilidad, testing y operación.
 
+### Nueva frontera abierta 2026-03-11
+
+Con el refinamiento de captura y recall ya implementado, la frontera de mejora más evidente cambió.
+
+El problema principal ya no es “extraer más cosas”, sino **separar mejor negocio objetivo real de ruido semántico y falsos positivos comerciales**.
+
+Eso abre un bloque nuevo de trabajo centrado en:
+
+- clasificación explícita del tipo de entidad;
+- penalización estructural de directorios, medios y comparadores;
+- validación fuerte de contacto;
+- normalización de ubicación;
+- separación entre observaciones e inferencias.
+
+Ese frente quedó bajado a backlog y documentación específica en:
+
+- [14-plan-clasificacion-entidad-y-normalizacion-comercial.md](14-plan-clasificacion-entidad-y-normalizacion-comercial.md)
+
 ---
 
 ## 2. Dependencias y entorno
