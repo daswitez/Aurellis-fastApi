@@ -4,12 +4,12 @@ from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import JobProspect, Prospect, ScrapingJob, ScrapingLog
-from app.api.schemas import JobCreateRequest, JobResponse, ProspectOut
+from app.api.schemas import JobCreateRequest, JobLogOut, JobLogsResponse, JobResponse, ProspectOut, ScrapingLogLevel
 from app.scraper.engine import scrape_single_prospect
 from app.scraper.http_client import FetchHtmlError
 from app.scraper.search_engines.ddg_search import SearchDiscoveryResult, find_prospect_urls_by_query
@@ -61,6 +61,36 @@ def _job_summary_message(job: ScrapingJob) -> str:
             f"omitidas: {job.total_skipped}, fallidas: {job.total_failed}"
         )
     return "Pendiente"
+
+
+def _serialize_job_log(log: ScrapingLog) -> JobLogOut:
+    context = log.context_json or {}
+    return JobLogOut(
+        id=log.id,
+        created_at=log.created_at,
+        level=log.level,
+        message=log.message,
+        source_name=log.source_name,
+        context_json=context or None,
+        stage=context.get("stage"),
+        error_type=context.get("error_type"),
+        status_code=context.get("status_code"),
+        retryable=context.get("retryable"),
+        attempts_made=context.get("attempts_made"),
+        url=context.get("url"),
+        rank_position=context.get("rank_position"),
+        error=context.get("error"),
+    )
+
+
+async def _get_recent_job_errors(db: AsyncSession, job_id: int, limit: int = 3) -> list[JobLogOut]:
+    result = await db.execute(
+        select(ScrapingLog)
+        .where(ScrapingLog.job_id == job_id, ScrapingLog.level == "ERROR")
+        .order_by(desc(ScrapingLog.created_at))
+        .limit(limit)
+    )
+    return [_serialize_job_log(log) for log in result.scalars().all()]
 
 
 async def background_scraping_worker(job_id: int, urls: list, job_context: dict):
@@ -213,7 +243,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                 await db.commit()
 
 
-@router.post("/scrape", response_model=JobResponse, status_code=202)
+@router.post("/scrape", response_model=JobResponse, response_model_exclude_none=True, status_code=202)
 async def create_scraping_job(
     payload: JobCreateRequest, 
     background_tasks: BackgroundTasks,
@@ -315,20 +345,37 @@ async def create_scraping_job(
             f"Trabajo encolado. Procesando {len(final_urls)} dominios encontrados."
             if not discovery_result.warning_message
             else f"Trabajo encolado. Procesando {len(final_urls)} dominios encontrados. Aviso: {discovery_result.warning_message}"
-        )
+        ),
+        source_type=normalize_source_type(new_job.source_type),
+        created_at=new_job.created_at,
+        updated_at=new_job.updated_at,
+        total_found=len(final_urls),
     )
 
-@router.get("/{job_id}", response_model=JobResponse)
+@router.get("/{job_id}", response_model=JobResponse, response_model_exclude_none=True)
 async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
     """Permite saber a NestJS u otro servicio si el Job terminó de scrapear"""
     job = await db.get(ScrapingJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job no encontrado.")
+    recent_errors = await _get_recent_job_errors(db, job_id)
         
     return JobResponse(
         job_id=job.id,
         status=job.status,
-        message=_job_summary_message(job)
+        message=_job_summary_message(job),
+        source_type=normalize_source_type(job.source_type),
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        total_found=job.total_found,
+        total_processed=job.total_processed,
+        total_saved=job.total_saved,
+        total_failed=job.total_failed,
+        total_skipped=job.total_skipped,
+        error_message=job.error_message,
+        recent_errors=recent_errors,
     )
     
 @router.get("/{job_id}/results", response_model=List[ProspectOut])
@@ -379,3 +426,44 @@ async def get_job_results(job_id: int, limit: int = 50, offset: int = 0, db: Asy
         )
         for job_prospect, prospect in rows
     ]
+
+
+@router.get("/{job_id}/logs", response_model=JobLogsResponse, response_model_exclude_none=True)
+async def get_job_logs(
+    job_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    level: ScrapingLogLevel | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Devuelve logs persistidos del job para debugging operativo."""
+    job = await db.get(ScrapingJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job no encontrado.")
+
+    base_filters = [ScrapingLog.job_id == job_id]
+    if level:
+        base_filters.append(ScrapingLog.level == level)
+
+    total = await db.scalar(
+        select(func.count())
+        .select_from(ScrapingLog)
+        .where(*base_filters)
+    )
+
+    result = await db.execute(
+        select(ScrapingLog)
+        .where(*base_filters)
+        .order_by(desc(ScrapingLog.created_at))
+        .offset(offset)
+        .limit(limit)
+    )
+    logs = result.scalars().all()
+
+    return JobLogsResponse(
+        job_id=job_id,
+        total=total or 0,
+        limit=limit,
+        offset=offset,
+        items=[_serialize_job_log(log) for log in logs],
+    )

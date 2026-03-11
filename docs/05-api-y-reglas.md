@@ -20,6 +20,30 @@ uvicorn app.main:app --reload
 
 ---
 
+## Cambios de Endpoints Respecto al MVP Inicial
+
+Esta documentación ya no describe endpoints “propuestos”, sino el contrato actual del servicio después de las mejoras de estabilización y confiabilidad.
+
+Los cambios más importantes fueron:
+
+- `POST /api/v1/jobs/scrape`
+  - dejó de inyectar defaults de negocio silenciosos;
+  - distingue explícitamente resultados reales vs demo/mock;
+  - guarda mejor el origen del job desde su creación.
+- `GET /api/v1/jobs/{job_id}`
+  - pasó de ser un polling mínimo a un endpoint de monitoreo;
+  - ahora expone timestamps, métricas y errores recientes.
+- `GET /api/v1/jobs/{job_id}/results`
+  - ahora lee desde `job_prospects`, no desde la vieja asociación simple por `job_id`;
+  - expone trazabilidad de origen por resultado.
+- `GET /api/v1/jobs/{job_id}/logs`
+  - es nuevo;
+  - permite debugging operativo sin consultar Postgres manualmente.
+
+Si querés ver el resumen técnico más amplio de todo lo implementado hasta acá, está en [09-cambios-implementados-hasta-fase-b.md](09-cambios-implementados-hasta-fase-b.md).
+
+---
+
 ## Endpoints
 
 ### 1. `POST /api/v1/jobs/scrape` — Crear un Job de Scraping
@@ -68,9 +92,20 @@ curl -X POST http://localhost:8000/api/v1/jobs/scrape \
 {
   "job_id": 1,
   "status": "pending",
-  "message": "Trabajo encolado. Procesando 5 dominios encontrados."
+  "message": "Trabajo encolado. Procesando 5 dominios encontrados.",
+  "source_type": "duckduckgo_search",
+  "created_at": "2026-03-10T21:10:30",
+  "updated_at": "2026-03-10T21:10:30",
+  "total_found": 5,
+  "recent_errors": []
 }
 ```
+
+**Qué cambió en este endpoint:**
+
+- antes el payload podía heredar contexto comercial ficticio por default; ahora solo usa lo que realmente envías;
+- la búsqueda automática ya no “simula éxito” con fallback silencioso;
+- la respuesta ya devuelve parte del contexto operativo inicial del job.
 
 **Errores posibles:**
 
@@ -131,9 +166,26 @@ curl http://localhost:8000/api/v1/jobs/1
 {
   "job_id": 1,
   "status": "completed",
-  "message": "Completado en 2026-03-10 21:10:50 | Procesadas: 5, guardadas: 4, omitidas: 1, fallidas: 0"
+  "message": "Completado en 2026-03-10 21:10:50 | Procesadas: 5, guardadas: 4, omitidas: 1, fallidas: 0",
+  "source_type": "duckduckgo_search",
+  "created_at": "2026-03-10T21:10:30",
+  "updated_at": "2026-03-10T21:10:50",
+  "started_at": "2026-03-10T21:10:31",
+  "finished_at": "2026-03-10T21:10:50",
+  "total_found": 5,
+  "total_processed": 5,
+  "total_saved": 4,
+  "total_failed": 0,
+  "total_skipped": 1,
+  "recent_errors": []
 }
 ```
+
+**Qué cambió en este endpoint:**
+
+- antes devolvía esencialmente un string de estado;
+- ahora sirve para monitoreo real del job;
+- incluye métricas operativas y errores recientes resumidos sin ir a `/logs`.
 
 **Respuesta `404`:**
 ```json
@@ -197,6 +249,67 @@ curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
 ]
 ```
 
+**Qué cambió en este endpoint:**
+
+- ahora los resultados se leen desde la relación contextual `job_prospects`;
+- cada resultado conserva trazabilidad del origen del lead;
+- deja de depender del último `upsert` sobre el dominio para reconstruir una corrida.
+
+---
+
+### 4. `GET /api/v1/jobs/{job_id}/logs` — Logs del Job
+
+Devuelve logs persistidos del job para debugging operativo, sin entrar a la base.
+
+```bash
+# Todos los logs
+curl "http://localhost:8000/api/v1/jobs/1/logs"
+
+# Solo errores, paginados
+curl "http://localhost:8000/api/v1/jobs/1/logs?level=ERROR&limit=10&offset=0"
+```
+
+**Query params:**
+
+| Param | Tipo | Default | Descripción |
+|-------|------|---------|-------------|
+| `limit` | `int` | `50` | Máximo de logs por página |
+| `offset` | `int` | `0` | Desde qué posición paginar |
+| `level` | `INFO \| WARNING \| ERROR` | `null` | Filtra por nivel de log |
+
+**Respuesta `200 OK`:**
+```json
+{
+  "job_id": 1,
+  "total": 3,
+  "limit": 50,
+  "offset": 0,
+  "items": [
+    {
+      "id": 150,
+      "created_at": "2026-03-10T21:10:50",
+      "level": "ERROR",
+      "message": "Fallo procesando URL",
+      "source_name": "worker",
+      "stage": "fetch_html",
+      "error_type": "http_429",
+      "status_code": 429,
+      "retryable": true,
+      "attempts_made": 3,
+      "url": "https://example.com/contact",
+      "rank_position": 2,
+      "error": "HTTP 429 Too Many Requests al visitar https://example.com/contact"
+    }
+  ]
+}
+```
+
+**Qué cambió en este endpoint:**
+
+- este endpoint no existía en el MVP inicial;
+- ahora expone `scraping_logs` por API;
+- sirve para inspección operativa y debugging rápido por job.
+
 ---
 
 ## Flujo Completo de Uso (para NestJS)
@@ -205,6 +318,7 @@ curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
 1. POST /scrape          → Recibir { job_id: N }
 2. GET  /jobs/N          → Polling hasta { status: "completed" }
 3. GET  /jobs/N/results  → Descargar prospectos enriquecidos con IA
+4. GET  /jobs/N/logs     → Inspeccionar eventos y fallos si hace falta
 ```
 
 ---
@@ -212,6 +326,8 @@ curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
 ## Notas Técnicas
 
 - **El scraping es asíncrono.** La API nunca bloquea — siempre retorna `202` de inmediato.
+- **`GET /jobs/{id}` enriquecido:** además del estado y mensaje, ahora devuelve timestamps, métricas y hasta 3 errores recientes resumidos.
+- **`GET /jobs/{id}/logs`:** expone `scraping_logs` paginados, con filtro por `INFO`, `WARNING` o `ERROR`.
 - **Hay un delay de 2 segundos entre cada URL** para no saturar los sitios objetivo.
 - **Contrato de scoring:** `score` es un `float` entre `0.0` y `1.0`; `confidence_level` es `low`, `medium` o `high`.
 - **Contrato de revenue signal:** `estimated_revenue_signal` usa `low`, `medium` o `high`.
@@ -221,6 +337,7 @@ curl "http://localhost:8000/api/v1/jobs/1/results?limit=10&offset=20"
 - **Retries controlados:** el cliente HTTP reintenta solo errores recuperables. Se parametriza con `HTTP_MAX_RETRIES` y `HTTP_BACKOFF_BASE_SECONDS`.
 - **Links internos normalizados:** el parser resuelve rutas relativas con `urljoin` y evita persistir links externos o no navegables como parte del sitio.
 - **Crawling limitado:** además de la homepage, el scraper puede visitar hasta 3 páginas clave del mismo dominio (`contact`, `about`, `nosotros`, `equipo`, `careers`) para enriquecer contacto y señales.
+- **Extracción de contacto mejorada:** además de `mailto:` y `tel:`, el parser busca emails visibles en texto, normaliza teléfonos y conserva detección de formularios.
 - **DeepSeek AI** analiza el HTML de cada sitio para extraer `inferred_niche`, `pain_points` y `score`.
 - **Los resultados por job** se leen desde la relación contextual `job_prospects`, no solo desde el snapshot canónico del prospecto.
 - **Si un sitio devuelve 403 (anti-bot)**, se loggea un warning y se salta — no rompe el job.

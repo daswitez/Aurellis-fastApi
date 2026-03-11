@@ -275,7 +275,8 @@ No se mezcla más modo demo con modo real.
 3. Los resultados del job exponen `source_type`, `discovery_method`, `search_query_snapshot` y `rank_position`.
 4. La normalización de links internos ya no concatena URLs manualmente.
 5. El scraper ahora visita homepage + hasta 3 páginas clave para mejorar contacto y señales sin hacer crawling profundo.
-4. Sigue pendiente mejorar normalización de links internos.
+6. La extracción de contacto ya busca emails visibles en texto, normaliza teléfonos y mantiene detección de formularios.
+7. Sigue pendiente ampliar ese crawling sin convertirlo en un crawler profundo.
 
 ---
 
@@ -303,6 +304,8 @@ Este punto ya quedó corregido: el cliente HTTP vuelve a validar TLS por defecto
 - `scraping_logs` guarda `stage`, `error_type`, `status_code` y `retryable` por URL fallida.
 - El cliente HTTP ya aplica retries con backoff exponencial solo sobre fallos recuperables.
 - `403`, `DNS` y `TLS` no se reintentan; `timeout`, `429`, `5xx` y algunos errores de red sí.
+- `GET /jobs/{id}` ya expone timestamps, métricas operativas y un resumen de errores recientes.
+- `GET /jobs/{id}/logs` ya permite inspeccionar `scraping_logs` por API con paginación y filtro por nivel.
 
 ### Pendiente relacionado
 
@@ -341,6 +344,20 @@ Eso significa registrar:
 - duración,
 - resultado válido/inválido,
 - causa de fallback.
+
+### Estado actual
+
+El prompt ya fue rediseñado y versionado como `deepseek_prospect_v2`.
+
+Cambios aplicados:
+
+- usa más contexto comercial real del job,
+- define mejor la semántica de `score` y `confidence_level`,
+- prioriza tecnologías concretas con evidencia,
+- limita y acota `pain_points_detected`,
+- y ya no usa un pseudo-ejemplo ambiguo como estructura principal.
+
+El diseño quedó documentado en `docs/10-diseno-prompt-deepseek.md`.
 
 ---
 

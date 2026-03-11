@@ -179,21 +179,24 @@ Cambios de escalabilidad, integración oficial y endurecimiento de producción.
   - Implementado como crawling acotado: homepage + hasta `3` páginas clave del mismo dominio.
   - **Criterio de cierre:** el sistema mejora extracción de contacto y señales sin disparar costos o ruido excesivo.
 
-- [ ] **B-008 Mejorar extracción de contacto**
+- [x] **B-008 Mejorar extracción de contacto**
   - Buscar emails en texto visible además de `mailto:`.
   - Detectar teléfonos con mayor precisión.
   - Detectar formularios y páginas de contacto.
+  - El parser ya extrae emails visibles, normaliza teléfonos y filtra placeholders obvios.
   - **Criterio de cierre:** sube la tasa de contacto útil y baja la tasa de falsos positivos.
 
 ### B.4. Job observability
 
-- [ ] **B-009 Enriquecer `GET /jobs/{id}`**
+- [x] **B-009 Enriquecer `GET /jobs/{id}`**
   - Incluir timestamps, métricas y resumen de errores.
   - Mantener compatibilidad razonable con integradores.
+  - El endpoint ahora devuelve timestamps, contadores operativos, `source_type`, `error_message` y hasta 3 errores recientes resumidos.
   - **Criterio de cierre:** el estado del job permite monitoreo operativo real.
 
-- [ ] **B-010 Crear endpoint o vista de logs por job**
+- [x] **B-010 Crear endpoint o vista de logs por job**
   - Permitir inspección rápida de fallos sin entrar a la base manualmente.
+  - Implementado como `GET /jobs/{id}/logs` con paginación y filtro opcional por nivel.
   - **Criterio de cierre:** debugging básico posible vía API o documentación clara.
 
 ---
@@ -204,10 +207,12 @@ Cambios de escalabilidad, integración oficial y endurecimiento de producción.
 
 ### C.1. Calidad del prompt y validación
 
-- [ ] **C-001 Revisar el prompt de DeepSeek**
+- [x] **C-001 Revisar el prompt de DeepSeek**
   - Quitar ejemplos ambiguos o contradictorios.
   - Pedir campos de manera más precisa.
   - Incorporar detección de stack y señales si se decide mantenerlas en IA.
+  - Prompt rediseñado y versionado como `deepseek_prospect_v2`.
+  - Diseño documentado en `docs/10-diseno-prompt-deepseek.md`.
   - **Criterio de cierre:** el prompt está versionado y su salida esperada es consistente.
 
 - [ ] **C-002 Validar respuesta de IA con schema**

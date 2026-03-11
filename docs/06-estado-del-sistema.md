@@ -32,8 +32,9 @@ El flujo completo de prospección automática está operativo:
 | **DeepSeek AI** | ✅ **ACTIVO** | HTTP 200 en producción · ~2-3s por URL |
 | **Parser de Respuesta IA** | ✅ OK | JSON parseado y mapeado a los campos del modelo |
 | **DB Upsert (PostgreSQL)** | ✅ OK | `ON CONFLICT` — nunca duplica por dominio |
-| **Endpoint `GET /jobs/{id}`** | ✅ OK | Polling asíncrono con resumen de métricas y timestamps |
+| **Endpoint `GET /jobs/{id}`** | ✅ OK | Polling asíncrono con timestamps, métricas y resumen de errores recientes |
 | **Endpoint `GET /jobs/{id}/results`** | ✅ OK | Lista de prospectos guardados |
+| **Endpoint `GET /jobs/{id}/logs`** | ✅ OK | Logs paginados por job con filtro opcional por nivel |
 | **Lifecycle de jobs** | ✅ OK | Guarda `started_at`, `finished_at`, `total_processed`, `total_failed`, `total_skipped` |
 | **Logging persistente** | ✅ OK | Guarda eventos y errores en `scraping_logs` por `job_id` |
 
@@ -125,7 +126,7 @@ python3 test_mvp.py
 2. **Mejorar el Prompt:** Incluir detección de stack tecnológico.
 3. **Fix pgAdmin:** Cambiar el email en `docker-compose.yml` a uno con dominio válido (ej. `admin@example.com`).
 4. **Rate Limiting:** Añadir un delay de 0.5-1s entre llamadas a DeepSeek para evitar throttling.
-5. **Endpoint de logs por job:** exponer `scraping_logs` por API para debugging operativo sin entrar a la base.
+5. **Observabilidad avanzada:** si hace falta, extender `GET /jobs/{id}/logs` con agregados o métricas resumidas por etapa.
 
 ## Nota de alcance
 

@@ -5,6 +5,9 @@ from urllib.parse import urljoin, urlparse
 
 
 INTERNAL_LINK_KEYWORDS = ["contact", "contacto", "about", "nosotros", "equipo", "careers", "trabajo", "empleo"]
+EMAIL_REGEX = re.compile(r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b")
+PHONE_REGEX = re.compile(r"(?:(?:\+|00)\d{1,3}[\s\-./]?)?(?:\(?\d{2,4}\)?[\s\-./]?){2,5}\d{2,4}")
+EMAIL_BLOCKLIST_TOKENS = {"example.com", "yourdomain", "domain.com", "email.com", "test.com", "localhost"}
 
 
 def _normalize_href(base_url: str, href: str) -> str | None:
@@ -26,6 +29,45 @@ def _looks_like_internal_key_page(anchor_text: str, href: str) -> bool:
     anchor_lower = anchor_text.lower()
     href_lower = href.lower()
     return any(keyword in anchor_lower or keyword in href_lower for keyword in INTERNAL_LINK_KEYWORDS)
+
+
+def _normalize_email(candidate: str) -> str | None:
+    normalized = candidate.strip().strip(".,;:()[]{}<>\"'").lower()
+    if "@" not in normalized:
+        return None
+    if any(token in normalized for token in EMAIL_BLOCKLIST_TOKENS):
+        return None
+    return normalized
+
+
+def _normalize_phone(candidate: str) -> str | None:
+    normalized = re.sub(r"[^\d+]", "", candidate.strip())
+    if normalized.startswith("00"):
+        normalized = f"+{normalized[2:]}"
+    if normalized.count("+") > 1 or ("+" in normalized and not normalized.startswith("+")):
+        return None
+
+    digits_only = re.sub(r"\D", "", normalized)
+    if len(digits_only) < 7 or len(digits_only) > 15:
+        return None
+    return normalized
+
+
+def _extract_visible_contacts(text: str) -> tuple[set[str], set[str]]:
+    emails: set[str] = set()
+    phones: set[str] = set()
+
+    for match in EMAIL_REGEX.findall(text):
+        normalized_email = _normalize_email(match)
+        if normalized_email:
+            emails.add(normalized_email)
+
+    for match in PHONE_REGEX.findall(text):
+        normalized_phone = _normalize_phone(match)
+        if normalized_phone:
+            phones.add(normalized_phone)
+
+    return emails, phones
 
 def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
     """
@@ -70,7 +112,9 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
                 
         # Teléfonos directos
         elif href.lower().startswith('tel:'):
-            metadata["phones"].add(href[4:])
+            normalized_phone = _normalize_phone(href[4:])
+            if normalized_phone:
+                metadata["phones"].add(normalized_phone)
             
         # Enlaces a Redes Sociales o "Páginas de Contacto"
         elif any(social in href.lower() for social in ['linkedin.com', 'instagram.com', 'facebook.com', 'twitter.com']):
@@ -96,11 +140,15 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
     
     # Limpiador Regex de espacios redundantes
     clean_text = re.sub(r'\s+', ' ', raw_text)
+
+    visible_emails, visible_phones = _extract_visible_contacts(clean_text)
+    metadata["emails"].update(visible_emails)
+    metadata["phones"].update(visible_phones)
     
     # Convertir sets a listas para que sea JSON serializable
-    metadata["emails"] = list(metadata["emails"])
-    metadata["phones"] = list(metadata["phones"])
-    metadata["social_links"] = list(metadata["social_links"])
-    metadata["internal_links"] = list(metadata["internal_links"])
+    metadata["emails"] = sorted(metadata["emails"])
+    metadata["phones"] = sorted(metadata["phones"])
+    metadata["social_links"] = sorted(metadata["social_links"])
+    metadata["internal_links"] = sorted(metadata["internal_links"])
     
     return clean_text, metadata
