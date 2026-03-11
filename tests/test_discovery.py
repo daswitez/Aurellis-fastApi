@@ -19,6 +19,7 @@ from app.services.discovery import (
     resolve_discovery_batch_budget,
 )
 from app.services.discovery_orchestrator import discover_prospect_urls_by_queries
+from app.services.discovery_ranker import score_business_likeness
 from app.services.discovery_types import SearchDiscoveryResult
 from app.services.search_providers.base import SearchProvider
 
@@ -74,12 +75,16 @@ class DiscoveryQueryTestCase(unittest.TestCase):
             target_niche="Ecommerce y academias online",
             target_location="España",
             target_language="es",
+            user_target_offer_focus="Crear creativos para negocios que vendan productos digitales o hagan ecommerce",
         )
 
         self.assertIn("ecommerce España", queries)
         self.assertIn("academia online España", queries)
         self.assertTrue(any(query.startswith("ecommerce España sitio oficial") for query in queries))
         self.assertTrue(any(query.startswith("academia online España contacto") for query in queries))
+        self.assertTrue(any("-prensa" in query for query in queries))
+        self.assertTrue(any("-informe" in query for query in queries))
+        self.assertTrue(any("-asesoria" in query or "-consultoria" in query for query in queries))
 
     def test_resolves_capture_targets_from_legacy_max_results(self) -> None:
         targets = resolve_capture_targets(
@@ -216,6 +221,36 @@ class DiscoveryQueryTestCase(unittest.TestCase):
 
         self.assertEqual(official_url, "https://clinicaejemplo.com")
         self.assertIn("directory_seed_resolved", reasons)
+
+    def test_business_likeness_excludes_press_and_report_pages(self) -> None:
+        press_score, press_reasons, press_exclusion = score_business_likeness(
+            "https://www.cnmc.es/prensa/ecommerce-20230404",
+            "El comercio electronico supera en Espana los 18.900 millones",
+            "Nota de prensa e informe sectorial del comercio electronico en Espana.",
+        )
+        report_score, report_reasons, report_exclusion = score_business_likeness(
+            "https://www.kantar.com/es/campaigns/informe-de-la-moda-online-en-espana-2024",
+            "Informe de la moda online en Espana 2024",
+            "Estudio e informe sobre ecommerce y moda online en Espana.",
+        )
+
+        self.assertEqual(press_exclusion, "excluded_as_article")
+        self.assertEqual(report_exclusion, "excluded_as_article")
+        self.assertIn("editorial_path", press_reasons)
+        self.assertIn("editorial_title", report_reasons)
+        self.assertLess(press_score, 0.15)
+        self.assertLess(report_score, 0.15)
+
+    def test_business_likeness_excludes_product_detail_pages(self) -> None:
+        product_score, product_reasons, product_exclusion = score_business_likeness(
+            "https://lamasbolano.com/francisco-franco-1936-1975-/10015954-espana-1974-bellas-artes-sello-correo.html",
+            "Bellas Artes 1974 Espana correo",
+            "Serie completa, distribuidor oficial en Espana y carrito de compra disponible.",
+        )
+
+        self.assertEqual(product_exclusion, "excluded_as_product_page")
+        self.assertIn("product_page", product_reasons)
+        self.assertLess(product_score, 0.15)
 
 
 class DirectorySeedExpansionTestCase(unittest.IsolatedAsyncioTestCase):

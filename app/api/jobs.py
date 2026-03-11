@@ -103,6 +103,11 @@ def _build_job_context(
     provider_name: str | None = None,
     search_warning: str | None,
 ) -> dict:
+    filters_json = job.filters_json or {}
+    discovery_profile = filters_json.get("discovery_profile") if isinstance(filters_json, dict) else {}
+    if not isinstance(discovery_profile, dict):
+        discovery_profile = {}
+
     return {
         "job_id": job.id,
         "workspace_id": job.workspace_id,
@@ -111,6 +116,10 @@ def _build_job_context(
         "user_value_proposition": job.user_value_proposition,
         "user_past_successes": job.user_past_successes,
         "user_roi_metrics": job.user_roi_metrics,
+        "user_service_offers": discovery_profile.get("user_service_offers"),
+        "user_service_constraints": discovery_profile.get("user_service_constraints"),
+        "user_target_offer_focus": discovery_profile.get("user_target_offer_focus"),
+        "user_ticket_size": discovery_profile.get("user_ticket_size"),
         "target_niche": job.target_niche,
         "target_location": job.target_location,
         "target_language": job.target_language,
@@ -123,8 +132,8 @@ def _build_job_context(
         "source_type": normalize_source_type(source_type),
         "provider_name": provider_name,
         "search_warning": search_warning,
-        "target_accepted_results": (job.filters_json or {}).get("target_accepted_results"),
-        "max_candidates_to_process": (job.filters_json or {}).get("max_candidates_to_process"),
+        "target_accepted_results": filters_json.get("target_accepted_results"),
+        "max_candidates_to_process": filters_json.get("max_candidates_to_process"),
     }
 
 
@@ -1148,6 +1157,9 @@ async def create_scraping_job(
         target_niche=payload.target_niche,
         target_location=payload.target_location,
         target_language=payload.target_language,
+        user_service_offers=payload.user_service_offers,
+        user_service_constraints=payload.user_service_constraints,
+        user_target_offer_focus=payload.user_target_offer_focus,
     )
     canonical_queries = _flatten_query_batches(discovery_query_batches)
     next_discovery_batch_index = 0
@@ -1234,6 +1246,12 @@ async def create_scraping_job(
             "max_results": payload.max_results,
             "target_accepted_results": capture_targets["target_accepted_results"],
             "max_candidates_to_process": capture_targets["max_candidates_to_process"],
+            "discovery_profile": {
+                "user_service_offers": payload.user_service_offers,
+                "user_service_constraints": payload.user_service_constraints,
+                "user_target_offer_focus": payload.user_target_offer_focus,
+                "user_ticket_size": payload.user_ticket_size,
+            },
         },
     )
     

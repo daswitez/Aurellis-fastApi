@@ -20,6 +20,14 @@ class BuildJobContextTestCase(unittest.TestCase):
             target_company_size="5-20 empleados",
             target_pain_points=["Sin reservas online"],
             target_budget_signals=["Google Ads activos"],
+            filters_json={
+                "discovery_profile": {
+                    "user_service_offers": ["Creativos para redes sociales", "Videos de venta"],
+                    "user_service_constraints": ["No motion graphics complejos"],
+                    "user_target_offer_focus": "Negocios que vendan productos digitales o hagan ecommerce",
+                    "user_ticket_size": "1500 USD",
+                }
+            },
         )
 
         context = _build_job_context(
@@ -43,6 +51,10 @@ class BuildJobContextTestCase(unittest.TestCase):
         self.assertEqual(context["target_company_size"], "5-20 empleados")
         self.assertEqual(context["target_pain_points"], ["Sin reservas online"])
         self.assertEqual(context["target_budget_signals"], ["Google Ads activos"])
+        self.assertEqual(context["user_service_offers"], ["Creativos para redes sociales", "Videos de venta"])
+        self.assertEqual(context["user_service_constraints"], ["No motion graphics complejos"])
+        self.assertEqual(context["user_target_offer_focus"], "Negocios que vendan productos digitales o hagan ecommerce")
+        self.assertEqual(context["user_ticket_size"], "1500 USD")
         self.assertEqual(context["search_query"], "clinicas dentales madrid")
         self.assertEqual(context["discovery_method"], "search_query")
         self.assertEqual(context["source_type"], "duckduckgo_search")

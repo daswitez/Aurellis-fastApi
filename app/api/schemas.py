@@ -46,6 +46,10 @@ class JobCreateRequest(BaseModel):
     user_value_proposition: Optional[str] = None
     user_past_successes: Optional[List[str]] = None
     user_roi_metrics: Optional[List[str]] = None
+    user_service_offers: Optional[List[str]] = None
+    user_service_constraints: Optional[List[str]] = None
+    user_target_offer_focus: Optional[str] = None
+    user_ticket_size: Optional[str] = None
     
     # 3. Contexto del Prospecto / Comprador Ideal
     target_niche: Optional[str] = None

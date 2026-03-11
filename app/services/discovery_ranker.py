@@ -54,6 +54,8 @@ EDITORIAL_PATH_TOKENS = [
     "/ideas/",
     "/noticias/",
     "/news/",
+    "/prensa/",
+    "/press/",
     "/categories/",
     "/category/",
     "/guia/",
@@ -61,6 +63,13 @@ EDITORIAL_PATH_TOKENS = [
     "/article/",
     "/articulo/",
     "/artículos/",
+    "/informe",
+    "/informes/",
+    "/report/",
+    "/reports/",
+    "/study/",
+    "/studies/",
+    "/insights/",
     "/tag/",
 ]
 EDITORIAL_TITLE_TOKENS = [
@@ -73,9 +82,51 @@ EDITORIAL_TITLE_TOKENS = [
     "categorías",
     "categories",
     "tendencias",
+    "informe",
+    "informes",
+    "report",
+    "reports",
+    "estudio",
+    "estudios",
+    "prensa",
+    "press",
+    "newsroom",
+    "estadisticas",
+    "estadísticas",
     "mejores",
     "top ",
     "lista de",
+]
+PRODUCT_PAGE_PATH_TOKENS = [
+    "/product/",
+    "/products/",
+    "/producto/",
+    "/productos/",
+]
+PRODUCT_PAGE_TOKENS = [
+    "añadir al carrito",
+    "anadir al carrito",
+    "carrito",
+    "sku",
+    "referencia",
+    "serie completa",
+    "distribuidor oficial",
+    "catalogo",
+    "catálogo",
+]
+INSTITUTIONAL_TOKENS = [
+    "ministerio",
+    "gobierno",
+    "ayuntamiento",
+    "diputacion",
+    "diputación",
+    "comision nacional",
+    "comisión nacional",
+    "federacion",
+    "federación",
+    "fundacion",
+    "fundación",
+    "universidad",
 ]
 
 
@@ -194,6 +245,8 @@ def score_business_likeness(url: str, title: str, snippet: str) -> tuple[float, 
     negative_rules = [
         ("editorial_path", -0.35, EDITORIAL_PATH_TOKENS),
         ("editorial_title", -0.28, EDITORIAL_TITLE_TOKENS),
+        ("product_page", -0.35, PRODUCT_PAGE_PATH_TOKENS + PRODUCT_PAGE_TOKENS),
+        ("institutional_page", -0.25, INSTITUTIONAL_TOKENS),
         ("marketplace_or_listing", -0.25, ["marketplace", "listing", "directory", "directorio"]),
     ]
 
@@ -234,7 +287,9 @@ def score_business_likeness(url: str, title: str, snippet: str) -> tuple[float, 
         reasons.append("directory_seed_candidate")
 
     exclusion_reason = None
-    if any(reason in reasons for reason in {"editorial_path", "editorial_title"}):
+    if "product_page" in reasons:
+        exclusion_reason = "excluded_as_product_page"
+    elif any(reason in reasons for reason in {"editorial_path", "editorial_title"}):
         exclusion_reason = "excluded_as_article"
     elif score < 0.15:
         exclusion_reason = "low_business_likeness"

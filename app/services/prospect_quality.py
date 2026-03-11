@@ -196,6 +196,63 @@ CONTACT_CONFIDENCE_TO_SCORE = {
     "medium": 0.65,
     "high": 0.9,
 }
+TARGET_ECOMMERCE_HINTS = ("ecommerce", "tienda online", "shopify")
+TARGET_EDUCATION_HINTS = ("academia online", "cursos online", "escuela online", "formacion online", "productos digitales", "infoproductos")
+SERVICE_PROVIDER_HINTS = (
+    "asesoria",
+    "asesoría",
+    "consultoria",
+    "consultoría",
+    "consultor",
+    "consultora",
+    "coach",
+    "coaching",
+    "mentor",
+    "mentoria",
+    "mentoría",
+    "agencia",
+    "servicios para empresas",
+    "presupuesto",
+)
+ECOMMERCE_BUSINESS_HINTS = (
+    "tienda online",
+    "ecommerce",
+    "shopify",
+    "carrito",
+    "checkout",
+    "comprar",
+    "añadir al carrito",
+    "anadir al carrito",
+    "coleccion",
+    "colección",
+    "catalogo",
+    "catálogo",
+)
+EDUCATION_BUSINESS_HINTS = (
+    "academia",
+    "curso",
+    "cursos",
+    "masterclass",
+    "programa",
+    "formacion",
+    "formación",
+    "alumnos",
+    "inscripcion",
+    "inscripción",
+    "campus",
+    "clases",
+)
+PRODUCT_PAGE_HINTS = (
+    "añadir al carrito",
+    "anadir al carrito",
+    "carrito",
+    "sku",
+    "referencia",
+    "serie completa",
+    "distribuidor oficial",
+    "catalogo",
+    "catálogo",
+)
 
 
 def _build_country_alias_lookup() -> dict[str, str]:
@@ -228,6 +285,77 @@ def _normalize_geo_token(value: str | None) -> str:
 
 
 COUNTRY_ALIAS_LOOKUP = _build_country_alias_lookup()
+
+
+def _derive_target_business_models(context: dict[str, Any]) -> set[str]:
+    searchable = " ".join(
+        [
+            str(context.get("target_niche") or ""),
+            str(context.get("user_target_offer_focus") or ""),
+        ]
+    ).lower()
+    models: set[str] = set()
+    if any(token in searchable for token in TARGET_ECOMMERCE_HINTS):
+        models.add("ecommerce_business")
+    if any(token in searchable for token in TARGET_EDUCATION_HINTS):
+        models.add("education_business")
+    return models
+
+
+def _detect_observed_business_model(
+    clean_text: str,
+    metadata: dict[str, Any],
+    entity_type_detected: str | None,
+) -> str | None:
+    searchable = " ".join(
+        [
+            clean_text[:2400],
+            str(metadata.get("title") or ""),
+            str(metadata.get("description") or ""),
+            " ".join(str(link) for link in metadata.get("internal_links", [])[:8]),
+            str(metadata.get("website_url") or ""),
+        ]
+    ).lower()
+    normalized_entity_type = str(entity_type_detected or "").strip().lower()
+
+    if normalized_entity_type in {"consultant", "agency"} or any(token in searchable for token in SERVICE_PROVIDER_HINTS):
+        return "service_provider"
+    if any(token in searchable for token in PRODUCT_PAGE_HINTS):
+        return "product_page"
+    if any(token in searchable for token in EDUCATION_BUSINESS_HINTS):
+        return "education_business"
+    if any(token in searchable for token in ECOMMERCE_BUSINESS_HINTS):
+        return "ecommerce_business"
+    return None
+
+
+def _assess_business_model_fit(
+    *,
+    clean_text: str,
+    metadata: dict[str, Any],
+    context: dict[str, Any],
+    entity_type_detected: str | None,
+) -> dict[str, Any]:
+    target_models = _derive_target_business_models(context)
+    observed_model = _detect_observed_business_model(clean_text, metadata, entity_type_detected)
+
+    if not target_models:
+        return {
+            "target_business_models": [],
+            "observed_business_model": observed_model,
+            "business_model_fit_status": "unknown",
+        }
+    if observed_model in target_models:
+        fit_status = "match"
+    elif observed_model in {"service_provider", "product_page"}:
+        fit_status = "mismatch"
+    else:
+        fit_status = "unknown"
+    return {
+        "target_business_models": sorted(target_models),
+        "observed_business_model": observed_model,
+        "business_model_fit_status": fit_status,
+    }
 
 
 def _resolve_location_signal_rule(target_location: str | None) -> dict[str, Any] | None:
@@ -1002,9 +1130,15 @@ def _derive_acceptance_decision(
     entity_type_confidence: str | None,
     is_target_entity: bool | None,
     heuristic_score: float,
+    target_niche: str | None,
+    context_fit_score: float | None,
+    business_model_fit_status: str | None,
 ) -> tuple[str, float, float | None]:
     normalized_entity_type = str(entity_type_detected or "unknown").strip().lower()
     normalized_confidence = str(entity_type_confidence or "low").strip().lower()
+    has_target_niche = bool(str(target_niche or "").strip())
+    normalized_context_fit = max(0.0, min(float(context_fit_score or 0.0), 1.0))
+    normalized_business_model_fit = str(business_model_fit_status or "unknown").strip().lower()
 
     if normalized_entity_type in DIRECTORY_ENTITY_TYPES:
         return "rejected_directory", 0.2, 0.25
@@ -1014,6 +1148,10 @@ def _derive_acceptance_decision(
         return "rejected_article", 0.15, 0.2
 
     if quality_status == "accepted" and is_target_entity:
+        if has_target_niche and normalized_business_model_fit == "mismatch":
+            return "accepted_related", 0.5, 0.55
+        if has_target_niche and normalized_context_fit < 0.3:
+            return "accepted_related", 0.65, 0.65
         return "accepted_target", 1.0, None
 
     if quality_status == "accepted" and normalized_entity_type == "unknown":
@@ -1086,6 +1224,8 @@ def build_ai_evidence_pack(
         "entity_type_confidence": quality_data.get("entity_type_confidence"),
         "is_target_entity": quality_data.get("is_target_entity"),
         "acceptance_decision": quality_data.get("acceptance_decision"),
+        "observed_business_model": quality_data.get("observed_business_model"),
+        "business_model_fit_status": quality_data.get("business_model_fit_status"),
         "discovery": discovery_metadata,
         "service_keywords": quality_data.get("service_keywords"),
     }
@@ -1127,6 +1267,24 @@ def evaluate_prospect_quality(
     contact_quality_score = float(contact_data["contact_quality_score"])
     company_size_signal = _infer_company_size_signal(metadata, heuristic_data)
     service_keywords = _extract_service_keywords(clean_text)
+    business_model_data = _assess_business_model_fit(
+        clean_text=clean_text,
+        metadata=metadata,
+        context=context,
+        entity_type_detected=entity_data.get("entity_type_detected"),
+    )
+    context_fit_score = None
+    heuristic_trace = heuristic_data.get("heuristic_trace")
+    if isinstance(heuristic_trace, dict):
+        component_scores = heuristic_trace.get("component_scores")
+        if isinstance(component_scores, dict) and component_scores.get("context_fit") is not None:
+            context_fit_score = float(component_scores.get("context_fit") or 0.0)
+    if context_fit_score is None:
+        generic_attributes = heuristic_data.get("generic_attributes")
+        if isinstance(generic_attributes, dict):
+            score_breakdown = generic_attributes.get("heuristic_score_breakdown")
+            if isinstance(score_breakdown, dict) and score_breakdown.get("context_fit") is not None:
+                context_fit_score = float(score_breakdown.get("context_fit") or 0.0)
     quality_status, rejection_reason, quality_flags, technical_score_multiplier = _classify_quality_status(
         has_target_location=bool(str(context.get("target_location") or "").strip()),
         heuristic_score=float(heuristic_data.get("score") or 0.0),
@@ -1148,6 +1306,9 @@ def evaluate_prospect_quality(
         entity_type_confidence=entity_data.get("entity_type_confidence"),
         is_target_entity=is_target_entity,
         heuristic_score=float(heuristic_data.get("score") or 0.0),
+        target_niche=context.get("target_niche"),
+        context_fit_score=context_fit_score,
+        business_model_fit_status=business_model_data.get("business_model_fit_status"),
     )
     score_multiplier = round(technical_score_multiplier * commercial_score_multiplier, 4)
 
@@ -1185,6 +1346,10 @@ def evaluate_prospect_quality(
         "primary_phone_confidence": contact_data["primary_phone_confidence"],
         "primary_contact_source": contact_data["primary_contact_source"],
         "company_size_signal": company_size_signal,
+        "context_fit_score": context_fit_score,
+        "target_business_models": business_model_data.get("target_business_models"),
+        "observed_business_model": business_model_data.get("observed_business_model"),
+        "business_model_fit_status": business_model_data.get("business_model_fit_status"),
         "service_keywords": service_keywords,
         "entity_type_detected": entity_data.get("entity_type_detected"),
         "entity_type_confidence": entity_data.get("entity_type_confidence"),

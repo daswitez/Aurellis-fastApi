@@ -12,10 +12,29 @@ NEGATIVE_DISCOVERY_TERMS = (
     "-blog",
     "-ideas",
     "-noticias",
+    "-prensa",
+    "-informe",
+    "-report",
     "-revista",
     "-g2",
     "-pinterest",
     "-linkedin",
+)
+SERVICE_PROVIDER_EXCLUSION_TERMS = (
+    "-asesoria",
+    "-asesoría",
+    "-consultoria",
+    "-consultoría",
+    "-consultor",
+    "-consultora",
+    "-coach",
+    "-coaching",
+    "-mentor",
+    "-mentoria",
+    "-mentoría",
+    "-agencia",
+    "-freelance",
+    "-freelancer",
 )
 
 LANGUAGE_DISCOVERY_HINTS = {
@@ -147,13 +166,64 @@ def _chunk_queries(queries: list[str], batch_size: int) -> list[list[str]]:
     return [queries[index : index + batch_size] for index in range(0, len(queries), batch_size)]
 
 
-def _apply_negative_terms(query: str) -> str:
+def _normalize_context_list(values: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        cleaned = _normalize_space(value)
+        lowered = cleaned.lower()
+        if not cleaned or lowered in seen:
+            continue
+        normalized.append(cleaned)
+        seen.add(lowered)
+    return normalized
+
+
+def _derive_contextual_negative_terms(
+    *,
+    target_niche: str | None,
+    user_target_offer_focus: str | None,
+    user_service_offers: list[str] | None,
+    user_service_constraints: list[str] | None,
+) -> tuple[str, ...]:
+    searchable_text = " ".join(
+        [
+            _normalize_space(target_niche),
+            _normalize_space(user_target_offer_focus),
+            " ".join(_normalize_context_list(user_service_offers)),
+            " ".join(_normalize_context_list(user_service_constraints)),
+        ]
+    ).lower()
+
+    extra_terms: list[str] = []
+    if any(
+        token in searchable_text
+        for token in (
+            "ecommerce",
+            "tienda online",
+            "shopify",
+            "academia online",
+            "cursos online",
+            "productos digitales",
+            "infoproductos",
+        )
+    ):
+        extra_terms.extend(SERVICE_PROVIDER_EXCLUSION_TERMS)
+
+    deduped_terms: list[str] = []
+    for term in [*NEGATIVE_DISCOVERY_TERMS, *extra_terms]:
+        if term not in deduped_terms:
+            deduped_terms.append(term)
+    return tuple(deduped_terms)
+
+
+def _apply_negative_terms(query: str, negative_terms: tuple[str, ...] = NEGATIVE_DISCOVERY_TERMS) -> str:
     normalized_query = _normalize_space(query)
     if not normalized_query:
         return ""
 
     lowered_query = normalized_query.lower()
-    suffix_parts = [term for term in NEGATIVE_DISCOVERY_TERMS if term.lower() not in lowered_query]
+    suffix_parts = [term for term in negative_terms if term.lower() not in lowered_query]
     if not suffix_parts:
         return normalized_query
     return _normalize_space(f"{normalized_query} {' '.join(suffix_parts)}")
@@ -227,6 +297,9 @@ def build_discovery_queries(
     target_niche: str | None,
     target_location: str | None,
     target_language: str | None,
+    user_service_offers: list[str] | None = None,
+    user_service_constraints: list[str] | None = None,
+    user_target_offer_focus: str | None = None,
     max_queries: int = MAX_DISCOVERY_QUERIES,
 ) -> list[str]:
     base_query = _normalize_space(search_query)
@@ -249,6 +322,12 @@ def build_discovery_queries(
     geo_base_query = _normalize_space(f"{base_query} {location}") if location and not _query_contains_token(base_query, location) else base_query
     intent_seeds = _derive_intent_seeds(search_query=base_query, target_niche=niche, location=location)
     localized_intent_seeds = [_normalize_space(f"{intent_seed} {location}") if location else intent_seed for intent_seed in intent_seeds]
+    negative_terms = _derive_contextual_negative_terms(
+        target_niche=niche,
+        user_target_offer_focus=user_target_offer_focus,
+        user_service_offers=user_service_offers,
+        user_service_constraints=user_service_constraints,
+    )
 
     _append_query(queries, base_query)
     _append_query(queries, niche_location_query)
@@ -259,18 +338,18 @@ def build_discovery_queries(
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
     primary_intent_seed = niche_location_query or geo_base_query or base_query
 
-    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['official']}"))
-    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['contact']}"))
-    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['services']}"))
+    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['official']}", negative_terms))
+    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['contact']}", negative_terms))
+    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['services']}", negative_terms))
     for intent_seed in intent_seeds[:2]:
         localized_seed = _normalize_space(f"{intent_seed} {location}") if location else intent_seed
-        _append_query(queries, _apply_negative_terms(f"{localized_seed} {language_hints['official']}"))
-        _append_query(queries, _apply_negative_terms(f"{localized_seed} {language_hints['contact']}"))
+        _append_query(queries, _apply_negative_terms(f"{localized_seed} {language_hints['official']}", negative_terms))
+        _append_query(queries, _apply_negative_terms(f"{localized_seed} {language_hints['contact']}", negative_terms))
     for localized_intent_seed in localized_intent_seeds[3:]:
         _append_query(queries, localized_intent_seed)
 
     if niche and not _query_contains_token(base_query, niche):
-        _append_query(queries, _apply_negative_terms(f"{base_query} {niche}"))
+        _append_query(queries, _apply_negative_terms(f"{base_query} {niche}", negative_terms))
 
     deduped_queries: list[str] = []
     for query in queries:
@@ -290,6 +369,9 @@ def build_retry_discovery_queries(
     target_niche: str | None,
     target_location: str | None,
     target_language: str | None,
+    user_service_offers: list[str] | None = None,
+    user_service_constraints: list[str] | None = None,
+    user_target_offer_focus: str | None = None,
 ) -> list[str]:
     base_query = _normalize_space(search_query)
     niche = _normalize_space(target_niche)
@@ -297,6 +379,12 @@ def build_retry_discovery_queries(
     language = _normalize_space(target_language).lower()
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
     intent_seeds = _derive_intent_seeds(search_query=base_query, target_niche=niche, location=location)
+    negative_terms = _derive_contextual_negative_terms(
+        target_niche=niche,
+        user_target_offer_focus=user_target_offer_focus,
+        user_service_offers=user_service_offers,
+        user_service_constraints=user_service_constraints,
+    )
 
     intent_seed = _normalize_space(f"{niche} {location}") or niche or _normalize_space(f"{base_query} {location}") or base_query
     if not intent_seed:
@@ -305,22 +393,22 @@ def build_retry_discovery_queries(
     retry_queries: list[str] = []
 
     for hint in language_hints.get("commercial", []):
-        _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}"))
+        _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}", negative_terms))
 
     for hint in language_hints.get("locations", []):
-        _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}"))
+        _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}", negative_terms))
 
     for derived_seed in intent_seeds[:4]:
         localized_seed = _normalize_space(f"{derived_seed} {location}") if location else derived_seed
         for hint in language_hints.get("commercial", []):
-            _append_query(retry_queries, _apply_negative_terms(f"{localized_seed} {hint}"))
+            _append_query(retry_queries, _apply_negative_terms(f"{localized_seed} {hint}", negative_terms))
 
     if niche and base_query and not _query_contains_token(base_query, niche):
-        _append_query(retry_queries, _apply_negative_terms(f"{niche} {location} {language_hints['official']}"))
-        _append_query(retry_queries, _apply_negative_terms(f"{niche} {location} {language_hints['contact']}"))
+        _append_query(retry_queries, _apply_negative_terms(f"{niche} {location} {language_hints['official']}", negative_terms))
+        _append_query(retry_queries, _apply_negative_terms(f"{niche} {location} {language_hints['contact']}", negative_terms))
 
     if location and base_query and not _query_contains_token(base_query, location):
-        _append_query(retry_queries, _apply_negative_terms(f"{base_query} {location}"))
+        _append_query(retry_queries, _apply_negative_terms(f"{base_query} {location}", negative_terms))
 
     deduped_queries: list[str] = []
     for query in retry_queries:
@@ -337,6 +425,9 @@ def build_discovery_query_batches(
     target_niche: str | None,
     target_location: str | None,
     target_language: str | None,
+    user_service_offers: list[str] | None = None,
+    user_service_constraints: list[str] | None = None,
+    user_target_offer_focus: str | None = None,
     query_batch_size: int = DEFAULT_QUERY_BATCH_SIZE,
 ) -> list[list[str]]:
     canonical_queries = build_discovery_queries(
@@ -344,12 +435,18 @@ def build_discovery_query_batches(
         target_niche=target_niche,
         target_location=target_location,
         target_language=target_language,
+        user_service_offers=user_service_offers,
+        user_service_constraints=user_service_constraints,
+        user_target_offer_focus=user_target_offer_focus,
     )
     retry_queries = build_retry_discovery_queries(
         search_query=search_query,
         target_niche=target_niche,
         target_location=target_location,
         target_language=target_language,
+        user_service_offers=user_service_offers,
+        user_service_constraints=user_service_constraints,
+        user_target_offer_focus=user_target_offer_focus,
     )
 
     deduped_retry_queries = [query for query in retry_queries if query not in canonical_queries]
