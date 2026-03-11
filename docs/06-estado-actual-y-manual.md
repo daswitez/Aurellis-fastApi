@@ -2,6 +2,8 @@
 
 Este documento resume el estado actual de la **API de Scraping de Aurelius**, qué funcionalidades ya están operativas, cómo funciona por debajo, cómo levantar el proyecto localmente y dónde se guardan los datos.
 
+> Complemento recomendado: revisar también [07-observaciones-y-plan-de-mejora.md](07-observaciones-y-plan-de-mejora.md), donde se documentan inconsistencias actuales, riesgos técnicos y prioridades de mejora con mayor detalle.
+
 ---
 
 ## 🚀 1. ¿Qué tenemos ahora y qué hace?
@@ -34,7 +36,7 @@ El ciclo de vida completo de una solicitud ("Job") es el siguiente:
 ## 💾 3. ¿Dónde se guarda la información?
 Absolutamente toda la data scrapeada se persiste en nuestra **Base de Datos Relacional (PostgreSQL)** alojada en un contenedor de Docker local.
 
-- **URL de Conexión:** `postgresql+asyncpg://postgres:postgres@localhost:5432/aurelius_scraper`
+- **URL de Conexión local por defecto:** `postgresql+asyncpg://aurellis_user:aurellis_password@localhost:5432/aurellis_scraping_dev`
 
 ### Tablas Principales:
 1. **`scraping_jobs`**: Registra la intención, parámetros de búsqueda enviados desde NestJS, y estado general de todo el lote (`pending`, `running`, `completed`, `failed`).
@@ -49,8 +51,11 @@ Para que el ecosistema funcione (API + Base de Datos), necesitas ambos prendidos
 ### Paso A: Levantar la Base de Datos
 Asegúrate de tener Docker prendido y en la raíz del proyecto ejecuta:
 ```bash
+# Preparar variables locales
+cp .env.example .env
+
 # Iniciar contenedor Postgres en segundo plano (puerto 5432)
-docker compose up -d
+docker compose up -d postgres
 
 # Validar que está prendido
 docker ps
@@ -58,11 +63,14 @@ docker ps
 
 ### Paso B: Activar el Entorno e Instalar
 ```bash
-# 1. Entrar al virtual environment
+# 1. Crear el virtual environment si aún no existe
+python3 -m venv venv
+
+# 2. Entrar al virtual environment
 source venv/bin/activate
 
-# 2. (Opcional) Si hay nuevas dependencias en tu equipo:
-pip install -r requirements.txt
+# 3. Instalar dependencias
+python3 -m pip install -r requirements.txt
 ```
 
 ### Paso C: Migraciones de la BD (Alembic)
@@ -85,7 +93,7 @@ En vez de usar Postman, dejé un script maestro llamado `test_mvp.py` que emula 
 Abre una **NUEVA pestaña en la terminal**, activa el entorno y corre el simulador:
 ```bash
 source venv/bin/activate
-python test_mvp.py
+python3 test_mvp.py
 ```
 
 El simulador enviará una consulta como *"clínicas veterinarias en lima"*, luego consultará periódicamente a FastAPI usando GET (`Polling`) hasta que FastAPI en background cambie el Job a "Completed", imprimiendo al final la lista pura extraída por la IA heurística.

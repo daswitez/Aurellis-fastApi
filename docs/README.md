@@ -11,6 +11,8 @@ A continuación, puedes encontrar la información de forma estructurada:
 - [04. Modelo de Datos](04-modelo-datos.md) - Datos a extraer sobre prospectos y las entidades SQL a considerar.
 - [05. API y Reglas](05-api-y-reglas.md) - Endpoints propuestos, límites iniciales de operación y visión a futuro.
 - [06. Quickstart / Setup](06-quickstart.md) - Cómo clonar y levantar este proyecto localmente.
+- [07. Observaciones y Plan de Mejora](07-observaciones-y-plan-de-mejora.md) - Revisión técnica detallada del MVP, inconsistencias detectadas y prioridades de mejora.
+- [08. Diseño Base Prospección y CRM](08-diseno-base-prospeccion-y-crm.md) - Modelo objetivo para escalar prospección, scoring, contactos y futura integración con CRM.
 
 ## Planeación y Backlog
 - [Plan de Trabajo por Fases](backlog/README.md) - Desglose detallado de todos los pasos, desde el Setup inicial (Fase 1) hasta la Integración Oficial en producción con Supabase y NestJS (Fase 5).

@@ -11,7 +11,7 @@
 - [x] **Documentación Quickstart:** Guía paso a paso para que cualquier desarrollador pueda clonar y levantar el proyecto.
 
 ## Tareas Pendientes o Bloqueadas 🚧
-- [ ] **Levantar Base de Datos Local:** Resolver problema de la máquina host con Docker/Docker-Compose (`docker-compose up -d`).
+- [ ] **Levantar Base de Datos Local:** Resolver problema de la máquina host con Docker (`docker compose up -d postgres`).
 - [ ] **Correr Migraciones:** Ejecutar `alembic upgrade head` exitosamente para que las 4 tablas principales existan en la BD local.
 
 > **Nota Crítica:** Hasta que las tablas no existan físicamente en Postgres, no podemos iniciar la persistencia de la **Fase 2**.

@@ -42,8 +42,8 @@ Para que este servicio sea útil, cada prospecto debería intentar capturar como
 - fuente de origen
 - fecha de scraping
 - estado de validación
-- score inicial
-- nivel de confianza del dato
+- score inicial *(numérico entre `0.0` y `1.0`)*
+- nivel de confianza del dato *(semántico: `low`, `medium`, `high`)*
 - flags de deduplicación
 
 ## Entidades sugeridas
@@ -73,7 +73,10 @@ Representa cada solicitud de scraping lanzada por el sistema principal.
 - finished_at
 - error_message
 - total_found
+- total_processed
 - total_saved
+- total_failed
+- total_skipped
 - created_at
 - updated_at
 
@@ -104,8 +107,8 @@ Registro principal del prospecto ya normalizado.
 - has_active_ads *(NUEVO: True/False si deducimos que pagan anuncios)*
 - source
 - source_url
-- score
-- confidence_level
+- score *(float entre `0.0` y `1.0`)*
+- confidence_level *(`low`, `medium`, `high`)*
 - created_at
 - updated_at
 
@@ -132,3 +135,22 @@ Eventos técnicos o mensajes relevantes por job.
 - source_name
 - context_json
 - created_at
+
+---
+
+## Evolución recomendada del modelo
+
+Para escalar correctamente la plataforma hacia prospección multi-workspace y futura integración con CRM, el modelo debería evolucionar a una separación más clara entre:
+
+- prospecto canónico,
+- resultado contextual por job,
+- contactos detectados,
+- y páginas analizadas.
+
+### Nuevas entidades objetivo
+
+- `job_prospects`: relación entre `scraping_jobs` y `prospects` con score, confianza, evidencia y contexto de búsqueda.
+- `prospect_contacts`: tabla normalizada de canales de contacto detectados.
+- `prospect_pages`: inventario de páginas visitadas y sus señales.
+
+La justificación completa y los campos recomendados están documentados en [08-diseno-base-prospeccion-y-crm.md](08-diseno-base-prospeccion-y-crm.md).

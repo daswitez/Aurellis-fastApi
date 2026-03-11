@@ -12,7 +12,7 @@ Este repositorio contiene un servicio en **FastAPI** especializado en buscar pro
 Asegúrate de tener instalados en tu computadora:
 
 1. **Python 3.10+** (Se recomienda 3.12).
-2. **Docker y Docker Compose** (Para la base de datos local).
+2. **Docker con `docker compose`** (Para la base de datos local).
 3. **Manejador de entornos de Python** (como `venv`).
 
 ---
@@ -40,22 +40,21 @@ source venv/bin/activate
 ### 3. Instala las Dependencias
 Con el entorno virtual activado (`(venv)` en tu consola), instala todas las librerías necesarias:
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
 ### 4. Configurar Variables de Entorno
-Copia el archivo base y ajusta las variables de entorno de ser necesario (para la BD local los valores por defecto funcionarán).
+Copia el archivo base y ajusta las variables de entorno de ser necesario. Para la BD local los valores por defecto funcionarán. Si no defines `DEEPSEEK_API_KEY`, el sistema seguirá pudiendo operar con el fallback heurístico.
 ```bash
 cp .env.example .env
 ```
-*(Si `.env.example` no existe, crea un archivo `.env` vacío o usa la URI predeterminada definida en `app.config`)*.
 
 ### 5. Levanta la Base de Datos con Docker
 Para las pruebas de aislamiento estamos usando una base de datos PostgreSQL temporal y la interfaz pgAdmin, levantadas vía Docker.
 ```bash
-docker-compose up -d
+docker compose up -d postgres
 ```
-*(Esto descargará la imagen de Postgres y la dejará trabajando en el puerto `5432`)*.
+*(Esto descargará la imagen de Postgres y la dejará trabajando en el puerto `5432`. Si quieres levantar también pgAdmin, usa `docker compose up -d`.)*.
 
 ### 6. Aplica las Migraciones de la Base de Datos
 Necesitamos construir las tablas (`scraping_jobs`, `prospects`, etc.) en la base de datos levantada usando *Alembic*.
@@ -77,6 +76,14 @@ Abre tu navegador (o Postman) y accede a:
 
 - **Health Check:** `http://localhost:8000/health` (Deberías ver un JSON `{"status": "ok"}`).
 - **Documentación Interactiva Swagger:** `http://localhost:8000/docs`.
+
+### 8. Prueba rápida del flujo
+Con el servidor ya corriendo, en otra terminal activa el entorno y ejecuta:
+
+```bash
+source venv/bin/activate
+python3 test_mvp.py
+```
 
 ---
 

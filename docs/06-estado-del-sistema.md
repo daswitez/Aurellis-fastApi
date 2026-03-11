@@ -4,6 +4,16 @@
 
 ---
 
+## 📌 Revisión Técnica Complementaria
+
+Además de este estado resumido, existe una revisión más rigurosa del proyecto en:
+
+- [07-observaciones-y-plan-de-mejora.md](07-observaciones-y-plan-de-mejora.md)
+
+Ese documento detalla problemas de contrato, persistencia, procesamiento en background, calidad de scraping, seguridad, testing y operación.
+
+---
+
 ## ✅ Componentes Funcionando
 
 ### Core del Pipeline E2E
@@ -16,25 +26,27 @@ El flujo completo de prospección automática está operativo:
 | Componente | Estado | Notas |
 |---|---|---|
 | **API FastAPI** | ✅ OK | `http://localhost:8000` · Swagger en `/docs` |
-| **Pokemon (Docker Postgres)** | ✅ OK | Requiere `docker-compose up -d postgres` |
+| **Postgres local (Docker)** | ✅ OK | Requiere `docker compose up -d postgres` |
 | **Buscador DuckDuckGo** | ✅ OK | Encuentra URLs reales para cualquier búsqueda |
 | **Scraper HTTP** | ✅ OK | Descarga página completa con `httpx` + rotación de User-Agents |
 | **DeepSeek AI** | ✅ **ACTIVO** | HTTP 200 en producción · ~2-3s por URL |
 | **Parser de Respuesta IA** | ✅ OK | JSON parseado y mapeado a los campos del modelo |
 | **DB Upsert (PostgreSQL)** | ✅ OK | `ON CONFLICT` — nunca duplica por dominio |
-| **Endpoint `GET /jobs/{id}`** | ✅ OK | Polling asíncrono del estado del Job |
+| **Endpoint `GET /jobs/{id}`** | ✅ OK | Polling asíncrono con resumen de métricas y timestamps |
 | **Endpoint `GET /jobs/{id}/results`** | ✅ OK | Lista de prospectos guardados |
+| **Lifecycle de jobs** | ✅ OK | Guarda `started_at`, `finished_at`, `total_processed`, `total_failed`, `total_skipped` |
+| **Logging persistente** | ✅ OK | Guarda eventos y errores en `scraping_logs` por `job_id` |
 
 ---
 
 ## ⚠️ Limitaciones Actuales (pendientes de mejora)
 
-### 1. Score siempre = `0.0`
-**Causa probable:** El prompt enviado a DeepSeek no está incluyendo correctamente el perfil del vendedor (`user_profession`, `user_value_proposition`) en la petición al modelo, o el modelo retorna el score en un campo con nombre diferente al que se mapea.
+### 1. El score puede quedar en `0.0`
+**Causa probable:** si DeepSeek falla, no hay `DEEPSEEK_API_KEY`, o el contexto comercial del job es demasiado pobre, el sistema cae al extractor heurístico y hoy ese fallback devuelve `score=0.0`.
 
 **Archivo a revisar:** `app/services/ai_extractor.py`
 
-**Solución sugerida:** Loggear la respuesta JSON cruda de DeepSeek para ver qué campo está devolviendo para el score (puede que lo llame `match_score` o `compatibility`).
+**Solución sugerida:** mejorar el score heurístico base, medir el ratio de fallback y validar la respuesta cruda del proveedor IA para detectar respuestas incompletas o inconsistentes.
 
 ### 2. `inferred_tech_stack` vacío `[]`
 **Causa probable:** El prompt no pide explícitamente detectar tecnologías web (WordPress, Shopify, etc.).
@@ -51,7 +63,7 @@ Algunos sitios (ej: `vetivet.pe`) bloquean scrapers básicos.
 ### 4. pgAdmin crashea al iniciar
 **Causa:** El email `admin@aurellis.local` no es válido según la nueva validación de pgAdmin.
 
-**Fix temporal:** `docker-compose up -d postgres` — solo levanta PostgreSQL sin pgAdmin.
+**Fix temporal:** `docker compose up -d postgres` — solo levanta PostgreSQL sin pgAdmin.
 
 ---
 
@@ -69,7 +81,7 @@ aurellis-fastApi/
 │   ├── scraper/
 │   │   ├── engine.py            # Orquestador principal del pipeline
 │   │   ├── http_client.py       # Cliente HTTP con User-Agent rotatorio
-│   │   ├── html_parser.py       # BeautifulSoup → texto limpio
+│   │   ├── parser.py            # BeautifulSoup → texto limpio
 │   │   └── search_engines/
 │   │       └── ddg_search.py    # Buscador DuckDuckGo automático
 │   └── services/
@@ -89,15 +101,19 @@ aurellis-fastApi/
 
 ```bash
 # 1. Levantar la base de datos
-docker-compose up -d postgres
+cp .env.example .env
+docker compose up -d postgres
 
 # 2. Activar entorno virtual
 source venv/bin/activate
 
-# 3. Levantar el servidor
+# 3. Instalar dependencias
+python3 -m pip install -r requirements.txt
+
+# 4. Levantar el servidor
 uvicorn app.main:app --reload
 
-# 4. Probar con el script E2E
+# 5. Probar con el script E2E
 python3 test_mvp.py
 ```
 
@@ -109,3 +125,9 @@ python3 test_mvp.py
 2. **Mejorar el Prompt:** Incluir detección de stack tecnológico.
 3. **Fix pgAdmin:** Cambiar el email en `docker-compose.yml` a uno con dominio válido (ej. `admin@example.com`).
 4. **Rate Limiting:** Añadir un delay de 0.5-1s entre llamadas a DeepSeek para evitar throttling.
+5. **Endpoint de logs por job:** exponer `scraping_logs` por API para debugging operativo sin entrar a la base.
+
+## Nota de alcance
+
+Este documento resume el estado operativo del MVP, pero no reemplaza la revisión técnica detallada.  
+Para decisiones de arquitectura, endurecimiento del contrato de datos y plan de estabilización, tomar como referencia principal el documento de observaciones y mejora.

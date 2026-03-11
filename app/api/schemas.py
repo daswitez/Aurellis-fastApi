@@ -1,36 +1,43 @@
-from pydantic import BaseModel, HttpUrl
-from typing import List, Optional, Any, Dict
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field, HttpUrl
+
+JobStatus = Literal["pending", "running", "completed", "failed"]
+RevenueSignal = Literal["low", "medium", "high"]
+ConfidenceLevel = Literal["low", "medium", "high"]
+ResultSourceType = Literal["duckduckgo_search", "mock_search", "seed_url", "manual", "enrichment"]
+DiscoveryMethod = Literal["search_query", "seed_url", "manual", "enrichment"]
 
 class JobCreateRequest(BaseModel):
     """Payload entrante para crear un Job de Scraping desde NestJS"""
     
     # 1. Target general opcional
-    urls: Optional[List[HttpUrl]] = [] # Links específicos a scrapear ("Semillas")
-    search_query: Optional[str] = None # En vez de URLs, un termino ej: "Dentistas en Madrid"
+    urls: Optional[List[HttpUrl]] = None  # Links específicos a scrapear ("Semillas")
+    search_query: Optional[str] = None  # En vez de URLs, un termino ej: "Dentistas en Madrid"
     
     # 2. Contexto del Vendedor (Para matching de similitud local)
-    user_profession: Optional[str] = "Editor de Video"
-    user_technologies: Optional[List[str]] = ["Premiere"]
-    user_value_proposition: Optional[str] = "Retención de audiencia"
-    user_past_successes: Optional[List[str]] = []
-    user_roi_metrics: Optional[List[str]] = []
+    user_profession: Optional[str] = None
+    user_technologies: Optional[List[str]] = None
+    user_value_proposition: Optional[str] = None
+    user_past_successes: Optional[List[str]] = None
+    user_roi_metrics: Optional[List[str]] = None
     
     # 3. Contexto del Prospecto / Comprador Ideal
-    target_niche: Optional[str] = "YouTubers"
-    target_location: Optional[str] = "España"
-    target_language: Optional[str] = "es"
-    target_company_size: Optional[str] = "Solopreneur"
-    target_pain_points: Optional[List[str]] = ["Mala calidad de video"]
-    target_budget_signals: Optional[List[str]] = ["Anuncios activos"]
+    target_niche: Optional[str] = None
+    target_location: Optional[str] = None
+    target_language: Optional[str] = None
+    target_company_size: Optional[str] = None
+    target_pain_points: Optional[List[str]] = None
+    target_budget_signals: Optional[List[str]] = None
     
     # 4. Meta del Trabajo (Opcional, previene que se desborde al inicio)
-    max_results: int = 10 
+    max_results: int = Field(default=10, ge=1, le=100)
     
     
 class JobResponse(BaseModel):
     """Estructura de la respuesta al crear o consultar un Job"""
     job_id: int
-    status: str
+    status: JobStatus
     message: str 
     
 class ProspectOut(BaseModel):
@@ -41,6 +48,10 @@ class ProspectOut(BaseModel):
     domain: str
     website_url: Optional[str]
     source_url: Optional[str]
+    source_type: Optional[ResultSourceType]
+    discovery_method: Optional[DiscoveryMethod]
+    search_query_snapshot: Optional[str]
+    rank_position: Optional[int]
 
     # Contacto
     email: Optional[str]
@@ -50,14 +61,14 @@ class ProspectOut(BaseModel):
     facebook_url: Optional[str]
 
     # Análisis IA (DeepSeek)
-    score: Optional[float]               # Match score 0-100 con el perfil del vendedor
-    confidence_level: Optional[str]      # Confianza del análisis: low / medium / high
+    score: Optional[float]  # Match score 0.0-1.0 con el perfil del vendedor
+    confidence_level: Optional[ConfidenceLevel]
     inferred_niche: Optional[str]        # Nicho detectado por IA
     inferred_tech_stack: Optional[List[str]]  # Stack tecnológico detectado
-    generic_attributes: Optional[Any]   # Pain points y metadata del análisis IA
+    generic_attributes: Optional[Dict[str, Any]]
 
     # Señales de negocio
-    estimated_revenue_signal: Optional[str]  # low / medium / high
+    estimated_revenue_signal: Optional[RevenueSignal]
     has_active_ads: Optional[bool]
     hiring_signals: Optional[bool]       # ¿Está contratando activamente?
 

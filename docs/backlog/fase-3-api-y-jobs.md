@@ -11,11 +11,11 @@
   - Recibe un solo dominio, hace el scraping al instante y devuelve el JSON enriquecido (endpoint síncrono para pruebas rápidas).
 
 ## 3.2. Gestión del Trabajo en Background (`BackgroundTasks`)
-- [ ] Implementar el orquestador usando la utilidad nativa `BackgroundTasks` de FastAPI.
-- [ ] La función orquestadora debe iterar sobre la lista de prospectos objetivos.
-- [ ] Actualizar periódicamente estado y contadores (`total_found`, `total_saved`) en la tabla `scraping_jobs`.
-- [ ] Al finalizar, actualizar estado del job a `COMPLETED`. En caso de fallo crítico general, a `FAILED`, e insertar el log de error.
-- [ ] Implementar escritura de eventos a la tabla `scraping_logs`.
+- [x] Implementar el orquestador usando la utilidad nativa `BackgroundTasks` de FastAPI.
+- [x] La función orquestadora itera sobre la lista de prospectos objetivos.
+- [x] Actualizar periódicamente estado y contadores (`total_found`, `total_processed`, `total_saved`, `total_failed`, `total_skipped`) en la tabla `scraping_jobs`.
+- [x] Al finalizar, actualizar estado del job a `COMPLETED`. En caso de fallo crítico general, a `FAILED`, e insertar el log de error.
+- [x] Implementar escritura de eventos a la tabla `scraping_logs`.
 
 ## 3.3. Endpoints de Resultados y Monitoreo
 - [ ] `GET /api/v1/jobs/{job_id}`: Devuelve los metadatos y estatus del job (para que veamos si sigue corriendo).

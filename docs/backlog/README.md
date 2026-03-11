@@ -9,3 +9,8 @@ Para mantener el orden y asegurar pequeñas entregas funcionales, el proyecto se
 - [Fase 3: API y Gestión de Jobs](fase-3-api-y-jobs.md)
 - [Fase 4: Validación MVP y Evasión](fase-4-validacion-mvp.md)
 - [Fase 5: Integración Oficial (Producción)](fase-5-integracion-oficial.md)
+- [Plan Detallado de Estabilización y Mejora](plan-detallado-estabilizacion-y-mejora.md) *(Backlog operativo derivado de la revisión técnica del MVP)*
+
+Como referencia transversal para priorizar correcciones del MVP, revisar también:
+
+- [Observaciones y Plan de Mejora](../07-observaciones-y-plan-de-mejora.md)

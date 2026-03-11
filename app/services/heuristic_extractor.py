@@ -1,4 +1,3 @@
-import json
 import logging
 from typing import Dict, Any, List
 
@@ -83,6 +82,8 @@ async def extract_business_entity_heuristic(clean_text: str, html_raw: str, meta
         "hiring_signals": hiring_signals,
         "estimated_revenue_signal": "medium" if has_active_ads or hiring_signals else "low",
         "has_active_ads": has_active_ads,
+        "score": 0.0,
+        "confidence_level": "low",
         "generic_attributes": {
             "evaluation_method": "Heuristic Code (No LLM)",
             "pain_points_detected": [] # Aquí se podrían meter RegEx de los dolores del cliente

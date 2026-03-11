@@ -1,22 +1,69 @@
 import asyncio
 import logging
+from datetime import datetime
 from typing import List
+
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 
 from app.database import get_db
-from app.models import ScrapingJob
+from app.models import JobProspect, Prospect, ScrapingJob, ScrapingLog
 from app.api.schemas import JobCreateRequest, JobResponse, ProspectOut
 from app.scraper.engine import scrape_single_prospect
-from app.scraper.search_engines.ddg_search import find_prospect_urls_by_query
-from app.services.db_upsert import upsert_prospect
+from app.scraper.http_client import FetchHtmlError
+from app.scraper.search_engines.ddg_search import SearchDiscoveryResult, find_prospect_urls_by_query
+from app.services.db_upsert import save_scraped_prospect
+from app.services.source_metadata import normalize_discovery_method, normalize_source_type
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
-async def background_scraping_worker(job_id: int, urls: list, job_context: dict, db_url: str):
+
+def _utcnow() -> datetime:
+    return datetime.utcnow()
+
+
+async def _append_job_log(
+    db: AsyncSession,
+    job_id: int,
+    level: str,
+    message: str,
+    *,
+    source_name: str | None = None,
+    context_json: dict | None = None,
+) -> None:
+    db.add(
+        ScrapingLog(
+            job_id=job_id,
+            level=level,
+            message=message,
+            source_name=source_name,
+            context_json=context_json,
+        )
+    )
+
+
+def _job_summary_message(job: ScrapingJob) -> str:
+    if job.status == "completed":
+        return (
+            f"Completado en {job.finished_at} | "
+            f"Procesadas: {job.total_processed}, guardadas: {job.total_saved}, "
+            f"omitidas: {job.total_skipped}, fallidas: {job.total_failed}"
+        )
+    if job.status == "failed":
+        return f"Falló en {job.finished_at} | {job.error_message or 'Error no especificado'}"
+    if job.status == "running":
+        return (
+            f"En ejecución desde {job.started_at} | "
+            f"Procesadas: {job.total_processed}, guardadas: {job.total_saved}, "
+            f"omitidas: {job.total_skipped}, fallidas: {job.total_failed}"
+        )
+    return "Pendiente"
+
+
+async def background_scraping_worker(job_id: int, urls: list, job_context: dict):
     """
     Simulación de la cola que procesará los dominios solicitados en segundo plano
     sin colgar la API principal. 
@@ -29,47 +76,140 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict,
     
     async with AsyncSessionLocal() as db:
         try:
-            # 1. Marcar el job como RUNNING
             job = await db.get(ScrapingJob, job_id)
             if not job:
                 return
+
             job.status = "running"
+            job.started_at = _utcnow()
+            job.finished_at = None
+            job.error_message = None
+            job.total_found = len(urls)
+            job.total_processed = 0
+            job.total_saved = 0
+            job.total_failed = 0
+            job.total_skipped = 0
+            await _append_job_log(
+                db,
+                job_id,
+                "INFO",
+                "Job iniciado",
+                source_name="worker",
+                context_json={
+                    "total_urls": len(urls),
+                    "discovery_method": job_context.get("discovery_method"),
+                    "search_query": job_context.get("search_query"),
+                },
+            )
             await db.commit()
             
-            # 2. Ejecutar cada scrape
-            total_saved = 0
-            for url in urls:
-                prospect_dict = await scrape_single_prospect(str(url), job_context)
-                
-                if prospect_dict:
-                    # Inyectar el ID real
+            for rank_position, url in enumerate(urls, start=1):
+                job.total_processed += 1
+                try:
+                    prospect_dict = await scrape_single_prospect(str(url), job_context)
+
+                    if not prospect_dict:
+                        job.total_skipped += 1
+                        await _append_job_log(
+                            db,
+                            job_id,
+                            "WARNING",
+                            "URL omitida por falta de contenido scrapeable",
+                            source_name="worker",
+                            context_json={"url": str(url), "rank_position": rank_position},
+                        )
+                        await db.commit()
+                        await asyncio.sleep(2)
+                        continue
+
                     prospect_dict["job_id"] = job_id
-                    
-                    # 3. Guardar en Base de Datos (Upsert ASYNC)
-                    try:
-                        saved_prospect = await upsert_prospect(db, prospect_dict)
-                        if saved_prospect:
-                            total_saved += 1
-                    except Exception as e:
-                        logger.error(f"Error upserting prospect {url}: {e}")
-                        
-                # Simulamos control de taza para no fundir los targets (Rate Limiting básico)
+                    prospect_dict["rank_position"] = rank_position
+
+                    saved_prospect = await save_scraped_prospect(db, prospect_dict, job_context)
+                    if saved_prospect:
+                        job.total_saved += 1
+                        await _append_job_log(
+                            db,
+                            job_id,
+                            "INFO",
+                            "Prospecto persistido",
+                            source_name="worker",
+                            context_json={
+                                "url": str(url),
+                                "domain": saved_prospect.domain,
+                                "rank_position": rank_position,
+                            },
+                        )
+                    else:
+                        job.total_failed += 1
+                        await _append_job_log(
+                            db,
+                            job_id,
+                            "ERROR",
+                            "No se pudo persistir el prospecto",
+                            source_name="worker",
+                            context_json={"url": str(url), "rank_position": rank_position},
+                        )
+                    await db.commit()
+                except Exception as e:
+                    job.total_failed += 1
+                    logger.error(f"Error procesando prospect {url}: {e}")
+                    error_context = {
+                        "url": str(url),
+                        "rank_position": rank_position,
+                        "error": str(e),
+                    }
+                    if isinstance(e, FetchHtmlError):
+                        error_context.update({"stage": "fetch_html", **e.to_context()})
+                    else:
+                        error_context["stage"] = "processing"
+                    await _append_job_log(
+                        db,
+                        job_id,
+                        "ERROR",
+                        "Fallo procesando URL",
+                        source_name="worker",
+                        context_json=error_context,
+                    )
+                    await db.commit()
+
                 await asyncio.sleep(2) 
 
-            # 4. Actualizar métricas finales
-            job.total_saved = total_saved
-            job.total_found = len(urls)
             job.status = "completed"
+            job.finished_at = _utcnow()
+            await _append_job_log(
+                db,
+                job_id,
+                "INFO",
+                "Job finalizado",
+                source_name="worker",
+                context_json={
+                    "total_found": job.total_found,
+                    "total_processed": job.total_processed,
+                    "total_saved": job.total_saved,
+                    "total_failed": job.total_failed,
+                    "total_skipped": job.total_skipped,
+                },
+            )
             await db.commit()
             
-            logger.info(f"Worker finalizado para Job {job_id} | Insertados: {total_saved}")
+            logger.info(f"Worker finalizado para Job {job_id} | Insertados: {job.total_saved}")
             
         except Exception as e:
             logger.error(f"Falla total en Worker del Job {job_id}: {str(e)}")
             job = await db.get(ScrapingJob, job_id)
             if job:
                 job.status = "failed"
+                job.finished_at = _utcnow()
                 job.error_message = str(e)
+                await _append_job_log(
+                    db,
+                    job_id,
+                    "ERROR",
+                    "Falla total del worker",
+                    source_name="worker",
+                    context_json={"error": str(e)},
+                )
                 await db.commit()
 
 
@@ -87,14 +227,24 @@ async def create_scraping_job(
     
     # 0. Lógica de "Buscador Automático" vs "URLs Directas"
     final_urls = [str(u) for u in payload.urls] if payload.urls else []
+    discovery_result = SearchDiscoveryResult(
+        urls=final_urls,
+        source_type=normalize_source_type("seed_url") or "seed_url",
+        discovery_method=normalize_discovery_method("seed_url") or "seed_url",
+    )
     
     if not final_urls and payload.search_query:
         # Modo Búsqueda: Descubrir URLs asíncronamente antes de guardar el Job
         logger.info(f"Modo Buscador Activado para: {payload.search_query}")
-        final_urls = await find_prospect_urls_by_query(payload.search_query, max_results=payload.max_results)
+        discovery_result = await find_prospect_urls_by_query(payload.search_query, max_results=payload.max_results)
+        final_urls = discovery_result.urls
         
     if not final_urls:
-        raise HTTPException(status_code=400, detail="No se encontraron URLs con ese query, o no enviaste ni 'urls' ni 'search_query'.")
+        raise HTTPException(
+            status_code=400,
+            detail=discovery_result.warning_message
+            or "No se encontraron URLs con ese query, o no enviaste ni 'urls' ni 'search_query'.",
+        )
     
     # Armar la entidad en BD mapeando los atributos de Pydantic al modelo de SQLAlchemy
     new_job = ScrapingJob(
@@ -110,20 +260,44 @@ async def create_scraping_job(
         target_company_size=payload.target_company_size,
         target_pain_points=payload.target_pain_points,
         target_budget_signals=payload.target_budget_signals,
+        source_type=normalize_source_type(discovery_result.source_type),
         filters_json={"max_results": payload.max_results}
     )
     
     db.add(new_job)
     await db.commit()
     await db.refresh(new_job)
+    await _append_job_log(
+        db,
+        new_job.id,
+        "INFO",
+        "Job creado y encolado",
+        source_name="api",
+        context_json={
+            "search_query": payload.search_query,
+            "urls_count": len(final_urls),
+            "discovery_method": normalize_discovery_method(discovery_result.discovery_method),
+            "source_type": normalize_source_type(discovery_result.source_type),
+            "warning_message": discovery_result.warning_message,
+        },
+    )
+    await db.commit()
     
-    # Preparar el contexto diccionario para el motor de Python puro (evitar problemas de sesión ORM en background)
     job_context = {
         "job_id": new_job.id,
+        "workspace_id": new_job.workspace_id,
         "user_profession": new_job.user_profession,
+        "user_technologies": new_job.user_technologies,
         "user_value_proposition": new_job.user_value_proposition,
+        "user_past_successes": new_job.user_past_successes,
+        "user_roi_metrics": new_job.user_roi_metrics,
         "target_niche": new_job.target_niche,
-        "target_pain_points": new_job.target_pain_points
+        "target_pain_points": new_job.target_pain_points,
+        "target_budget_signals": new_job.target_budget_signals,
+        "search_query": payload.search_query,
+        "discovery_method": normalize_discovery_method(discovery_result.discovery_method),
+        "source_type": normalize_source_type(discovery_result.source_type),
+        "search_warning": discovery_result.warning_message,
     }
     
     # Encolar la tarea en FastAPI usando las URLs finales descubiertas
@@ -132,14 +306,16 @@ async def create_scraping_job(
         job_id=new_job.id, 
         urls=final_urls, 
         job_context=job_context,
-        db_url="internal"
     )
     
-    # Retornar ID rápido para que NestJS sepa a quién consultar o referenciar
     return JobResponse(
         job_id=new_job.id,
         status=new_job.status,
-        message=f"Trabajo encolado. Procesando {len(final_urls)} dominios encontrados."
+        message=(
+            f"Trabajo encolado. Procesando {len(final_urls)} dominios encontrados."
+            if not discovery_result.warning_message
+            else f"Trabajo encolado. Procesando {len(final_urls)} dominios encontrados. Aviso: {discovery_result.warning_message}"
+        )
     )
 
 @router.get("/{job_id}", response_model=JobResponse)
@@ -152,22 +328,54 @@ async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
     return JobResponse(
         job_id=job.id,
         status=job.status,
-        message=f"Terminó en {job.finished_at}" if job.status == "completed" else "Ejecutándose o pendiente"
+        message=_job_summary_message(job)
     )
     
 @router.get("/{job_id}/results", response_model=List[ProspectOut])
 async def get_job_results(job_id: int, limit: int = 50, offset: int = 0, db: AsyncSession = Depends(get_db)):
     """Devuelve la lista paginada de prospectos obtenidos por un Job"""
-    from app.models import Prospect
-    
-    # 1. Verificar existencia de job
     job = await db.get(ScrapingJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job no encontrado.")
-        
-    # 2. Query con paginación nativa de SQL
-    query = select(Prospect).where(Prospect.job_id == job_id).offset(offset).limit(limit)
+
+    query = (
+        select(JobProspect, Prospect)
+        .join(Prospect, Prospect.id == JobProspect.prospect_id)
+        .where(JobProspect.job_id == job_id)
+        .order_by(JobProspect.rank_position.asc(), JobProspect.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
     result = await db.execute(query)
-    prospects = result.scalars().all()
-    
-    return prospects
+    rows = result.all()
+
+    return [
+        ProspectOut(
+            id=prospect.id,
+            company_name=prospect.company_name,
+            domain=prospect.domain,
+            website_url=prospect.website_url,
+            source_url=job_prospect.source_url or prospect.source_url,
+            source_type=normalize_source_type(job_prospect.source_type),
+            discovery_method=normalize_discovery_method(job_prospect.discovery_method),
+            search_query_snapshot=job_prospect.search_query_snapshot,
+            rank_position=job_prospect.rank_position,
+            email=prospect.email,
+            phone=prospect.phone,
+            linkedin_url=prospect.linkedin_url,
+            instagram_url=prospect.instagram_url,
+            facebook_url=prospect.facebook_url,
+            score=job_prospect.match_score if job_prospect.match_score is not None else prospect.score,
+            confidence_level=job_prospect.confidence_level or prospect.confidence_level,
+            inferred_niche=prospect.inferred_niche,
+            inferred_tech_stack=prospect.inferred_tech_stack,
+            generic_attributes=prospect.generic_attributes,
+            estimated_revenue_signal=prospect.estimated_revenue_signal,
+            has_active_ads=prospect.has_active_ads,
+            hiring_signals=prospect.hiring_signals,
+            description=prospect.description,
+            location=prospect.location,
+            category=prospect.category,
+        )
+        for job_prospect, prospect in rows
+    ]
