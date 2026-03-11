@@ -70,6 +70,7 @@ def _extract_job_prospect_data(
                 if isinstance(prospect_data.get("heuristic_trace"), dict)
                 else None
             ),
+            "scoring_trace": prospect_data.get("scoring_trace"),
         },
         "raw_extraction_json": {
             "inferred_niche": prospect_data.get("inferred_niche"),
@@ -80,6 +81,7 @@ def _extract_job_prospect_data(
             "hiring_signals": prospect_data.get("hiring_signals"),
             "ai_trace": prospect_data.get("ai_trace"),
             "heuristic_trace": prospect_data.get("heuristic_trace"),
+            "scoring_trace": prospect_data.get("scoring_trace"),
         },
         "created_at": now,
         "updated_at": now,

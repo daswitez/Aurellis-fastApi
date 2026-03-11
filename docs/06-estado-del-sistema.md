@@ -42,12 +42,12 @@ El flujo completo de prospección automática está operativo:
 
 ## ⚠️ Limitaciones Actuales (pendientes de mejora)
 
-### 1. El score heurístico base ya existe, pero falta combinarlo mejor con IA
-**Estado actual:** si DeepSeek falla, no hay `DEEPSEEK_API_KEY`, o la respuesta del proveedor es inválida, el sistema cae a un baseline heurístico local con breakdown explicable.
+### 1. Score híbrido resuelto recientemente
+**Estado actual:** si DeepSeek falla, no hay `DEEPSEEK_API_KEY`, o la respuesta del proveedor es inválida, el sistema cae a `heuristic_only`. Si la IA responde bien, el score final se calcula con una combinación ponderada entre score IA y baseline heurístico.
 
-**Qué usa hoy el baseline:** contacto visible, señales comerciales, stack detectado, madurez digital y ajuste con el contexto del job.
+**Qué usa hoy la fórmula:** `confidence_level` de IA, baseline heurístico local y nivel de acuerdo entre ambos scores para subir o bajar el peso de la IA.
 
-**Mejora pendiente:** definir la fórmula híbrida final entre score IA y score heurístico para que ambos convivan de manera estable.
+**Qué mejora esto:** el score final ya tiene semántica estable, conserva valor sin IA y además deja `scoring_trace` persistido para auditoría. Ya no es una limitación abierta del MVP.
 
 ### 2. `inferred_tech_stack` vacío `[]`
 **Causa probable:** El prompt no pide explícitamente detectar tecnologías web (WordPress, Shopify, etc.).

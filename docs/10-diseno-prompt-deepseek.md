@@ -167,25 +167,25 @@ Con este rediseño, el extractor IA queda mejor orientado para:
 
 ---
 
-## 6. Qué no resuelve todavía
+## 6. Qué no resolvía por sí solo
 
-Este cambio mejora mucho el prompt, pero no resuelve todo.
+Este cambio mejora mucho el prompt, pero por sí solo no resolvía todo.
 
-Sigue pendiente:
+En ese momento seguían pendientes:
 
 - validar la respuesta con schema fuerte,
 - medir latencia/costo/fallback,
 - guardar observabilidad específica de IA,
-- definir score híbrido con heurística local,
 - revisar si conviene agregar más campos de salida.
 
-Eso corresponde a:
+Eso correspondía a:
 
 - `C-002`
 - `C-004`
 - `C-005`
 - `C-006`
-- `C-007`
+
+Varios de esos puntos ya quedaron cubiertos después con cambios fuera del prompt: validación de schema, observabilidad IA, baseline heurístico y score híbrido.
 
 ---
 

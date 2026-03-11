@@ -6,6 +6,7 @@ from app.scraper.http_client import FetchHtmlError, fetch_html
 from app.scraper.parser import parse_html_basic
 from app.services.ai_extractor import AIExtractionFallbackError, PROMPT_VERSION, extract_business_entity_ai
 from app.services.heuristic_extractor import extract_business_entity_heuristic
+from app.services.scoring import build_final_score
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,12 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
             retryable=False,
             message=str(ai_e),
         )
+
+    final_scoring = build_final_score(
+        ai_data=extracted_data,
+        ai_trace=ai_trace,
+        heuristic_data=heuristic_baseline,
+    )
     
     # 4. Fusionar Data Fuerte (Metadatos reales de bs4 como correos visibles y links) 
     # con Data Deductiva (Adivinada por el Heurístico)
@@ -281,10 +288,11 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "estimated_revenue_signal": _pick_first_defined(extracted_data.get("estimated_revenue_signal"), heuristic_baseline.get("estimated_revenue_signal")),
         "has_active_ads": _pick_first_defined(extracted_data.get("has_active_ads"), heuristic_baseline.get("has_active_ads")),
         "hiring_signals": _pick_first_defined(extracted_data.get("hiring_signals"), heuristic_baseline.get("hiring_signals"), False),
-        "score": _pick_first_defined(extracted_data.get("score"), heuristic_baseline.get("score"), 0.0),
-        "confidence_level": _pick_first_defined(extracted_data.get("confidence_level"), heuristic_baseline.get("confidence_level"), "low"),
-        "fit_summary": heuristic_baseline.get("fit_summary"),
+        "score": final_scoring["score"],
+        "confidence_level": final_scoring["confidence_level"],
+        "fit_summary": final_scoring["fit_summary"],
         "heuristic_trace": heuristic_baseline.get("heuristic_trace"),
+        "scoring_trace": final_scoring["scoring_trace"],
         
         # Auditoría de origen
         "source": "HTTPX_Scraper",

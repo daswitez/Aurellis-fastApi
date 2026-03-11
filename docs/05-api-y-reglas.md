@@ -347,6 +347,8 @@ curl "http://localhost:8000/api/v1/jobs/1/logs?level=ERROR&limit=10&offset=0"
 - **`GET /jobs/{id}/logs`:** expone `scraping_logs` paginados, con filtro por `INFO`, `WARNING` o `ERROR`.
 - **Hay un delay de 2 segundos entre cada URL** para no saturar los sitios objetivo.
 - **Contrato de scoring:** `score` es un `float` entre `0.0` y `1.0`; `confidence_level` es `low`, `medium` o `high`.
+- **Semántica actual del score:** el valor expuesto ya no es "solo IA". Si DeepSeek responde bien, el sistema combina score IA + baseline heurístico usando pesos por confianza y ajuste por nivel de acuerdo; si la IA falla, cae a `heuristic_only`.
+- **Trazabilidad interna del score:** cada prospecto persiste `scoring_trace` con `strategy`, `strategy_version`, pesos, delta de acuerdo y score final, aunque ese detalle no forme parte del payload resumido de `/results`.
 - **Contrato de revenue signal:** `estimated_revenue_signal` usa `low`, `medium` o `high`.
 - **Trazabilidad de origen:** `source_type` distingue `duckduckgo_search`, `mock_search`, `seed_url`, `manual` o `enrichment`. `discovery_method` indica cómo entró ese lead al pipeline.
 - **TLS seguro por defecto:** el scraper valida certificados SSL/TLS por defecto. Solo desactívalo con `HTTP_VERIFY_TLS=false` en debugging controlado.

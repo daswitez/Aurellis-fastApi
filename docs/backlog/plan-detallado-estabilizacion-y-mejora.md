@@ -259,8 +259,12 @@ Cambios de escalabilidad, integración oficial y endurecimiento de producción.
   - Cubierto con pruebas en `tests/test_heuristic_extractor.py` y regresión sobre fallback en `tests/test_ai_observability.py`.
   - **Criterio de cierre:** el sistema conserva valor aunque la IA falle o se limite.
 
-- [ ] **C-007 Definir fórmula final de score**
-  - Decidir si el score final será solo IA, solo heurística o combinación ponderada.
+- [x] **C-007 Definir fórmula final de score**
+  - El score final quedó definido como estrategia híbrida estable:
+    - si la IA falla o no es seleccionada, se usa `heuristic_only`;
+    - si la IA responde bien, se combina `score` IA + baseline heurístico con pesos por `confidence_level` y ajuste por nivel de acuerdo entre ambos scores.
+  - La salida final persiste `score`, `confidence_level`, `fit_summary` y `scoring_trace` con `strategy`, pesos, delta de acuerdo y versión de la fórmula.
+  - Cubierto con pruebas en `tests/test_scoring.py` y regresión del pipeline en `tests/test_ai_observability.py`.
   - **Criterio de cierre:** el score tiene una semántica documentada y estable.
 
 ---
