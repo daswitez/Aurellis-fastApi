@@ -3,6 +3,12 @@ import re
 import unicodedata
 from typing import Any, Dict, List
 
+from app.services.commercial_insights import (
+    build_legacy_pain_points,
+    normalize_inferred_opportunities,
+    normalize_observed_signals,
+)
+
 logger = logging.getLogger(__name__)
 
 TECH_SIGNATURES = {
@@ -529,13 +535,13 @@ def _build_fit_summary(score: float, components: Dict[str, Dict[str, Any]]) -> s
     return f"{prefix}; evidencia local limitada."
 
 
-def _build_pain_points(
+def _build_observed_signals(
     text_content: str,
     metadata: Dict[str, Any],
     context: Dict[str, Any],
     inferred_tech_stack: list[str],
 ) -> list[str]:
-    pain_points: list[str] = []
+    observed_signals: list[str] = []
     normalized_text = _normalize_text(text_content)
     has_email = bool(metadata.get("emails"))
     has_phone = bool(metadata.get("phones"))
@@ -543,34 +549,42 @@ def _build_pain_points(
     has_contact_page = any("contact" in link.lower() or "contacto" in link.lower() for link in metadata.get("internal_links", []))
 
     if not has_email and not has_phone and not has_form:
-        pain_points.append("No muestra contacto directo visible")
+        observed_signals.append("No muestra contacto directo visible")
     elif not has_contact_page and not has_form:
-        pain_points.append("No se detecta pagina o formulario de contacto")
+        observed_signals.append("No se detecta pagina o formulario de contacto")
 
     if not metadata.get("description"):
-        pain_points.append("Meta description ausente")
+        observed_signals.append("Meta description ausente")
 
     if not metadata.get("social_links"):
-        pain_points.append("Sin redes sociales visibles")
+        observed_signals.append("Sin redes sociales visibles")
 
     pain_point_hints = _normalize_context_list(context.get("target_pain_points"))
     wants_booking = any(any(hint in pain_point for hint in PAIN_POINT_BOOKING_HINTS) for pain_point in pain_point_hints)
     if wants_booking and not _contains_any(normalized_text, BOOKING_KEYWORDS):
-        pain_points.append("No muestra reservas online visibles")
+        observed_signals.append("No muestra reservas online visibles")
 
     if len(text_content.strip()) >= 300 and not _contains_any(normalized_text, TESTIMONIAL_KEYWORDS + PORTFOLIO_KEYWORDS):
-        pain_points.append("No muestra prueba social visible")
+        observed_signals.append("No muestra prueba social visible")
 
     if not inferred_tech_stack:
-        pain_points.append("Poca instrumentacion digital visible")
+        observed_signals.append("No se detectan herramientas visibles de analitica o marketing")
 
-    deduped_pain_points: list[str] = []
-    for pain_point in pain_points:
-        if pain_point not in deduped_pain_points:
-            deduped_pain_points.append(pain_point)
-        if len(deduped_pain_points) >= 5:
-            break
-    return deduped_pain_points
+    return normalize_observed_signals(observed_signals)
+
+
+def _build_inferred_opportunities(observed_signals: list[str]) -> list[str]:
+    opportunities_map = {
+        "No muestra contacto directo visible": "reforzar canales de contacto visibles",
+        "No se detecta pagina o formulario de contacto": "habilitar una ruta de contacto mas clara",
+        "Meta description ausente": "mejorar metadata publica para captacion organica",
+        "Sin redes sociales visibles": "reforzar presencia social visible",
+        "No muestra reservas online visibles": "incorporar reservas online visibles",
+        "No muestra prueba social visible": "destacar testimonios o casos de exito",
+        "No se detectan herramientas visibles de analitica o marketing": "mejorar instrumentacion digital visible",
+    }
+    raw_opportunities = [opportunities_map[signal] for signal in observed_signals if signal in opportunities_map]
+    return normalize_inferred_opportunities(raw_opportunities)
 
 
 def build_heuristic_trace(
@@ -617,7 +631,9 @@ def build_heuristic_trace(
         commercial_intent_score=components["commercial_intent"]["normalized_score"],
     )
     fit_summary = _build_fit_summary(heuristic_score, components)
-    pain_points = _build_pain_points(clean_text, metadata, context, inferred_tech_stack)
+    observed_signals = _build_observed_signals(clean_text, metadata, context, inferred_tech_stack)
+    inferred_opportunities = _build_inferred_opportunities(observed_signals)
+    legacy_pain_points = build_legacy_pain_points(inferred_opportunities=inferred_opportunities)
 
     return {
         "score": heuristic_score,
@@ -628,7 +644,9 @@ def build_heuristic_trace(
         "inferred_niche": inferred_niche,
         "inferred_tech_stack": inferred_tech_stack,
         "fit_summary": fit_summary,
-        "pain_points_detected": pain_points,
+        "observed_signals": observed_signals,
+        "inferred_opportunities": inferred_opportunities,
+        "pain_points_detected": legacy_pain_points,
         "heuristic_trace": {
             "baseline_score": heuristic_score,
             "component_weights": component_weights,
@@ -677,9 +695,13 @@ async def extract_business_entity_heuristic(
         "score": heuristic_trace["score"],
         "confidence_level": heuristic_trace["confidence_level"],
         "fit_summary": heuristic_trace["fit_summary"],
+        "observed_signals": heuristic_trace["observed_signals"],
+        "inferred_opportunities": heuristic_trace["inferred_opportunities"],
         "heuristic_trace": heuristic_trace["heuristic_trace"],
         "generic_attributes": {
             "evaluation_method": "Heuristic Code (No LLM)",
+            "observed_signals": heuristic_trace["observed_signals"],
+            "inferred_opportunities": heuristic_trace["inferred_opportunities"],
             "pain_points_detected": heuristic_trace["pain_points_detected"],
             "heuristic_score_breakdown": heuristic_trace["heuristic_trace"]["component_scores"],
             "heuristic_signals": heuristic_trace["heuristic_trace"]["signals"],

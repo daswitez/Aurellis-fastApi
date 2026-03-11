@@ -1,6 +1,6 @@
 # Diseño del Prompt de DeepSeek
 
-**Versión activa:** `deepseek_prospect_v2`  
+**Versión activa:** `deepseek_prospect_v3`  
 **Archivo fuente:** `app/services/ai_extractor.py`
 
 ---
@@ -35,13 +35,13 @@ Eso volvía al extractor más frágil y más opaco de lo necesario.
 
 ---
 
-## 3. Qué cambió en `deepseek_prospect_v2`
+## 3. Qué cambió en `deepseek_prospect_v3`
 
 ### 3.1. Prompt versionado
 
 Ahora el prompt tiene una constante explícita:
 
-- `PROMPT_VERSION = "deepseek_prospect_v2"`
+- `PROMPT_VERSION = "deepseek_prospect_v3"`
 
 Eso permite:
 
@@ -76,7 +76,7 @@ El prompt ahora obliga a un comportamiento más conservador:
 - no inventar datos,
 - usar `Desconocido` cuando no hay evidencia,
 - devolver lista vacía si no detecta stack,
-- limitar `pain_points_detected`,
+- separar `observed_signals` de `inferred_opportunities`,
 - evitar consejos genéricos,
 - marcar `hiring_signals` solo con evidencia real.
 
@@ -158,8 +158,9 @@ El prompt sigue produciendo esta estructura lógica:
   "inferred_niche": "Desconocido",
   "inferred_tech_stack": [],
   "generic_attributes": {
-    "evaluation_method": "DeepSeek API (deepseek_prospect_v2)",
-    "pain_points_detected": []
+    "evaluation_method": "DeepSeek API (deepseek_prospect_v3)",
+    "observed_signals": [],
+    "inferred_opportunities": []
   },
   "hiring_signals": false,
   "estimated_revenue_signal": "low",
@@ -186,7 +187,7 @@ Con este rediseño, el extractor IA queda mejor orientado para:
 
 ## 5.1. Qué cambió alrededor del prompt
 
-Aunque el prompt sigue siendo `deepseek_prospect_v2`, hoy corre dentro de un flujo más estricto:
+Aunque el prompt sigue siendo `deepseek_prospect_v3`, hoy corre dentro de un flujo más estricto:
 
 - si el lead queda rechazado por calidad, la IA no se ejecuta;
 - si la heurística ya resolvió con alta confianza, la IA puede omitirse;
@@ -222,7 +223,7 @@ Varios de esos puntos ya quedaron cubiertos después con cambios fuera del promp
 Una nueva versión del prompt solo debería reemplazar a la actual si mejora al menos uno de estos puntos sin degradar los otros:
 
 - precisión del nicho,
-- utilidad comercial de `pain_points_detected`,
+- utilidad comercial de `observed_signals` e `inferred_opportunities`,
 - consistencia de `score`,
 - consistencia de `confidence_level`,
 - capacidad de detectar stack real,

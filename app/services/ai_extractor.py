@@ -5,16 +5,21 @@ from time import perf_counter
 from typing import Any, Dict, Literal
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from app.config import get_settings
+from app.services.commercial_insights import (
+    build_legacy_pain_points,
+    normalize_inferred_opportunities,
+    normalize_observed_signals,
+)
 
 logger = logging.getLogger(__name__)
 
 # DeepSeek es compatible con el SDK de OpenAI. Solo cambiamos la base_url
 # y pasamos la API key
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
-PROMPT_VERSION = "deepseek_prospect_v2"
+PROMPT_VERSION = "deepseek_prospect_v3"
 MAX_INPUT_CHARS = 10000
 MAX_EVIDENCE_PACK_CHARS = 4000
 RevenueSignal = Literal["low", "medium", "high"]
@@ -154,14 +159,34 @@ def _parse_confidence_level(raw_confidence: Any) -> ConfidenceLevel:
 class _AIGenericAttributesPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    pain_points_detected: list[str]
+    observed_signals: list[str] = []
+    inferred_opportunities: list[str] = []
+    pain_points_detected: list[str] = []
+
+    @field_validator("observed_signals", mode="before")
+    @classmethod
+    def _validate_observed_signals(cls, raw_value: Any) -> list[str]:
+        return normalize_observed_signals(raw_value)
+
+    @field_validator("inferred_opportunities", mode="before")
+    @classmethod
+    def _validate_inferred_opportunities(cls, raw_value: Any) -> list[str]:
+        return normalize_inferred_opportunities(raw_value)
 
     @field_validator("pain_points_detected", mode="before")
     @classmethod
     def _validate_pain_points(cls, raw_value: Any) -> list[str]:
-        if not isinstance(raw_value, list):
-            raise ValueError("pain_points_detected debe ser lista")
-        return _normalize_string_list(raw_value, max_items=5)
+        return normalize_inferred_opportunities(raw_value)
+
+    @model_validator(mode="after")
+    def _fill_compatibility_fields(self) -> "_AIGenericAttributesPayload":
+        if not self.inferred_opportunities and self.pain_points_detected:
+            self.inferred_opportunities = list(self.pain_points_detected)
+        self.pain_points_detected = build_legacy_pain_points(
+            inferred_opportunities=self.inferred_opportunities,
+            fallback_pain_points=self.pain_points_detected,
+        )
+        return self
 
 
 class _AIResponsePayload(BaseModel):
@@ -249,9 +274,13 @@ def _build_expected_output_schema() -> str:
         "inferred_tech_stack": ["WordPress", "Google Analytics"],
         "generic_attributes": {
             "evaluation_method": f"DeepSeek API ({PROMPT_VERSION})",
-            "pain_points_detected": [
+            "observed_signals": [
                 "No muestra CTA clara",
-                "No tiene reservas online visibles",
+                "No se detectan testimonios visibles",
+            ],
+            "inferred_opportunities": [
+                "Posible oportunidad: reforzar CTA principal visible",
+                "Posible oportunidad: destacar prueba social visible",
             ],
         },
         "hiring_signals": False,
@@ -277,7 +306,7 @@ CONTEXTO DEL VENDEDOR
 OBJETIVO
 1. Inferir el nicho real del prospecto.
 2. Detectar tecnologias visibles o altamente probables solo si hay evidencia textual.
-3. Detectar problemas comerciales o de sitio que el vendedor podria atacar.
+3. Separar observaciones directas del sitio de oportunidades inferidas.
 4. Estimar si el prospecto parece tener capacidad de compra.
 5. Dar un score de match entre 0.0 y 1.0 respecto al contexto del vendedor.
 
@@ -285,9 +314,11 @@ REGLAS DE EVIDENCIA
 - No inventes datos. Si no hay evidencia suficiente, usa valores conservadores.
 - Si no puedes inferir el nicho con claridad, usa "Desconocido".
 - Si no detectas tecnologias concretas, devuelve una lista vacia.
-- `pain_points_detected` debe contener entre 0 y 5 strings breves y accionables.
-- Solo incluye pain points observables en el texto o deducibles con mucha fuerza del contenido.
-- No pongas frases genéricas como "necesita marketing" o "puede mejorar todo".
+- `observed_signals` debe contener entre 0 y 6 strings breves, factuales y defendibles con evidencia visible.
+- `inferred_opportunities` debe contener entre 0 y 5 strings breves.
+- Cada item de `inferred_opportunities` debe empezar con "Posible oportunidad:" o lenguaje equivalente claramente hipotetico.
+- No mezcles observacion con inferencia en el mismo item.
+- No pongas frases genéricas como "necesita marketing", "debe mejorar todo" o afirmaciones no defendibles como hecho.
 - `hiring_signals` es true solo si hay evidencia de vacantes, careers, equipo en expansion o contratacion.
 - `estimated_revenue_signal` debe ser `low`, `medium` o `high`.
 - `score` debe ser un float entre 0.0 y 1.0.
@@ -324,8 +355,12 @@ def _validate_ai_response_payload(parsed_data: Any) -> Dict[str, Any]:
         "inferred_niche": payload.inferred_niche,
         "generic_attributes": {
             "evaluation_method": f"DeepSeek API ({PROMPT_VERSION})",
+            "observed_signals": payload.generic_attributes.observed_signals,
+            "inferred_opportunities": payload.generic_attributes.inferred_opportunities,
             "pain_points_detected": payload.generic_attributes.pain_points_detected,
         },
+        "observed_signals": payload.generic_attributes.observed_signals,
+        "inferred_opportunities": payload.generic_attributes.inferred_opportunities,
         "hiring_signals": payload.hiring_signals,
         "estimated_revenue_signal": payload.estimated_revenue_signal,
         "score": payload.score,

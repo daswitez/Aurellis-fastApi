@@ -1316,6 +1316,8 @@ async def get_job_results(
             inferred_niche=prospect.inferred_niche,
             inferred_tech_stack=prospect.inferred_tech_stack,
             generic_attributes=prospect.generic_attributes,
+            observed_signals=job_prospect.observed_signals or prospect.observed_signals,
+            inferred_opportunities=job_prospect.inferred_opportunities or prospect.inferred_opportunities,
             estimated_revenue_signal=prospect.estimated_revenue_signal,
             has_active_ads=prospect.has_active_ads,
             hiring_signals=prospect.hiring_signals,

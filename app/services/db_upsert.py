@@ -30,18 +30,26 @@ def _extract_canonical_prospect_data(prospect_data: Dict[str, Any]) -> Dict[str,
     }
 
 
+def _extract_signal_list(prospect_data: Dict[str, Any], key: str) -> list[str]:
+    raw_value = prospect_data.get(key)
+    if isinstance(raw_value, list):
+        return raw_value
+
+    generic_attributes = prospect_data.get("generic_attributes")
+    if isinstance(generic_attributes, dict) and isinstance(generic_attributes.get(key), list):
+        return generic_attributes[key]
+    return []
+
+
 def _extract_job_prospect_data(
     prospect: Prospect,
     prospect_data: Dict[str, Any],
     job_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     now = datetime.utcnow()
-    pain_points_detected = []
-    generic_attributes = prospect_data.get("generic_attributes")
-    if isinstance(generic_attributes, dict):
-        raw_pain_points = generic_attributes.get("pain_points_detected", [])
-        if isinstance(raw_pain_points, list):
-            pain_points_detected = raw_pain_points
+    observed_signals = _extract_signal_list(prospect_data, "observed_signals")
+    inferred_opportunities = _extract_signal_list(prospect_data, "inferred_opportunities")
+    pain_points_detected = inferred_opportunities or _extract_signal_list(prospect_data, "pain_points_detected")
 
     return {
         "job_id": job_context["job_id"],
@@ -70,6 +78,8 @@ def _extract_job_prospect_data(
         "confidence_level": prospect_data.get("confidence_level"),
         "fit_summary": prospect_data.get("fit_summary"),
         "pain_points_json": pain_points_detected or None,
+        "observed_signals": observed_signals or None,
+        "inferred_opportunities": inferred_opportunities or None,
         "evidence_json": {
             "source_type": normalize_source_type(job_context.get("source_type") or prospect_data.get("source")),
             "discovery_method": normalize_discovery_method(job_context.get("discovery_method")),
@@ -102,6 +112,8 @@ def _extract_job_prospect_data(
             "cta_evidence": prospect_data.get("cta_evidence"),
             "structured_data_evidence": prospect_data.get("structured_data_evidence"),
             "discovery_evidence": prospect_data.get("discovery_evidence"),
+            "observed_signals": observed_signals,
+            "inferred_opportunities": inferred_opportunities,
             "acceptance_decision": prospect_data.get("acceptance_decision"),
             "entity_type_detected": prospect_data.get("entity_type_detected"),
             "entity_type_confidence": prospect_data.get("entity_type_confidence"),
@@ -119,6 +131,8 @@ def _extract_job_prospect_data(
             "inferred_niche": prospect_data.get("inferred_niche"),
             "inferred_tech_stack": prospect_data.get("inferred_tech_stack"),
             "generic_attributes": prospect_data.get("generic_attributes"),
+            "observed_signals": observed_signals,
+            "inferred_opportunities": inferred_opportunities,
             "estimated_revenue_signal": prospect_data.get("estimated_revenue_signal"),
             "has_active_ads": prospect_data.get("has_active_ads"),
             "hiring_signals": prospect_data.get("hiring_signals"),
@@ -357,6 +371,8 @@ async def save_scraped_prospect(
             "confidence_level": job_stmt.excluded.confidence_level,
             "fit_summary": job_stmt.excluded.fit_summary,
             "pain_points_json": job_stmt.excluded.pain_points_json,
+            "observed_signals": job_stmt.excluded.observed_signals,
+            "inferred_opportunities": job_stmt.excluded.inferred_opportunities,
             "evidence_json": job_stmt.excluded.evidence_json,
             "raw_extraction_json": job_stmt.excluded.raw_extraction_json,
             "updated_at": job_stmt.excluded.updated_at,

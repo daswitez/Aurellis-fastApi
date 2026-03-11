@@ -172,16 +172,24 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
             "heuristic_trace": {"component_scores": {"stack_fit": 0.8}, "signals": {}},
             "generic_attributes": {
                 "evaluation_method": "Heuristic Code (No LLM)",
+                "observed_signals": [],
+                "inferred_opportunities": [],
                 "pain_points_detected": [],
             },
+            "observed_signals": [],
+            "inferred_opportunities": [],
         }
         ai_result = {
             "inferred_tech_stack": ["WordPress", "Google Analytics"],
             "inferred_niche": "Dental",
             "generic_attributes": {
-                "evaluation_method": "DeepSeek API (deepseek_prospect_v2)",
+                "evaluation_method": "DeepSeek API (deepseek_prospect_v3)",
+                "observed_signals": [],
+                "inferred_opportunities": [],
                 "pain_points_detected": [],
             },
+            "observed_signals": [],
+            "inferred_opportunities": [],
             "hiring_signals": False,
             "estimated_revenue_signal": "high",
             "score": 0.8,
@@ -268,17 +276,25 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
             "heuristic_trace": {"component_scores": {"stack_fit": 0.8}, "signals": {}},
             "generic_attributes": {
                 "evaluation_method": "Heuristic Code (No LLM)",
+                "observed_signals": [],
+                "inferred_opportunities": [],
                 "pain_points_detected": [],
             },
+            "observed_signals": [],
+            "inferred_opportunities": [],
         }
         ai_result = {
             "location": "Madrid | Horarios 9:00-18:00",
             "inferred_tech_stack": ["WordPress", "Google Analytics"],
             "inferred_niche": "Dental",
             "generic_attributes": {
-                "evaluation_method": "DeepSeek API (deepseek_prospect_v2)",
-                "pain_points_detected": [],
+                "evaluation_method": "DeepSeek API (deepseek_prospect_v3)",
+                "observed_signals": ["No se detectan testimonios visibles"],
+                "inferred_opportunities": ["Posible oportunidad: destacar prueba social visible"],
+                "pain_points_detected": ["Posible oportunidad: destacar prueba social visible"],
             },
+            "observed_signals": ["No se detectan testimonios visibles"],
+            "inferred_opportunities": ["Posible oportunidad: destacar prueba social visible"],
             "hiring_signals": False,
             "estimated_revenue_signal": "high",
             "score": 0.78,
@@ -312,6 +328,8 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["raw_location_text"], "Calle Mayor 1, 28013 Madrid, ES")
         self.assertEqual(result["city"], "Madrid")
         self.assertEqual(result["country"], "España")
+        self.assertEqual(result["observed_signals"], ["No se detectan testimonios visibles"])
+        self.assertEqual(result["inferred_opportunities"], ["Posible oportunidad: destacar prueba social visible"])
 
     async def test_uses_heuristic_and_attaches_ai_trace_on_fallback(self) -> None:
         metadata = {
@@ -346,8 +364,12 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
             "confidence_level": "low",
             "generic_attributes": {
                 "evaluation_method": "Heuristic Code (No LLM)",
+                "observed_signals": [],
+                "inferred_opportunities": [],
                 "pain_points_detected": [],
             },
+            "observed_signals": [],
+            "inferred_opportunities": [],
         }
 
         with patch("app.scraper.engine.fetch_html", new=AsyncMock(return_value="<html></html>")):
@@ -416,8 +438,12 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
             "heuristic_trace": {"component_scores": {"stack_fit": 0.8}, "signals": {}},
             "generic_attributes": {
                 "evaluation_method": "Heuristic Code (No LLM)",
+                "observed_signals": [],
+                "inferred_opportunities": [],
                 "pain_points_detected": [],
             },
+            "observed_signals": [],
+            "inferred_opportunities": [],
         }
 
         with patch("app.scraper.engine.fetch_html", new=AsyncMock(return_value="<html></html>")):

@@ -55,6 +55,8 @@ class HeuristicExtractorTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("contact_availability", result["generic_attributes"]["heuristic_score_breakdown"])
         self.assertIn("contactabilidad", result["fit_summary"])
         self.assertIn("stack_fit", result["heuristic_trace"]["component_scores"])
+        self.assertEqual(result["observed_signals"], [])
+        self.assertEqual(result["inferred_opportunities"], [])
 
     async def test_returns_low_score_when_evidence_is_weak(self) -> None:
         clean_text = "Sitio simple de servicios generales."
@@ -80,8 +82,12 @@ class HeuristicExtractorTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(trace["score"], 0.3)
         self.assertEqual(trace["confidence_level"], "low")
         self.assertEqual(trace["estimated_revenue_signal"], "low")
-        self.assertIn("No muestra contacto directo visible", trace["pain_points_detected"])
-        self.assertIn("Meta description ausente", trace["pain_points_detected"])
+        self.assertIn("No muestra contacto directo visible", trace["observed_signals"])
+        self.assertIn("Meta description ausente", trace["observed_signals"])
+        self.assertTrue(
+            any(item.startswith("Posible oportunidad: ") for item in trace["inferred_opportunities"])
+        )
+        self.assertEqual(trace["pain_points_detected"], trace["inferred_opportunities"])
         self.assertIn("Fit heuristico debil", trace["fit_summary"])
 
 

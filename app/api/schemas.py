@@ -201,6 +201,8 @@ class ProspectOut(BaseModel):
     inferred_niche: Optional[str]        # Nicho detectado por IA
     inferred_tech_stack: Optional[List[str]]  # Stack tecnológico detectado
     generic_attributes: Optional[Dict[str, Any]]
+    observed_signals: Optional[List[str]]
+    inferred_opportunities: Optional[List[str]]
 
     # Señales de negocio
     estimated_revenue_signal: Optional[RevenueSignal]

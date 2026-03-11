@@ -96,6 +96,8 @@ class Prospect(Base):
     inferred_tech_stack = Column(JSON, nullable=True) # ej: ["WordPress", "Shopify", "React"]
     inferred_niche = Column(String, nullable=True)
     generic_attributes = Column(JSON, nullable=True) # Respuestas a las "preguntas genéricas" que varían por rubro
+    observed_signals = Column(JSON, nullable=True)
+    inferred_opportunities = Column(JSON, nullable=True)
     entity_type_detected = Column(String, nullable=True)
     entity_type_confidence = Column(String, nullable=True)
     entity_type_evidence = Column(JSON, nullable=True)
@@ -157,6 +159,8 @@ class JobProspect(Base):
     fit_summary = Column(Text, nullable=True)
     pain_points_json = Column(JSON, nullable=True)
     outreach_angles_json = Column(JSON, nullable=True)
+    observed_signals = Column(JSON, nullable=True)
+    inferred_opportunities = Column(JSON, nullable=True)
     evidence_json = Column(JSON, nullable=True)
     raw_extraction_json = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)

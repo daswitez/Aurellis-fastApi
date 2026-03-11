@@ -164,6 +164,18 @@ def _pick_first_defined(*values: Any) -> Any:
     return None
 
 
+def _pick_signal_list(*containers: Any, key: str) -> list[str]:
+    for container in containers:
+        if isinstance(container, dict):
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
+            generic_attributes = container.get("generic_attributes")
+            if isinstance(generic_attributes, dict) and isinstance(generic_attributes.get(key), list):
+                return generic_attributes[key]
+    return []
+
+
 async def _crawl_key_pages(root_metadata: Dict[str, Any]) -> tuple[str, Dict[str, Any], list[dict[str, str]]]:
     selected_pages = _select_key_internal_links(root_metadata.get("internal_links", []))
     merged_text_parts: list[str] = []
@@ -363,6 +375,21 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     if isinstance(generic_attributes, dict):
         generic_attributes.setdefault("service_keywords", quality_data.get("service_keywords"))
         generic_attributes.setdefault("company_size_signal", quality_data.get("company_size_signal"))
+        generic_attributes.setdefault(
+            "observed_signals",
+            _pick_signal_list(extracted_data, heuristic_baseline, key="observed_signals"),
+        )
+        generic_attributes.setdefault(
+            "inferred_opportunities",
+            _pick_signal_list(extracted_data, heuristic_baseline, key="inferred_opportunities"),
+        )
+        generic_attributes.setdefault(
+            "pain_points_detected",
+            generic_attributes.get("inferred_opportunities"),
+        )
+
+    observed_signals = _pick_signal_list(extracted_data, heuristic_baseline, key="observed_signals")
+    inferred_opportunities = _pick_signal_list(extracted_data, heuristic_baseline, key="inferred_opportunities")
 
     final_prospect = {
         "domain": domain,
@@ -404,6 +431,8 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "inferred_tech_stack": _pick_first_defined(extracted_data.get("inferred_tech_stack"), heuristic_baseline.get("inferred_tech_stack")),
         "inferred_niche": _pick_first_defined(extracted_data.get("inferred_niche"), heuristic_baseline.get("inferred_niche")),
         "generic_attributes": generic_attributes,
+        "observed_signals": observed_signals,
+        "inferred_opportunities": inferred_opportunities,
         "estimated_revenue_signal": _pick_first_defined(extracted_data.get("estimated_revenue_signal"), heuristic_baseline.get("estimated_revenue_signal")),
         "has_active_ads": _pick_first_defined(extracted_data.get("has_active_ads"), heuristic_baseline.get("has_active_ads")),
         "hiring_signals": _pick_first_defined(extracted_data.get("hiring_signals"), heuristic_baseline.get("hiring_signals"), False),

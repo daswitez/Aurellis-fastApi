@@ -39,16 +39,26 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
                 "inferred_niche": "  Dental Clinic  ",
                 "inferred_tech_stack": [" WordPress ", "", "WordPress", 99, "React"],
                 "generic_attributes": {
-                    "pain_points_detected": [
+                    "observed_signals": [
                         " Sin CTA clara ",
+                        "No se detectan testimonios visibles",
                         "",
                         "Sin CTA clara",
+                    ],
+                    "inferred_opportunities": [
+                        " reforzar CTA principal visible ",
+                        "",
+                        "reforzar CTA principal visible",
                         7,
+                        "destacar testimonios visibles",
+                        "mejorar reservas online visibles",
+                        "mejorar formulario de contacto",
+                        "reforzar prueba social visible",
+                        "extra oportunidad",
+                    ],
+                    "pain_points_detected": [
+                        "",
                         "No muestra reservas",
-                        "Carga lenta",
-                        "Formulario confuso",
-                        "Sin prueba social",
-                        "Extra pain",
                     ]
                 },
                 "hiring_signals": "yes",
@@ -74,15 +84,28 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["inferred_niche"], "Dental Clinic")
         self.assertEqual(result["inferred_tech_stack"], ["WordPress", "React"])
         self.assertEqual(
-            result["generic_attributes"]["pain_points_detected"],
+            result["generic_attributes"]["observed_signals"],
             [
                 "Sin CTA clara",
-                "No muestra reservas",
-                "Carga lenta",
-                "Formulario confuso",
-                "Sin prueba social",
+                "No se detectan testimonios visibles",
             ],
         )
+        self.assertEqual(
+            result["generic_attributes"]["inferred_opportunities"],
+            [
+                "Posible oportunidad: reforzar CTA principal visible",
+                "Posible oportunidad: destacar testimonios visibles",
+                "Posible oportunidad: mejorar reservas online visibles",
+                "Posible oportunidad: mejorar formulario de contacto",
+                "Posible oportunidad: reforzar prueba social visible",
+            ],
+        )
+        self.assertEqual(
+            result["generic_attributes"]["pain_points_detected"],
+            result["generic_attributes"]["inferred_opportunities"],
+        )
+        self.assertEqual(result["observed_signals"], result["generic_attributes"]["observed_signals"])
+        self.assertEqual(result["inferred_opportunities"], result["generic_attributes"]["inferred_opportunities"])
         self.assertEqual(result["estimated_revenue_signal"], "high")
         self.assertEqual(result["score"], 1.0)
         self.assertEqual(result["confidence_level"], "high")
@@ -97,7 +120,10 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
             {
                 "inferred_niche": "Clinica",
                 "inferred_tech_stack": ["WordPress"],
-                "generic_attributes": {"pain_points_detected": ["Sin CTA clara"]},
+                "generic_attributes": {
+                    "observed_signals": ["Sin CTA clara"],
+                    "inferred_opportunities": ["reforzar CTA principal visible"],
+                },
                 "hiring_signals": False,
                 "estimated_revenue_signal": "medium",
                 "score": 0.7,
@@ -117,6 +143,30 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["_ai_metrics"]["total_tokens"], 0)
         self.assertTrue(second["_ai_metrics"]["cache_hit"])
         self.assertEqual(client_builder.call_count, 1)
+
+    async def test_accepts_legacy_pain_points_payload_as_inferred_opportunities(self) -> None:
+        payload = json.dumps(
+            {
+                "inferred_niche": "Clinica",
+                "inferred_tech_stack": ["WordPress"],
+                "generic_attributes": {"pain_points_detected": ["Sin CTA clara"]},
+                "hiring_signals": False,
+                "estimated_revenue_signal": "medium",
+                "score": 0.7,
+                "confidence_level": "medium",
+            }
+        )
+
+        with patch("app.services.ai_extractor._get_deepseek_api_key", return_value="test-key"):
+            with patch(
+                "app.services.ai_extractor._build_deepseek_client",
+                return_value=_FakeClient(payload),
+            ):
+                result = await extract_business_entity_ai("example.com", "x" * 200, {})
+
+        self.assertEqual(result["observed_signals"], [])
+        self.assertEqual(result["inferred_opportunities"], ["Posible oportunidad: sin CTA clara"])
+        self.assertEqual(result["generic_attributes"]["pain_points_detected"], result["inferred_opportunities"])
 
     async def test_rejects_incomplete_ai_payload(self) -> None:
         payload = json.dumps(

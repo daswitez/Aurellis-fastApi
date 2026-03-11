@@ -1068,6 +1068,10 @@ def build_ai_evidence_pack(
         "primary_contact_source": quality_data.get("primary_contact_source"),
         "heuristic_score": heuristic_data.get("score"),
         "heuristic_confidence": heuristic_data.get("confidence_level"),
+        "observed_signals": heuristic_data.get("observed_signals")
+        or heuristic_data.get("generic_attributes", {}).get("observed_signals", []),
+        "inferred_opportunities": heuristic_data.get("inferred_opportunities")
+        or heuristic_data.get("generic_attributes", {}).get("inferred_opportunities", []),
         "heuristic_pain_points": heuristic_data.get("generic_attributes", {}).get("pain_points_detected", []),
         "inferred_tech_stack": heuristic_data.get("inferred_tech_stack", []),
         "inferred_niche": heuristic_data.get("inferred_niche"),

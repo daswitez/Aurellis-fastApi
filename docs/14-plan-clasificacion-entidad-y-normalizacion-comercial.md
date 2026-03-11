@@ -288,15 +288,24 @@ Toda clasificación fuerte debe poder explicarse con señales y razones visibles
 
 ### I.5. Separar observaciones de inferencias
 
-- [ ] **I-014 Reemplazar o complementar `pain_points_detected` con dos capas**
+- [x] **I-014 Reemplazar o complementar `pain_points_detected` con dos capas**
   - `observed_signals`
   - `inferred_opportunities`
   - **Criterio de cierre:** el sistema diferencia claramente evidencia observada de hipótesis comerciales.
 
-- [ ] **I-015 Acotar el lenguaje de inferencia**
+- [x] **I-015 Acotar el lenguaje de inferencia**
   - Evitar afirmaciones demasiado agresivas o no defendibles.
   - Etiquetar todo insight hipotético como oportunidad o riesgo probable, no como hecho.
   - **Criterio de cierre:** el output comercial es más honesto y menos “inventado con elegancia”.
+
+**Notas de implementación 2026-03-11**
+
+- Heurística e IA ahora producen dos capas explícitas:
+  - `observed_signals`
+  - `inferred_opportunities`
+- `pain_points_detected` queda como alias transitorio derivado de `inferred_opportunities` para no romper compatibilidad inmediata.
+- El prompt/versionado de IA fue endurecido para exigir lenguaje hipotético en oportunidades inferidas y evitar afirmaciones vendidas como hechos.
+- Los nuevos campos ya se persisten y se exponen por prospecto/job result.
 
 ### I.6. Taxonomía comercial controlada
 
