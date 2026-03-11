@@ -39,7 +39,42 @@ El flujo normal del servicio es:
 1. Crear un job con `POST /api/v1/jobs/scrape`.
 2. Hacer polling con `GET /api/v1/jobs/{job_id}` hasta que `status` sea `completed` o `failed`.
 3. Pedir los resultados visibles con `GET /api/v1/jobs/{job_id}/results`.
-4. Si hace falta auditar, revisar `GET /api/v1/jobs/{job_id}/logs` y `GET /api/v1/jobs/metrics/operational`.
+4. Si hace falta auditar, revisar `GET /api/v1/jobs/{job_id}/logs`, `GET /api/v1/jobs/metrics/operational` y `GET /api/v1/jobs/metrics/commercial`.
+
+---
+
+## 2.1. Cambios recientes del contrato
+
+Se mantiene el caso de uso orientado a `Diseñador Gráfico`.
+
+Cambió esto:
+
+- `GET /api/v1/jobs/{job_id}/results` ahora expone clasificación comercial y normalización de ubicación:
+  - `entity_type_detected`
+  - `entity_type_confidence`
+  - `entity_type_evidence`
+  - `is_target_entity`
+  - `acceptance_decision`
+  - `contact_consistency_status`
+  - `primary_email_confidence`
+  - `primary_phone_confidence`
+  - `raw_location_text`
+  - `parsed_location`
+  - `city`
+  - `region`
+  - `country`
+  - `postal_code`
+  - `observed_signals`
+  - `inferred_opportunities`
+  - `taxonomy_top_level`
+  - `taxonomy_business_type`
+- Nuevo endpoint agregado:
+  - `GET /api/v1/jobs/metrics/commercial`
+- No cambió esto:
+  - `POST /api/v1/jobs/scrape`
+  - `GET /api/v1/jobs/{job_id}`
+  - `GET /api/v1/jobs/{job_id}/logs`
+  - `GET /api/v1/jobs/metrics/operational`
 
 ---
 
@@ -101,6 +136,13 @@ Para ver también los casos dudosos:
 
 ```bash
 curl "http://localhost:8000/api/v1/jobs/41/results?quality=accepted,needs_review"
+```
+
+Para revisar la clasificación comercial agregada del sistema:
+
+```bash
+curl "http://localhost:8000/api/v1/jobs/metrics/commercial"
+curl "http://localhost:8000/api/v1/jobs/metrics/commercial?limit=200"
 ```
 
 ### 3.2. Caso real: Diseñador gráfico buscando restaurantes premium
@@ -267,6 +309,42 @@ Ejemplo inválido:
 curl "http://localhost:8000/api/v1/jobs/41/results?quality=accepted,foo"
 ```
 
+#### Campos comerciales y de normalización visibles
+
+Campos nuevos o relevantes que ahora conviene leer en cada resultado:
+
+| Campo | Qué significa |
+|-------|----------------|
+| `acceptance_decision` | Decisión comercial final: `accepted_target`, `accepted_related`, `rejected_directory`, `rejected_media`, `rejected_article`, `rejected_low_confidence` |
+| `entity_type_detected` | Tipo de entidad detectado: `direct_business`, `directory`, `aggregator`, `marketplace`, `media`, `blog_post`, `association`, `agency`, `consultant`, `unknown` |
+| `is_target_entity` | Si el sitio representa una entidad objetivo real o solo contexto relacionado |
+| `contact_consistency_status` | Si el email principal parece consistente con el dominio del sitio |
+| `primary_email_confidence` | Confianza del email principal elegido |
+| `primary_phone_confidence` | Confianza del teléfono principal elegido |
+| `location` | Ubicación visible ya normalizada para consumo |
+| `raw_location_text` | Texto crudo de ubicación antes de normalización |
+| `parsed_location` | Ubicación parseada en piezas |
+| `city`, `region`, `country`, `postal_code` | Componentes normalizados de ubicación |
+| `validated_location` | Campo técnico de validación geográfica |
+| `observed_signals` | Señales observadas directamente en el sitio |
+| `inferred_opportunities` | Hipótesis u oportunidades inferidas, no hechos observados |
+| `taxonomy_top_level` | Taxonomía cerrada de alto nivel |
+| `taxonomy_business_type` | Tipo de negocio normalizado dentro de la taxonomía |
+
+Ejemplo rápido:
+
+```bash
+curl "http://localhost:8000/api/v1/jobs/41/results?quality=accepted,needs_review"
+```
+
+Qué mirar en la respuesta:
+
+- `accepted_target` = negocio alineado con el ICP.
+- `accepted_related` = contexto útil, pero no lead principal.
+- `rejected_directory`, `rejected_media`, `rejected_article` = ruido comercial no objetivo.
+- `location` = valor limpio para UI.
+- `validated_location` = evidencia técnica de matching geográfico.
+
 ---
 
 ### 4.4. `GET /api/v1/jobs/{job_id}/logs`
@@ -327,7 +405,51 @@ Esto sirve para validar si el refinamiento está mejorando recall sin degradar p
 
 ---
 
-### 4.6. `GET /health`
+### 4.6. `GET /api/v1/jobs/metrics/commercial`
+
+KPIs agregados de clasificación comercial y calidad de contacto.
+
+```bash
+curl "http://localhost:8000/api/v1/jobs/metrics/commercial"
+curl "http://localhost:8000/api/v1/jobs/metrics/commercial?limit=200"
+```
+
+#### Query params
+
+| Param | Tipo | Default | Descripción |
+|-------|------|---------|-------------|
+| `limit` | `int` | `100` | Cantidad de jobs recientes a agregar |
+
+#### Qué expone
+
+- `total_accepted_target`
+- `total_accepted_related`
+- `total_rejected_non_target`
+- `accepted_non_target_rate`
+- `inconsistent_contact_count`
+- `inconsistent_contact_rate`
+- `false_phone_filtered_count`
+- `false_phone_filtered_rate`
+- `accepted_target_precision`
+- `rollout_stage`
+- `rollout_layers_completed`
+
+Esto sirve para medir:
+
+- baja de `accepted` no objetivo;
+- baja de emails inconsistentes;
+- baja de teléfonos falsos;
+- mayor precisión de `accepted_target`.
+
+Ejemplo de lectura:
+
+- si sube `accepted_target_precision`, la clasificación comercial está más limpia;
+- si baja `accepted_non_target_rate`, están entrando menos relacionados como aceptados;
+- si sube `false_phone_filtered_count`, el parser está detectando más ruido numérico antes de persistirlo.
+
+---
+
+### 4.7. `GET /health`
 
 ```bash
 curl http://localhost:8000/health

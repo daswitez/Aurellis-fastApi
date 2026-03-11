@@ -142,6 +142,31 @@ class JobsOperationalMetricsResponse(BaseModel):
     total_directory_exclusions: int = 0
 
 
+class JobCommercialSummary(BaseModel):
+    accepted_target_count: int = 0
+    accepted_related_count: int = 0
+    rejected_non_target_count: int = 0
+    inconsistent_contact_count: int = 0
+    false_phone_filtered_count: int = 0
+    accepted_target_precision: float = 0.0
+
+
+class JobsCommercialMetricsResponse(BaseModel):
+    total_jobs: int = 0
+    total_results_processed: int = 0
+    total_accepted_target: int = 0
+    total_accepted_related: int = 0
+    total_rejected_non_target: int = 0
+    accepted_non_target_rate: float = 0.0
+    inconsistent_contact_count: int = 0
+    inconsistent_contact_rate: float = 0.0
+    false_phone_filtered_count: int = 0
+    false_phone_filtered_rate: float = 0.0
+    accepted_target_precision: float = 0.0
+    rollout_stage: str = "stage_4_public_api"
+    rollout_layers_completed: List[str] = Field(default_factory=list)
+
+
 class JobResponse(BaseModel):
     """Estructura de la respuesta al crear o consultar un Job"""
     job_id: int

@@ -121,26 +121,31 @@ def _looks_like_sequence_noise(digits_only: str) -> bool:
     return digits_only in ascending or digits_only in descending
 
 
-def _normalize_phone(candidate: str) -> str | None:
+def _classify_phone_candidate(candidate: str) -> tuple[str | None, str | None]:
     normalized = re.sub(r"[^\d+]", "", candidate.strip())
     if normalized.startswith("00"):
         normalized = f"+{normalized[2:]}"
     if normalized.count("+") > 1 or ("+" in normalized and not normalized.startswith("+")):
-        return None
+        return None, "invalid_plus_format"
 
     digits_only = re.sub(r"\D", "", normalized)
     if len(digits_only) < 7 or len(digits_only) > 15:
-        return None
+        return None, "invalid_length"
     if _looks_like_date_digits(digits_only):
-        return None
+        return None, "date_like"
     if _looks_like_sequence_noise(digits_only):
-        return None
-    return normalized
+        return None, "sequence_noise"
+    return normalized, None
 
 
-def _extract_visible_contacts(text: str) -> tuple[set[str], set[str]]:
+def _normalize_phone(candidate: str) -> str | None:
+    return _classify_phone_candidate(candidate)[0]
+
+
+def _extract_visible_contacts(text: str) -> tuple[set[str], set[str], dict[str, int]]:
     emails: set[str] = set()
     phones: set[str] = set()
+    phone_validation_rejections: dict[str, int] = {}
 
     for match in EMAIL_REGEX.findall(text):
         normalized_email = _normalize_email(match)
@@ -148,11 +153,13 @@ def _extract_visible_contacts(text: str) -> tuple[set[str], set[str]]:
             emails.add(normalized_email)
 
     for match in PHONE_REGEX.findall(text):
-        normalized_phone = _normalize_phone(match)
+        normalized_phone, rejection_reason = _classify_phone_candidate(match)
         if normalized_phone:
             phones.add(normalized_phone)
+        elif rejection_reason:
+            phone_validation_rejections[rejection_reason] = phone_validation_rejections.get(rejection_reason, 0) + 1
 
-    return emails, phones
+    return emails, phones, phone_validation_rejections
 
 
 def _append_contact_channel(
@@ -192,12 +199,15 @@ def _flatten_json_ld(candidate: Any) -> list[dict[str, Any]]:
     return flattened
 
 
-def _parse_json_ld_blocks(soup: BeautifulSoup) -> tuple[list[dict[str, Any]], list[str], list[str], list[str], list[str]]:
+def _parse_json_ld_blocks(
+    soup: BeautifulSoup,
+) -> tuple[list[dict[str, Any]], list[str], list[str], list[str], list[str], dict[str, int]]:
     structured_blocks: list[dict[str, Any]] = []
     addresses: list[str] = []
     phones: list[str] = []
     emails: list[str] = []
     opening_hours: list[str] = []
+    phone_validation_rejections: dict[str, int] = {}
 
     for script_tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
         if not script_tag.string:
@@ -237,9 +247,11 @@ def _parse_json_ld_blocks(soup: BeautifulSoup) -> tuple[list[dict[str, Any]], li
                 _add_unique(addresses, area_served, limit=5)
 
             for raw_phone in [node.get("telephone"), node.get("phone")]:
-                normalized_phone = _normalize_phone(str(raw_phone)) if raw_phone else None
+                normalized_phone, rejection_reason = _classify_phone_candidate(str(raw_phone)) if raw_phone else (None, None)
                 if normalized_phone and normalized_phone not in phones:
                     phones.append(normalized_phone)
+                elif rejection_reason:
+                    phone_validation_rejections[rejection_reason] = phone_validation_rejections.get(rejection_reason, 0) + 1
 
             normalized_email = _normalize_email(str(node.get("email"))) if node.get("email") else None
             if normalized_email and normalized_email not in emails:
@@ -252,7 +264,7 @@ def _parse_json_ld_blocks(soup: BeautifulSoup) -> tuple[list[dict[str, Any]], li
             elif opening_data:
                 _add_unique(opening_hours, str(opening_data), limit=7)
 
-    return structured_blocks, addresses, phones, emails, opening_hours
+    return structured_blocks, addresses, phones, emails, opening_hours, phone_validation_rejections
 
 
 def _extract_address_candidates(text: str) -> list[str]:
@@ -300,7 +312,14 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
     html_lang = (soup.html.get("lang") if soup.html else None) or ""
     meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
     meta_locale = soup.find("meta", attrs={"property": "og:locale"})
-    structured_data, structured_addresses, structured_phones, structured_emails, opening_hours = _parse_json_ld_blocks(soup)
+    (
+        structured_data,
+        structured_addresses,
+        structured_phones,
+        structured_emails,
+        opening_hours,
+        phone_validation_rejections,
+    ) = _parse_json_ld_blocks(soup)
 
     metadata = {
         "title": soup.title.string.strip() if soup.title and soup.title.string else "",
@@ -325,6 +344,8 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
         "contact_channels": [],
         "cta_candidates": [],
         "primary_cta": None,
+        "phone_validation_rejections": dict(phone_validation_rejections),
+        "invalid_phone_candidates_count": sum(phone_validation_rejections.values()),
     }
 
     if structured_data:
@@ -371,7 +392,7 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
             continue
 
         if lowered_href.startswith("tel:"):
-            normalized_phone = _normalize_phone(href[4:])
+            normalized_phone, rejection_reason = _classify_phone_candidate(href[4:])
             if normalized_phone:
                 metadata["phones"].add(normalized_phone)
                 _append_contact_channel(
@@ -380,6 +401,11 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
                     value=normalized_phone,
                     source="tel_link",
                 )
+            elif rejection_reason:
+                metadata["phone_validation_rejections"][rejection_reason] = (
+                    metadata["phone_validation_rejections"].get(rejection_reason, 0) + 1
+                )
+                metadata["invalid_phone_candidates_count"] += 1
             continue
 
         if "wa.me" in lowered_href or "api.whatsapp.com" in lowered_href or "whatsapp" in lowered_href:
@@ -426,9 +452,14 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
     raw_text = soup.get_text(separator=" ", strip=True)
     clean_text = re.sub(r"\s+", " ", raw_text)
 
-    visible_emails, visible_phones = _extract_visible_contacts(clean_text)
+    visible_emails, visible_phones, visible_phone_rejections = _extract_visible_contacts(clean_text)
     metadata["emails"].update(visible_emails)
     metadata["phones"].update(visible_phones)
+    for rejection_reason, count in visible_phone_rejections.items():
+        metadata["phone_validation_rejections"][rejection_reason] = (
+            metadata["phone_validation_rejections"].get(rejection_reason, 0) + count
+        )
+        metadata["invalid_phone_candidates_count"] += count
     for address_candidate in _extract_address_candidates(clean_text):
         _add_unique(metadata["addresses"], address_candidate, limit=5)
 

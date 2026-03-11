@@ -12,12 +12,14 @@ from app.models import JobProspect, Prospect, ScrapingJob, ScrapingLog
 from app.api.schemas import (
     JobAISummary,
     JobCaptureSummary,
+    JobCommercialSummary,
     JobCreateRequest,
     JobLogOut,
     JobLogsResponse,
     JobOperationalSummary,
     JobQualitySummary,
     JobResponse,
+    JobsCommercialMetricsResponse,
     JobsOperationalMetricsResponse,
     ProspectOut,
     ScrapingLogLevel,
@@ -38,6 +40,15 @@ from app.services.source_metadata import normalize_discovery_method, normalize_s
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
+
+COMMERCIAL_REJECTION_DECISIONS = frozenset({"rejected_directory", "rejected_media", "rejected_article"})
+COMMERCIAL_ROLLOUT_LAYERS = [
+    "stage_1_classify_observe",
+    "stage_2_score_penalty",
+    "stage_3_hard_rejection",
+    "stage_4_public_api",
+]
+COMMERCIAL_ROLLOUT_STAGE = COMMERCIAL_ROLLOUT_LAYERS[-1]
 
 
 def _utcnow() -> datetime:
@@ -416,6 +427,107 @@ def _summarize_operational_metrics(job_summaries: list[tuple[ScrapingJob, JobCap
         total_accepted=total_accepted,
         total_article_exclusions=total_article_exclusions,
         total_directory_exclusions=total_directory_exclusions,
+    )
+
+
+def _extract_false_phone_filtered_count(raw_extraction_json: dict | None) -> int:
+    if not isinstance(raw_extraction_json, dict):
+        return 0
+    explicit_count = raw_extraction_json.get("invalid_phone_candidates_count")
+    if explicit_count is not None:
+        return int(explicit_count or 0)
+
+    rejection_counts = raw_extraction_json.get("phone_validation_rejections")
+    if not isinstance(rejection_counts, dict):
+        return 0
+    return sum(int(count or 0) for count in rejection_counts.values())
+
+
+def _summarize_commercial_usage(rows: list[tuple[str | None, str | None, dict | None]]) -> JobCommercialSummary:
+    accepted_target_count = 0
+    accepted_related_count = 0
+    rejected_non_target_count = 0
+    inconsistent_contact_count = 0
+    false_phone_filtered_count = 0
+
+    for acceptance_decision, contact_consistency_status, raw_extraction_json in rows:
+        normalized_decision = str(acceptance_decision or "").strip().lower()
+        normalized_contact_status = str(contact_consistency_status or "").strip().lower()
+
+        if normalized_decision == "accepted_target":
+            accepted_target_count += 1
+        elif normalized_decision == "accepted_related":
+            accepted_related_count += 1
+        elif normalized_decision in COMMERCIAL_REJECTION_DECISIONS:
+            rejected_non_target_count += 1
+
+        if normalized_contact_status == "inconsistent":
+            inconsistent_contact_count += 1
+
+        false_phone_filtered_count += _extract_false_phone_filtered_count(raw_extraction_json)
+
+    total_accepted = accepted_target_count + accepted_related_count
+    return JobCommercialSummary(
+        accepted_target_count=accepted_target_count,
+        accepted_related_count=accepted_related_count,
+        rejected_non_target_count=rejected_non_target_count,
+        inconsistent_contact_count=inconsistent_contact_count,
+        false_phone_filtered_count=false_phone_filtered_count,
+        accepted_target_precision=round((accepted_target_count / total_accepted), 4) if total_accepted else 0.0,
+    )
+
+
+async def _get_job_commercial_summary(db: AsyncSession, job: ScrapingJob) -> JobCommercialSummary:
+    result = await db.execute(
+        select(
+            JobProspect.acceptance_decision,
+            JobProspect.contact_consistency_status,
+            JobProspect.raw_extraction_json,
+        ).where(JobProspect.job_id == job.id)
+    )
+    return _summarize_commercial_usage(list(result.all()))
+
+
+def _summarize_commercial_metrics(
+    job_summaries: list[tuple[ScrapingJob, JobCommercialSummary]],
+) -> JobsCommercialMetricsResponse:
+    total_jobs = len(job_summaries)
+    total_results_processed = 0
+    total_accepted_target = 0
+    total_accepted_related = 0
+    total_rejected_non_target = 0
+    inconsistent_contact_count = 0
+    false_phone_filtered_count = 0
+
+    for job, commercial_summary in job_summaries:
+        total_results_processed += int(job.total_processed or 0)
+        total_accepted_target += int(commercial_summary.accepted_target_count or 0)
+        total_accepted_related += int(commercial_summary.accepted_related_count or 0)
+        total_rejected_non_target += int(commercial_summary.rejected_non_target_count or 0)
+        inconsistent_contact_count += int(commercial_summary.inconsistent_contact_count or 0)
+        false_phone_filtered_count += int(commercial_summary.false_phone_filtered_count or 0)
+
+    total_accepted = total_accepted_target + total_accepted_related
+    return JobsCommercialMetricsResponse(
+        total_jobs=total_jobs,
+        total_results_processed=total_results_processed,
+        total_accepted_target=total_accepted_target,
+        total_accepted_related=total_accepted_related,
+        total_rejected_non_target=total_rejected_non_target,
+        accepted_non_target_rate=round((total_accepted_related / total_results_processed), 4)
+        if total_results_processed
+        else 0.0,
+        inconsistent_contact_count=inconsistent_contact_count,
+        inconsistent_contact_rate=round((inconsistent_contact_count / total_results_processed), 4)
+        if total_results_processed
+        else 0.0,
+        false_phone_filtered_count=false_phone_filtered_count,
+        false_phone_filtered_rate=round((false_phone_filtered_count / total_results_processed), 4)
+        if total_results_processed
+        else 0.0,
+        accepted_target_precision=round((total_accepted_target / total_accepted), 4) if total_accepted else 0.0,
+        rollout_stage=COMMERCIAL_ROLLOUT_STAGE,
+        rollout_layers_completed=list(COMMERCIAL_ROLLOUT_LAYERS),
     )
 
 
@@ -1218,6 +1330,26 @@ async def get_operational_metrics(
         summaries.append((job, capture_summary, operational_summary))
 
     return _summarize_operational_metrics(summaries)
+
+
+@router.get("/metrics/commercial", response_model=JobsCommercialMetricsResponse)
+async def get_commercial_metrics(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ScrapingJob)
+        .order_by(desc(ScrapingJob.created_at))
+        .limit(limit)
+    )
+    jobs = list(result.scalars().all())
+
+    summaries: list[tuple[ScrapingJob, JobCommercialSummary]] = []
+    for job in jobs:
+        commercial_summary = await _get_job_commercial_summary(db, job)
+        summaries.append((job, commercial_summary))
+
+    return _summarize_commercial_metrics(summaries)
 
 
 @router.get("/{job_id}", response_model=JobResponse, response_model_exclude_none=True)

@@ -332,7 +332,7 @@ Toda clasificación fuerte debe poder explicarse con señales y razones visibles
 
 ### I.7. Testing, fixtures y rollout
 
-- [ ] **I-018 Crear fixtures de casos reales problemáticos**
+- [x] **I-018 Crear fixtures de casos reales problemáticos**
   - Negocio real.
   - Directorio.
   - Comparador.
@@ -342,21 +342,24 @@ Toda clasificación fuerte debe poder explicarse con señales y razones visibles
   - Ubicación contaminada.
   - Teléfono falso tipo fecha.
   - **Criterio de cierre:** los percances observados quedan cubiertos por tests reproducibles.
+  - **Implementado en 2026-03-11:** fixtures HTML bajo `tests/fixtures/commercial/` y regresiones en `tests/test_commercial_fixtures.py`.
 
-- [ ] **I-019 Medir impacto de la nueva clasificación**
+- [x] **I-019 Medir impacto de la nueva clasificación**
   - KPIs:
     - baja de `accepted` no objetivo;
     - baja de emails inconsistentes;
     - baja de teléfonos falsos;
     - mayor precisión de `accepted_target`.
   - **Criterio de cierre:** la mejora se valida con métricas, no solo con impresiones.
+  - **Implementado en 2026-03-11:** nuevo endpoint `GET /jobs/metrics/commercial` con KPIs agregados para `accepted_target`, `accepted_related`, rechazos no objetivo, contactos inconsistentes y teléfonos falsos filtrados.
 
-- [ ] **I-020 Hacer rollout por capas**
+- [x] **I-020 Hacer rollout por capas**
   - Etapa 1: solo clasificar y observar.
   - Etapa 2: penalizar score.
   - Etapa 3: rechazar duro ciertos tipos.
   - Etapa 4: exponer nuevos campos en API pública.
   - **Criterio de cierre:** el cambio se despliega sin romper compatibilidad ni sorprender al consumidor.
+  - **Implementado en 2026-03-11:** el rollout queda explicitado en la API de métricas comerciales con `rollout_stage` y `rollout_layers_completed`, manteniendo compatibilidad con los endpoints y campos previos.
 
 ---
 

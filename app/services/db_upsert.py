@@ -130,6 +130,8 @@ def _extract_job_prospect_data(
                 else None
             ),
             "scoring_trace": prospect_data.get("scoring_trace"),
+            "phone_validation_rejections": prospect_data.get("phone_validation_rejections"),
+            "invalid_phone_candidates_count": prospect_data.get("invalid_phone_candidates_count"),
         },
         "raw_extraction_json": {
             "inferred_niche": prospect_data.get("inferred_niche"),
@@ -173,6 +175,8 @@ def _extract_job_prospect_data(
             "ai_trace": prospect_data.get("ai_trace"),
             "heuristic_trace": prospect_data.get("heuristic_trace"),
             "scoring_trace": prospect_data.get("scoring_trace"),
+            "phone_validation_rejections": prospect_data.get("phone_validation_rejections"),
+            "invalid_phone_candidates_count": prospect_data.get("invalid_phone_candidates_count"),
         },
         "created_at": now,
         "updated_at": now,

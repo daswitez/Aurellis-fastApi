@@ -505,6 +505,9 @@ def _merge_location_components(base: dict[str, Any], incoming: dict[str, Any]) -
     merged = dict(base)
     for field in ("city", "region", "country", "postal_code"):
         if not merged.get(field) and incoming.get(field):
+            if field == "region" and merged.get("city"):
+                if _normalize_geo_token(incoming.get("region")) == _normalize_geo_token(merged.get("city")):
+                    continue
             merged[field] = incoming[field]
     if not merged.get("raw_location_text") and incoming.get("raw_location_text"):
         merged["raw_location_text"] = incoming["raw_location_text"]

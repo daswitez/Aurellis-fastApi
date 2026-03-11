@@ -162,6 +162,9 @@ class ParserAndQualityTestCase(unittest.TestCase):
         _, metadata = parse_html_basic(html, "https://clinicamadrid.es")
 
         self.assertEqual(metadata["phones"], ["+34911111111"])
+        self.assertEqual(metadata["invalid_phone_candidates_count"], 3)
+        self.assertEqual(metadata["phone_validation_rejections"]["date_like"], 1)
+        self.assertEqual(metadata["phone_validation_rejections"]["sequence_noise"], 2)
 
     def test_quality_flags_external_email_domains_as_inconsistent(self) -> None:
         clean_text = "Clinica dental con formulario de contacto y CTA para reservar."

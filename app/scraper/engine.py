@@ -45,6 +45,14 @@ LIST_METADATA_FIELDS = {
 }
 
 
+def _merge_count_dicts(base_value: dict[str, int] | None, incoming_value: dict[str, int] | None) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for source in (base_value or {}, incoming_value or {}):
+        for key, value in source.items():
+            merged[str(key)] = merged.get(str(key), 0) + int(value or 0)
+    return merged
+
+
 def _classify_page_type(url: str) -> str:
     lowered = url.lower()
     if "contact" in lowered or "contacto" in lowered:
@@ -98,6 +106,16 @@ def _merge_html_metadata(base_metadata: Dict[str, Any], incoming_metadata: Dict[
         incoming_value = incoming_metadata.get(key)
         if key in LIST_METADATA_FIELDS:
             merged_metadata[key] = _dedupe_json_like_items(list(base_value or []) + list(incoming_value or []))
+        elif isinstance(base_value, dict) or isinstance(incoming_value, dict):
+            merged_metadata[key] = _merge_count_dicts(
+                base_value if isinstance(base_value, dict) else {},
+                incoming_value if isinstance(incoming_value, dict) else {},
+            )
+        elif (
+            isinstance(base_value, (int, float))
+            or isinstance(incoming_value, (int, float))
+        ) and not isinstance(base_value, bool) and not isinstance(incoming_value, bool):
+            merged_metadata[key] = int(base_value or 0) + int(incoming_value or 0)
         elif isinstance(base_value, bool) or isinstance(incoming_value, bool):
             merged_metadata[key] = bool(base_value or incoming_value)
         else:
@@ -194,6 +212,8 @@ async def _crawl_key_pages(root_metadata: Dict[str, Any]) -> tuple[str, Dict[str
         "contact_channels": [],
         "cta_candidates": [],
         "form_detected": False,
+        "phone_validation_rejections": {},
+        "invalid_phone_candidates_count": 0,
     }
     crawled_pages: list[dict[str, str]] = []
 
@@ -477,6 +497,8 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "structured_data_evidence": quality_data.get("structured_data_evidence"),
         "discovery_evidence": quality_data.get("discovery_evidence"),
         "content_coverage": quality_data.get("content_coverage"),
+        "phone_validation_rejections": merged_metadata.get("phone_validation_rejections"),
+        "invalid_phone_candidates_count": merged_metadata.get("invalid_phone_candidates_count", 0),
     }
 
     logger.info(
