@@ -27,6 +27,15 @@ A continuación, puedes encontrar la información de forma estructurada:
 - [Clasificacion Comercial / Contrato y Metricas](clasificacion-comercial/03-contrato-y-metricas.md) - Campos visibles, endpoint comercial y lectura del contrato.
 - [Clasificacion Comercial / Fixtures, Tests y Rollout](clasificacion-comercial/04-fixtures-tests-y-rollout.md) - Cobertura de fixtures reales, tests y despliegue por capas.
 
+## Siguiente Fase Comercial
+- [Plan Motor Comercial / README](plan-motor-comercial/README.md) - Indice de la siguiente fase para mejorar precision, readiness y explicabilidad.
+- [Plan Motor Comercial / Prioridades y Fases](plan-motor-comercial/01-prioridades-y-fases.md) - Orden recomendado de implementacion y dependencias.
+- [Plan Motor Comercial / Precision de Entidad y Taxonomia](plan-motor-comercial/02-precision-de-entidad-y-taxonomia.md) - Endurecimiento de directorios/agregadores, acceptance y taxonomia unica.
+- [Plan Motor Comercial / Calidad de Datos y Normalizacion](plan-motor-comercial/03-calidad-de-datos-y-normalizacion.md) - Contacto, ubicacion, sociales, schema y roles de pagina.
+- [Plan Motor Comercial / Scoring, Readiness y Objeto](plan-motor-comercial/04-scoring-readiness-y-objeto.md) - Sub-scores, blockers, readiness y shape futuro del prospect object.
+- [Plan Motor Comercial / Evidencia, Enriquecimiento y Pipeline](plan-motor-comercial/05-evidencia-enriquecimiento-y-pipeline.md) - Snippets, evidencia, business model, chain detection y pipeline por etapas.
+- [Plan Motor Comercial / Rollout, Metricas y Dataset](plan-motor-comercial/06-rollout-metricas-y-dataset.md) - Despliegue incremental, metricas y base de calibracion futura.
+
 ## Documentos clave para el estado actual
 - [05. API y Reglas](05-api-y-reglas.md) - Contrato visible para integradores y resultados aceptados por calidad.
 - [06. Estado del Sistema](06-estado-del-sistema.md) - Resumen operativo del pipeline actual.
@@ -36,6 +45,7 @@ A continuación, puedes encontrar la información de forma estructurada:
 - [13. Estado Actual y FODA](13-estado-actual-foda-y-pendientes.md) - Qué está fuerte, qué falta y cuáles son los riesgos y oportunidades actuales.
 - [14. Clasificación y Normalización Comercial](14-plan-clasificacion-entidad-y-normalizacion-comercial.md) - Qué falta para separar prospectos reales del ruido semántico y endurecer la calidad comercial.
 - [Clasificación Comercial Implementada](clasificacion-comercial/README.md) - Qué quedó realmente implementado desde `I-001` hasta `I-020`.
+- [Plan Motor Comercial](plan-motor-comercial/README.md) - Que conviene implementar despues para mejorar precision comercial, data quality y readiness.
 
 ## Planeación y Backlog
 - [Plan de Trabajo por Fases](backlog/README.md) - Desglose detallado de todos los pasos, desde el Setup inicial (Fase 1) hasta la Integración Oficial en producción con Supabase y NestJS (Fase 5).

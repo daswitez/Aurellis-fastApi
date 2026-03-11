@@ -42,3 +42,9 @@ Si quieres revisar cobertura y rollout:
 1. [04-fixtures-tests-y-rollout.md](04-fixtures-tests-y-rollout.md)
 2. [../05-api-y-reglas.md](../05-api-y-reglas.md)
 3. [../11-mapa-de-modulos-y-cambios-recientes.md](../11-mapa-de-modulos-y-cambios-recientes.md)
+
+## Siguiente fase recomendada
+
+Para planificar la siguiente capa de mejoras:
+
+- [../plan-motor-comercial/README.md](../plan-motor-comercial/README.md)
