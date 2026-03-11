@@ -1,5 +1,6 @@
 VALID_SOURCE_TYPES = {
     "duckduckgo_search",
+    "brave_search",
     "mock_search",
     "seed_url",
     "manual",
@@ -18,6 +19,7 @@ SOURCE_TYPE_ALIASES = {
     "verification": "manual",
     "url_list": "seed_url",
     "ddg": "duckduckgo_search",
+    "brave": "brave_search",
 }
 
 DISCOVERY_METHOD_ALIASES = {

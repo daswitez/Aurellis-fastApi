@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 DEFAULT_CANDIDATE_MULTIPLIER = 4
 DEFAULT_MIN_CANDIDATES = 5
-MAX_DISCOVERY_QUERIES = 6
+MAX_DISCOVERY_QUERIES = 12
 DEFAULT_QUERY_BATCH_SIZE = 2
 DEFAULT_CANDIDATE_BATCH_SIZE = 5
 NEGATIVE_DISCOVERY_TERMS = (
@@ -41,6 +42,25 @@ LANGUAGE_DISCOVERY_HINTS = {
     },
 }
 
+INTENT_SPLIT_PATTERN = re.compile(r"\s*(?:,|/|&|\by\b|\be\b)\s*", re.IGNORECASE)
+GENERIC_QUERY_PREFIXES = (
+    "empresas ",
+    "marcas ",
+    "negocios ",
+    "sitios ",
+)
+NICHE_VARIANTS = {
+    "ecommerce": ["ecommerce", "tienda online", "shopify"],
+    "tienda online": ["tienda online", "ecommerce", "shopify"],
+    "shopify": ["shopify", "tienda online", "ecommerce"],
+    "academia online": ["academia online", "cursos online", "escuela online", "formacion online"],
+    "academias online": ["academia online", "cursos online", "escuela online", "formacion online"],
+    "cursos online": ["cursos online", "academia online", "escuela online"],
+    "escuela online": ["escuela online", "academia online", "cursos online"],
+    "productos digitales": ["productos digitales", "infoproductos", "cursos online"],
+    "infoproductos": ["infoproductos", "productos digitales", "cursos online"],
+}
+
 
 def _normalize_space(value: str | None) -> str:
     return " ".join((value or "").strip().split())
@@ -50,6 +70,69 @@ def _query_contains_token(query: str, token: str) -> bool:
     normalized_query = f" {_normalize_space(query).lower()} "
     normalized_token = f" {_normalize_space(token).lower()} "
     return bool(token) and normalized_token in normalized_query
+
+
+def _strip_generic_prefixes(value: str) -> str:
+    normalized = _normalize_space(value)
+    lowered = normalized.lower()
+    for prefix in GENERIC_QUERY_PREFIXES:
+        if lowered.startswith(prefix):
+            return _normalize_space(normalized[len(prefix) :])
+    return normalized
+
+
+def _remove_location_tokens(value: str, location: str) -> str:
+    normalized_value = _normalize_space(value)
+    normalized_location = _normalize_space(location)
+    if not normalized_value or not normalized_location:
+        return normalized_value
+
+    pattern = re.compile(rf"\b{re.escape(normalized_location)}\b", re.IGNORECASE)
+    return _normalize_space(pattern.sub(" ", normalized_value))
+
+
+def _expand_intent_variants(intent: str) -> list[str]:
+    normalized_intent = _normalize_space(intent)
+    lowered_intent = normalized_intent.lower()
+    variants: list[str] = []
+
+    for key, candidate_variants in NICHE_VARIANTS.items():
+        if key in lowered_intent:
+            for candidate in candidate_variants:
+                _append_query(variants, candidate)
+
+    if not variants:
+        _append_query(variants, normalized_intent)
+    return variants
+
+
+def _derive_intent_seeds(*, search_query: str, target_niche: str, location: str) -> list[str]:
+    seeds: list[str] = []
+    grouped_variants: list[list[str]] = []
+
+    for raw_value in (target_niche, search_query):
+        cleaned_value = _strip_generic_prefixes(_remove_location_tokens(raw_value, location))
+        if not cleaned_value:
+            continue
+
+        fragments = [fragment for fragment in INTENT_SPLIT_PATTERN.split(cleaned_value) if _normalize_space(fragment)]
+        if not fragments:
+            fragments = [cleaned_value]
+
+        for fragment in fragments:
+            variants: list[str] = []
+            for variant in _expand_intent_variants(fragment):
+                _append_query(variants, variant)
+            if variants:
+                grouped_variants.append(variants)
+
+    max_variants = max((len(group) for group in grouped_variants), default=0)
+    for variant_index in range(max_variants):
+        for group in grouped_variants:
+            if variant_index < len(group):
+                _append_query(seeds, group[variant_index])
+
+    return seeds
 
 
 def _append_query(queries: list[str], candidate: str | None) -> None:
@@ -164,17 +247,27 @@ def build_discovery_queries(
     queries: list[str] = []
     niche_location_query = _normalize_space(f"{niche} {location}") if niche and location else niche or location or ""
     geo_base_query = _normalize_space(f"{base_query} {location}") if location and not _query_contains_token(base_query, location) else base_query
+    intent_seeds = _derive_intent_seeds(search_query=base_query, target_niche=niche, location=location)
+    localized_intent_seeds = [_normalize_space(f"{intent_seed} {location}") if location else intent_seed for intent_seed in intent_seeds]
 
     _append_query(queries, base_query)
     _append_query(queries, niche_location_query)
     _append_query(queries, geo_base_query)
+    for localized_intent_seed in localized_intent_seeds[:3]:
+        _append_query(queries, localized_intent_seed)
 
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
-    intent_seed = niche_location_query or geo_base_query or base_query
+    primary_intent_seed = niche_location_query or geo_base_query or base_query
 
-    _append_query(queries, _apply_negative_terms(f"{intent_seed} {language_hints['official']}"))
-    _append_query(queries, _apply_negative_terms(f"{intent_seed} {language_hints['contact']}"))
-    _append_query(queries, _apply_negative_terms(f"{intent_seed} {language_hints['services']}"))
+    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['official']}"))
+    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['contact']}"))
+    _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['services']}"))
+    for intent_seed in intent_seeds[:2]:
+        localized_seed = _normalize_space(f"{intent_seed} {location}") if location else intent_seed
+        _append_query(queries, _apply_negative_terms(f"{localized_seed} {language_hints['official']}"))
+        _append_query(queries, _apply_negative_terms(f"{localized_seed} {language_hints['contact']}"))
+    for localized_intent_seed in localized_intent_seeds[3:]:
+        _append_query(queries, localized_intent_seed)
 
     if niche and not _query_contains_token(base_query, niche):
         _append_query(queries, _apply_negative_terms(f"{base_query} {niche}"))
@@ -203,6 +296,7 @@ def build_retry_discovery_queries(
     location = _normalize_space(target_location)
     language = _normalize_space(target_language).lower()
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
+    intent_seeds = _derive_intent_seeds(search_query=base_query, target_niche=niche, location=location)
 
     intent_seed = _normalize_space(f"{niche} {location}") or niche or _normalize_space(f"{base_query} {location}") or base_query
     if not intent_seed:
@@ -215,6 +309,11 @@ def build_retry_discovery_queries(
 
     for hint in language_hints.get("locations", []):
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}"))
+
+    for derived_seed in intent_seeds[:4]:
+        localized_seed = _normalize_space(f"{derived_seed} {location}") if location else derived_seed
+        for hint in language_hints.get("commercial", []):
+            _append_query(retry_queries, _apply_negative_terms(f"{localized_seed} {hint}"))
 
     if niche and base_query and not _query_contains_token(base_query, niche):
         _append_query(retry_queries, _apply_negative_terms(f"{niche} {location} {language_hints['official']}"))

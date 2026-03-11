@@ -26,7 +26,6 @@ from app.api.schemas import (
 )
 from app.scraper.engine import scrape_single_prospect
 from app.scraper.http_client import FetchHtmlError
-from app.scraper.search_engines.ddg_search import SearchDiscoveryEntry, SearchDiscoveryResult, find_prospect_urls_by_queries
 from app.services.discovery import (
     build_discovery_query_batches,
     determine_capture_stop_reason,
@@ -34,6 +33,8 @@ from app.services.discovery import (
     resolve_capture_targets,
     resolve_discovery_batch_budget,
 )
+from app.services.discovery_orchestrator import discover_prospect_urls_by_queries
+from app.services.discovery_types import SearchDiscoveryEntry, SearchDiscoveryResult
 from app.services.db_upsert import save_scraped_prospect
 from app.services.source_metadata import normalize_discovery_method, normalize_source_type
 
@@ -99,6 +100,7 @@ def _build_job_context(
     search_query: str | None,
     discovery_method: str | None,
     source_type: str | None,
+    provider_name: str | None = None,
     search_warning: str | None,
 ) -> dict:
     return {
@@ -119,6 +121,7 @@ def _build_job_context(
         "discovery_queries": [],
         "discovery_method": normalize_discovery_method(discovery_method),
         "source_type": normalize_source_type(source_type),
+        "provider_name": provider_name,
         "search_warning": search_warning,
         "target_accepted_results": (job.filters_json or {}).get("target_accepted_results"),
         "max_candidates_to_process": (job.filters_json or {}).get("max_candidates_to_process"),
@@ -620,7 +623,7 @@ async def _discover_next_candidate_batch(
         if batch_budget <= 0:
             break
 
-        discovery_result = await find_prospect_urls_by_queries(batch_queries, max_results=batch_budget)
+        discovery_result = await discover_prospect_urls_by_queries(batch_queries, max_results=batch_budget)
         used_queries.extend(batch_queries)
         excluded_results.extend(discovery_result.excluded_results)
         if discovery_result.warning_message:
@@ -727,6 +730,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     "total_urls": len(candidate_queue),
                     "discovery_method": job_context.get("discovery_method"),
                     "search_query": job_context.get("search_query"),
+                    "provider_name": job_context.get("provider_name"),
                     "target_accepted_results": target_accepted_results,
                     "max_candidates_to_process": max_candidates_to_process,
                     "candidate_batch_size": candidate_batch_size,
@@ -1161,7 +1165,7 @@ async def create_scraping_job(
         )
 
         for batch_index, query_batch in enumerate(discovery_query_batches, start=1):
-            batch_result = await find_prospect_urls_by_queries(
+            batch_result = await discover_prospect_urls_by_queries(
                 query_batch,
                 max_results=initial_discovery_budget,
             )
@@ -1180,6 +1184,9 @@ async def create_scraping_job(
                     warning_message="; ".join(warning_messages) if warning_messages else None,
                     queries=executed_queries,
                     excluded_results=excluded_results,
+                    provider_name=batch_result.provider_name,
+                    provider_status=batch_result.provider_status,
+                    failure_reason=batch_result.failure_reason,
                 )
                 break
         else:
@@ -1195,6 +1202,9 @@ async def create_scraping_job(
                 warning_message=no_results_message,
                 queries=executed_queries or canonical_queries,
                 excluded_results=excluded_results,
+                provider_name=None,
+                provider_status="no_results",
+                failure_reason="no_results",
             )
         final_urls = discovery_result.entries
         
@@ -1242,6 +1252,9 @@ async def create_scraping_job(
             "discovery_queries": discovery_result.queries or canonical_queries,
             "discovery_method": normalize_discovery_method(discovery_result.discovery_method),
             "source_type": normalize_source_type(discovery_result.source_type),
+            "provider_name": discovery_result.provider_name,
+            "provider_status": discovery_result.provider_status,
+            "provider_failure_reason": discovery_result.failure_reason,
             "warning_message": discovery_result.warning_message,
             "excluded_results_count": len(discovery_result.excluded_results),
             "excluded_reason_counts": _summarize_excluded_reason_counts(discovery_result.excluded_results),
@@ -1271,6 +1284,7 @@ async def create_scraping_job(
         search_query=payload.search_query,
         discovery_method=discovery_result.discovery_method,
         source_type=discovery_result.source_type,
+        provider_name=discovery_result.provider_name,
         search_warning=discovery_result.warning_message,
     )
     job_context["discovery_queries"] = discovery_result.queries or canonical_queries

@@ -29,7 +29,7 @@ EntityTypeDetected = Literal[
     "consultant",
     "unknown",
 ]
-ResultSourceType = Literal["duckduckgo_search", "mock_search", "seed_url", "manual", "enrichment"]
+ResultSourceType = Literal["duckduckgo_search", "brave_search", "mock_search", "seed_url", "manual", "enrichment"]
 DiscoveryMethod = Literal["search_query", "seed_url", "manual", "enrichment"]
 ScrapingLogLevel = Literal["INFO", "WARNING", "ERROR"]
 

@@ -11,6 +11,7 @@ asyncpg==0.31.0
 httpx==0.28.1
 beautifulsoup4==4.14.3
 lxml==6.0.2
+duckduckgo-search>=8.0.0
 
 # Settings and validation
 pydantic==2.12.5

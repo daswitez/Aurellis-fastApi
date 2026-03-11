@@ -1,127 +1,34 @@
+import asyncio
 import logging
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, urlparse
 
-import httpx
 from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 
-from app.config import get_settings
 from app.scraper.http_client import FetchHtmlError, fetch_html
+from app.services.discovery_ranker import (
+    clean_text,
+    extract_official_site_from_seed_html as ranker_extract_official_site_from_seed_html,
+    get_directory_seed_token,
+    is_blocked_result,
+    is_same_root_domain,
+    looks_like_social_or_marketplace,
+    score_business_likeness,
+)
+from app.services.discovery_types import SearchDiscoveryEntry, SearchDiscoveryResult
+from app.services.search_providers.base import SearchProvider
 
 logger = logging.getLogger(__name__)
 
-DEMO_FALLBACK_URLS = [
-    "https://www.clinicaveterinariamiraflores.pe/",
-    "https://www.veterinariarondon.com/",
-    "https://www.veterinariaanimalpolis.pe/",
-]
-
-BLOCKED_DOMAIN_TOKENS = [
-    "mercadolibre",
-    "linkedin",
-    "facebook",
-    "instagram",
-    "tiktok",
-    "youtube",
-    "twitter",
-    "x.com",
-    "infoisinfo",
-    "habitissimo",
-    "foursquare",
-    "google.com",
-    "googleusercontent",
-]
-DIRECTORY_SEED_DOMAIN_TOKENS = [
-    "doctoralia",
-    "topdoctors",
-    "paginasamarillas",
-    "guiatelefonica",
-    "yellowpages",
-    "yelp",
-    "tripadvisor",
-]
-SOCIAL_DOMAIN_TOKENS = [
-    "linkedin.com",
-    "facebook.com",
-    "instagram.com",
-    "tiktok.com",
-    "youtube.com",
-    "twitter.com",
-    "x.com",
-]
-DIRECTORY_CTA_HINTS = [
-    "sitio web",
-    "website",
-    "web oficial",
-    "official site",
-    "pagina web",
-    "página web",
-    "visitar web",
-    "visitar sitio",
-    "homepage",
-]
-EDITORIAL_PATH_TOKENS = [
-    "/blog/",
-    "/ideas/",
-    "/noticias/",
-    "/news/",
-    "/categories/",
-    "/category/",
-    "/guia/",
-    "/guía/",
-    "/article/",
-    "/articulo/",
-    "/artículos/",
-    "/tag/",
-]
-EDITORIAL_TITLE_TOKENS = [
-    "100 ideas",
-    "ideas de negocio",
-    "qué vender",
-    "que vender",
-    "guia",
-    "guía",
-    "categorías",
-    "categories",
-    "tendencias",
-    "mejores",
-    "top ",
-    "lista de",
-]
+# Thread pool for running synchronous duckduckgo-search in async context
+_ddg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ddg")
 
 
-@dataclass
-class SearchDiscoveryEntry:
-    url: str
-    query: str | None = None
-    position: int | None = None
-    title: str | None = None
-    snippet: str | None = None
-    discovery_confidence: str | None = None
-    business_likeness_score: float | None = None
-    discovery_reasons: list[str] = field(default_factory=list)
-    seed_source_url: str | None = None
-    seed_source_type: str | None = None
-
-
-@dataclass
-class SearchDiscoveryResult:
-    entries: list[SearchDiscoveryEntry]
-    source_type: str
-    discovery_method: str
-    warning_message: str | None = None
-    queries: list[str] = field(default_factory=list)
-    excluded_results: list[dict[str, Any]] = field(default_factory=list)
-
-    @property
-    def urls(self) -> list[str]:
-        return [entry.url for entry in self.entries]
-
-
-def _clean_text(value: str | None) -> str:
-    return " ".join((value or "").strip().split())
-
+# ---------------------------------------------------------------------------
+# Legacy HTML parsing (kept for offline fixture tests)
+# ---------------------------------------------------------------------------
 
 def _resolve_ddg_url(raw_url: str) -> str:
     url = raw_url.strip()
@@ -132,179 +39,18 @@ def _resolve_ddg_url(raw_url: str) -> str:
     return url
 
 
-def _is_blocked_result(url: str) -> str | None:
-    lowered_url = url.lower()
-    for blocked_token in BLOCKED_DOMAIN_TOKENS:
-        if blocked_token in lowered_url:
-            return f"blocked_domain:{blocked_token}"
-    return None
-
-
-def _get_directory_seed_token(url: str) -> str | None:
-    lowered_url = url.lower()
-    for token in DIRECTORY_SEED_DOMAIN_TOKENS:
-        if token in lowered_url:
-            return token
-    return None
-
-
-def _extract_brand_tokens(value: str) -> set[str]:
-    cleaned = "".join(char.lower() if char.isalnum() else " " for char in value)
-    tokens = {
-        token
-        for token in cleaned.split()
-        if len(token) >= 4 and token not in {"http", "https", "www", "site", "oficial", "official", "contacto", "contact"}
-    }
-    return tokens
-
-
-def _domain_brand_tokens(url: str) -> set[str]:
-    hostname = urlparse(url).netloc.lower().removeprefix("www.")
-    primary = hostname.split(":")[0].split(".")[0]
-    return _extract_brand_tokens(primary)
-
-
-def _is_same_root_domain(left_url: str, right_url: str) -> bool:
-    left_parts = urlparse(left_url).netloc.lower().removeprefix("www.").split(".")
-    right_parts = urlparse(right_url).netloc.lower().removeprefix("www.").split(".")
-    return len(left_parts) >= 2 and len(right_parts) >= 2 and left_parts[-2:] == right_parts[-2:]
-
-
-def _looks_like_social_or_marketplace(url: str) -> bool:
-    lowered_url = url.lower()
-    return any(token in lowered_url for token in SOCIAL_DOMAIN_TOKENS + BLOCKED_DOMAIN_TOKENS)
-
-
-def _score_directory_official_link(seed_url: str, candidate_url: str, anchor_text: str) -> float:
-    score = 0.0
-    lowered_anchor = anchor_text.lower()
-    if any(hint in lowered_anchor for hint in DIRECTORY_CTA_HINTS):
-        score += 0.45
-    if urlparse(candidate_url).path in {"", "/"}:
-        score += 0.2
-    if not _looks_like_social_or_marketplace(candidate_url):
-        score += 0.15
-    if not _is_same_root_domain(seed_url, candidate_url):
-        score += 0.15
-    if len(urlparse(candidate_url).path.split("/")) <= 2:
-        score += 0.05
-    return round(score, 4)
-
-
-def _extract_official_site_from_seed_html(seed_url: str, html: str) -> tuple[str | None, list[str]]:
-    soup = BeautifulSoup(html, "html.parser")
-    best_url: str | None = None
-    best_score = 0.0
-    best_reasons: list[str] = []
-
-    for link in soup.find_all("a", href=True):
-        href = link.get("href", "").strip()
-        if not href:
-            continue
-        candidate_url = urljoin(seed_url, href)
-        if not candidate_url.startswith("http"):
-            continue
-        if _is_same_root_domain(seed_url, candidate_url):
-            continue
-        if _looks_like_social_or_marketplace(candidate_url):
-            continue
-
-        anchor_text = " ".join(link.get_text(" ", strip=True).split())
-        score = _score_directory_official_link(seed_url, candidate_url, anchor_text)
-        reasons: list[str] = ["directory_seed_resolved"]
-        if any(hint in anchor_text.lower() for hint in DIRECTORY_CTA_HINTS):
-            reasons.append("official_link_label")
-        if urlparse(candidate_url).path in {"", "/"}:
-            reasons.append("root_domain_candidate")
-
-        if score > best_score:
-            best_url = candidate_url
-            best_score = score
-            best_reasons = reasons
-
-    if best_url and best_score >= 0.45:
-        return best_url, best_reasons
-    return None, ["directory_seed_without_official_site"]
-
-
-def _score_business_likeness(url: str, title: str, snippet: str) -> tuple[float, list[str], str | None]:
-    score = 0.0
-    reasons: list[str] = []
-    lowered_blob = f"{title} {snippet}".lower()
-    path = urlparse(url).path.lower()
-    title_tokens = _extract_brand_tokens(title)
-    domain_tokens = _domain_brand_tokens(url)
-
-    positive_rules = [
-        ("official_site_hint", 0.35, ["oficial", "official", "sitio oficial"]),
-        ("contact_or_services_hint", 0.18, ["contacto", "contact", "servicios", "services", "nosotros", "about"]),
-        ("conversion_cta_hint", 0.18, ["reserva", "booking", "agenda", "cotiza", "quote"]),
-        ("business_category_hint", 0.12, ["clinica", "clínica", "estudio", "agencia", "tienda", "retail", "consultora"]),
-    ]
-    negative_rules = [
-        ("editorial_path", -0.35, EDITORIAL_PATH_TOKENS),
-        ("editorial_title", -0.28, EDITORIAL_TITLE_TOKENS),
-        ("marketplace_or_listing", -0.25, ["marketplace", "listing", "directory", "directorio"]),
-    ]
-
-    for reason, delta, tokens in positive_rules:
-        if any(token in lowered_blob for token in tokens):
-            score += delta
-            reasons.append(reason)
-
-    for reason, delta, tokens in negative_rules:
-        if any(token in lowered_blob or token in path for token in tokens):
-            score += delta
-            reasons.append(reason)
-
-    depth = len([segment for segment in path.split("/") if segment])
-    if depth <= 1:
-        score += 0.12
-        reasons.append("shallow_url")
-    elif depth >= 3:
-        score -= 0.15
-        reasons.append("deep_url")
-
-    if path.endswith(".html") or path.endswith(".php"):
-        score -= 0.05
-        reasons.append("document_like_path")
-
-    if title and len(title.split()) <= 10:
-        score += 0.08
-        reasons.append("concise_title")
-
-    if domain_tokens and title_tokens and domain_tokens & title_tokens:
-        score += 0.22
-        reasons.append("brand_domain_match")
-    if path in {"", "/"}:
-        score += 0.08
-        reasons.append("root_domain_url")
-    if _get_directory_seed_token(url):
-        score -= 0.2
-        reasons.append("directory_seed_candidate")
-
-    exclusion_reason = None
-    if any(reason in reasons for reason in {"editorial_path", "editorial_title"}):
-        exclusion_reason = "excluded_as_article"
-    elif score < 0.15:
-        exclusion_reason = "low_business_likeness"
-
-    return round(score, 4), reasons, exclusion_reason
-
-
 def _extract_result_url(result_node: Any) -> str:
     url_tag = result_node.find("a", class_="result__url")
     if url_tag and url_tag.get("href"):
         return _resolve_ddg_url(url_tag["href"])
-
     title_link = result_node.select_one(".result__title a")
     if title_link and title_link.get("href"):
         return _resolve_ddg_url(title_link["href"])
-
     return ""
 
 
 def _extract_search_results(html: str, query: str) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]]]:
+    """Parse raw DDG HTML SERP page. Used by offline fixture tests."""
     soup = BeautifulSoup(html, "html.parser")
     entries: list[SearchDiscoveryEntry] = []
     excluded: list[dict[str, Any]] = []
@@ -317,19 +63,19 @@ def _extract_search_results(html: str, query: str) -> tuple[list[SearchDiscovery
         title_tag = result_node.select_one(".result__title")
         snippet_tag = result_node.select_one(".result__snippet")
         url = _extract_result_url(result_node)
-        title = _clean_text(title_tag.get_text(" ", strip=True) if title_tag else "")
-        snippet = _clean_text(snippet_tag.get_text(" ", strip=True) if snippet_tag else "")
+        title = clean_text(title_tag.get_text(" ", strip=True) if title_tag else "")
+        snippet = clean_text(snippet_tag.get_text(" ", strip=True) if snippet_tag else "")
 
         if not url.startswith("http"):
             excluded.append({"url": url or None, "reason": "invalid_url", "query": query, "title": title, "snippet": snippet})
             continue
 
-        blocked_reason = _is_blocked_result(url)
+        blocked_reason = is_blocked_result(url)
         if blocked_reason:
             excluded.append({"url": url, "reason": blocked_reason, "query": query, "title": title, "snippet": snippet})
             continue
 
-        business_score, business_reasons, exclusion_reason = _score_business_likeness(url, title, snippet)
+        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet)
         if exclusion_reason:
             excluded.append(
                 {
@@ -373,33 +119,160 @@ def _extract_search_results(html: str, query: str) -> tuple[list[SearchDiscovery
     return entries, excluded
 
 
-async def _search_single_query(query: str) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]], str | None]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-        "Referer": "https://duckduckgo.com/",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    }
+# ---------------------------------------------------------------------------
+# Result processing (reuses existing business scoring pipeline)
+# ---------------------------------------------------------------------------
 
+def _process_ddg_results(
+    raw_results: list[dict[str, Any]],
+    query: str,
+) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]]]:
+    """Process raw DDG API results through the business scoring pipeline."""
+    entries: list[SearchDiscoveryEntry] = []
+    excluded: list[dict[str, Any]] = []
+
+    for raw in raw_results:
+        url = (raw.get("href") or "").strip()
+        title = clean_text(raw.get("title") or "")
+        snippet = clean_text(raw.get("body") or "")
+
+        if not url.startswith("http"):
+            excluded.append({"url": url or None, "reason": "invalid_url", "query": query, "title": title, "snippet": snippet})
+            continue
+
+        blocked_reason = is_blocked_result(url)
+        if blocked_reason:
+            excluded.append({"url": url, "reason": blocked_reason, "query": query, "title": title, "snippet": snippet})
+            continue
+
+        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet)
+        if exclusion_reason:
+            excluded.append(
+                {
+                    "url": url,
+                    "reason": exclusion_reason,
+                    "query": query,
+                    "title": title,
+                    "snippet": snippet,
+                    "business_likeness_score": business_score,
+                    "discovery_reasons": business_reasons,
+                }
+            )
+            continue
+
+        discovery_confidence = "medium"
+        lowered_blob = f"{title} {snippet}".lower()
+        if "oficial" in lowered_blob or "official" in lowered_blob or business_score >= 0.45:
+            discovery_confidence = "high"
+        elif business_score <= 0.2:
+            discovery_confidence = "low"
+
+        entries.append(
+            SearchDiscoveryEntry(
+                url=url,
+                query=query,
+                title=title or None,
+                snippet=snippet or None,
+                discovery_confidence=discovery_confidence,
+                business_likeness_score=business_score,
+                discovery_reasons=business_reasons,
+            )
+        )
+
+    entries.sort(
+        key=lambda entry: (
+            -(entry.business_likeness_score or 0.0),
+            0 if entry.discovery_confidence == "high" else 1,
+            len(entry.url),
+        )
+    )
+    return entries, excluded
+
+
+# ---------------------------------------------------------------------------
+# Anti-bot detection (kept for backward compatibility with tests)
+# ---------------------------------------------------------------------------
+
+ANTI_BOT_PATTERNS = (
+    "anomaly.js",
+    "challenge-form",
+    "cc=botnet",
+    'id="challenge-form"',
+)
+
+
+def _detect_antibot_challenge(status_code: int, html: str) -> bool:
+    """Detect DDG anti-bot challenge page (kept for tests)."""
+    lowered_html = (html or "").lower()
+    return status_code == 202 and any(pattern in lowered_html for pattern in ANTI_BOT_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Single query via duckduckgo-search library
+# ---------------------------------------------------------------------------
+
+def _search_single_query_sync(
+    query: str,
+    max_results: int = 15,
+    region: str = "es-es",
+) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    """
+    Synchronous DDG search using the duckduckgo-search library.
+    Uses primp/curl_cffi internally for real browser TLS fingerprinting.
+    Returns (raw_results, warning_message, failure_reason).
+    """
     try:
-        async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=True) as client:
-            response = await client.post("https://html.duckduckgo.com/html/", data={"q": query})
-            response.raise_for_status()
-            return (*_extract_search_results(response.text, query), None)
-    except httpx.HTTPError as exc:
-        warning_message = f"Busqueda DDG fallida para '{query}': {exc}"
-        logger.warning("[DDG] %s", warning_message)
-        return [], [], warning_message
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results, region=region))
+        if not results:
+            return [], f"DDG no devolvio resultados para '{query}'.", "no_results"
+        return results, None, None
     except Exception as exc:
-        warning_message = f"Error inesperado en DDG para '{query}': {exc}"
-        logger.error("[DDG] %s", warning_message)
-        return [], [], warning_message
+        error_str = str(exc).lower()
+        if "ratelimit" in error_str or "429" in error_str:
+            warning = f"DDG rate-limit para '{query}': {exc}"
+            logger.warning("[DDG] %s", warning)
+            return [], warning, "rate_limit"
+        if "timeout" in error_str:
+            warning = f"DDG timeout para '{query}': {exc}"
+            logger.warning("[DDG] %s", warning)
+            return [], warning, "timeout"
+        warning = f"Error DDG para '{query}': {exc}"
+        logger.error("[DDG] %s", warning)
+        return [], warning, "unexpected_error"
+
+
+async def _search_single_query_async(
+    query: str,
+    max_results: int = 15,
+    region: str = "es-es",
+) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]], str | None, str | None]:
+    """Async wrapper: runs DDG search in thread pool + processes results."""
+    loop = asyncio.get_running_loop()
+    raw_results, warning, failure = await loop.run_in_executor(
+        _ddg_executor,
+        _search_single_query_sync,
+        query,
+        max_results,
+        region,
+    )
+    if failure:
+        return [], [], warning, failure
+
+    entries, excluded = _process_ddg_results(raw_results, query)
+    return entries, excluded, warning, None
+
+
+# ---------------------------------------------------------------------------
+# Directory seed expansion (unchanged)
+# ---------------------------------------------------------------------------
+
+def _extract_official_site_from_seed_html(seed_url: str, html: str) -> tuple[str | None, list[str]]:
+    return ranker_extract_official_site_from_seed_html(seed_url, html)
 
 
 async def _expand_directory_seed_entry(entry: SearchDiscoveryEntry) -> tuple[SearchDiscoveryEntry | None, dict[str, Any] | None]:
-    directory_token = _get_directory_seed_token(entry.url)
+    directory_token = get_directory_seed_token(entry.url)
     if not directory_token:
         return entry, None
 
@@ -428,7 +301,7 @@ async def _expand_directory_seed_entry(entry: SearchDiscoveryEntry) -> tuple[Sea
         seed_excluded["discovery_reasons"] = (entry.discovery_reasons or []) + official_reasons
         return None, seed_excluded
 
-    official_score, official_business_reasons, exclusion_reason = _score_business_likeness(
+    official_score, official_business_reasons, exclusion_reason = score_business_likeness(
         official_url,
         entry.title or "",
         entry.snippet or "",
@@ -454,18 +327,35 @@ async def _expand_directory_seed_entry(entry: SearchDiscoveryEntry) -> tuple[Sea
     )
 
 
+# ---------------------------------------------------------------------------
+# Public search provider
+# ---------------------------------------------------------------------------
+
+class DuckDuckGoHtmlSearchProvider(SearchProvider):
+    provider_name = "duckduckgo_html"
+    source_type = "duckduckgo_search"
+
+    async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+        return await find_prospect_urls_by_queries(queries, max_results=max_results)
+
+
 async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
-    logger.info("Buscador: ejecutando %s queries canonicas", len(queries))
+    logger.info("Buscador DDG: ejecutando %s queries canonicas", len(queries))
     entries: list[SearchDiscoveryEntry] = []
     excluded_results: list[dict[str, Any]] = []
     warning_messages: list[str] = []
     seen_urls: set[str] = set()
+    failure_reason: str | None = None
+    provider_status = "ok"
 
     for query in queries:
-        query_entries, query_excluded, warning_message = await _search_single_query(query)
+        query_entries, query_excluded, warning_message, query_failure_reason = await _search_single_query_async(query)
         excluded_results.extend(query_excluded)
+
         if warning_message:
             warning_messages.append(warning_message)
+        if query_failure_reason and failure_reason is None:
+            failure_reason = query_failure_reason
 
         for query_position, entry in enumerate(query_entries, start=1):
             expanded_entry, seed_excluded = await _expand_directory_seed_entry(entry)
@@ -502,10 +392,13 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
                     warning_message=warning_message,
                     queries=queries,
                     excluded_results=excluded_results,
+                    provider_name="duckduckgo_html",
+                    provider_status=provider_status,
+                    failure_reason=failure_reason,
                 )
 
     if entries:
-        logger.info("Busqueda finalizada. %s prospectos generados.", len(entries))
+        logger.info("Busqueda DDG finalizada. %s prospectos generados.", len(entries))
         return SearchDiscoveryResult(
             entries=entries,
             source_type="duckduckgo_search",
@@ -513,34 +406,19 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
             warning_message="; ".join(warning_messages) if warning_messages else None,
             queries=queries,
             excluded_results=excluded_results,
+            provider_name="duckduckgo_html",
+            provider_status=provider_status,
+            failure_reason=failure_reason,
         )
 
-    settings = get_settings()
-    warning_message = "; ".join(warning_messages) if warning_messages else None
-    if settings.DEMO_MODE:
-        demo_message = warning_message or f"DDG no devolvio resultados para queries: {queries!r}."
-        logger.warning("DEMO_MODE activo. Se devuelven resultados mock para %s.", queries)
-        return SearchDiscoveryResult(
-            entries=[
-                SearchDiscoveryEntry(
-                    url=url,
-                    query=queries[0] if queries else None,
-                    position=index,
-                    title="Demo result",
-                    snippet=demo_message,
-                    discovery_confidence="low",
-                )
-                for index, url in enumerate(DEMO_FALLBACK_URLS[:max_results], start=1)
-            ],
-            source_type="mock_search",
-            discovery_method="search_query",
-            warning_message=f"{demo_message} Se activo fallback demo.",
-            queries=queries,
-            excluded_results=excluded_results,
-        )
-
-    no_results_message = warning_message or f"DDG no devolvio resultados para queries: {queries!r}."
-    logger.warning("Busqueda sin resultados reales para %s.", queries)
+    if failure_reason in ("rate_limit", "anti_bot_challenge"):
+        no_results_message = "; ".join(warning_messages) if warning_messages else "DDG bloqueo el scraping."
+        provider_status = "blocked"
+    else:
+        no_results_message = "; ".join(warning_messages) if warning_messages else f"DDG no devolvio resultados para queries: {queries!r}."
+        provider_status = "no_results"
+        failure_reason = failure_reason or "no_results"
+    logger.warning("Busqueda DDG sin resultados reales para %s.", queries)
     return SearchDiscoveryResult(
         entries=[],
         source_type="duckduckgo_search",
@@ -548,6 +426,9 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
         warning_message=no_results_message,
         queries=queries,
         excluded_results=excluded_results,
+        provider_name="duckduckgo_html",
+        provider_status=provider_status,
+        failure_reason=failure_reason,
     )
 
 

@@ -1,9 +1,11 @@
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.scraper.search_engines.ddg_search import (
     SearchDiscoveryEntry,
+    _detect_antibot_challenge,
     _expand_directory_seed_entry,
     _extract_official_site_from_seed_html,
     _extract_search_results,
@@ -16,6 +18,9 @@ from app.services.discovery import (
     resolve_capture_targets,
     resolve_discovery_batch_budget,
 )
+from app.services.discovery_orchestrator import discover_prospect_urls_by_queries
+from app.services.discovery_types import SearchDiscoveryResult
+from app.services.search_providers.base import SearchProvider
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "serp"
@@ -62,6 +67,19 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertIn("Tiendas Argentina", queries)
         self.assertTrue(any(query.startswith("Tiendas Argentina sitio oficial") for query in queries))
         self.assertTrue(any(query.startswith("Tiendas Argentina contacto") for query in queries))
+
+    def test_splits_mixed_niches_into_more_prospectable_queries(self) -> None:
+        queries = build_discovery_queries(
+            search_query="empresas ecommerce y academias online España",
+            target_niche="Ecommerce y academias online",
+            target_location="España",
+            target_language="es",
+        )
+
+        self.assertIn("ecommerce España", queries)
+        self.assertIn("academia online España", queries)
+        self.assertTrue(any(query.startswith("ecommerce España sitio oficial") for query in queries))
+        self.assertTrue(any(query.startswith("academia online España contacto") for query in queries))
 
     def test_resolves_capture_targets_from_legacy_max_results(self) -> None:
         targets = resolve_capture_targets(
@@ -226,6 +244,68 @@ class DirectorySeedExpansionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(excluded)
         assert excluded is not None
         self.assertTrue(str(excluded["reason"]).startswith("excluded_as_directory_seed"))
+
+
+class DiscoveryProviderOrchestrationTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_detects_ddg_antibot_challenge(self) -> None:
+        html = '<form id="challenge-form" action="//duckduckgo.com/anomaly.js?cc=botnet"></form>'
+
+        self.assertTrue(_detect_antibot_challenge(202, html))
+        self.assertFalse(_detect_antibot_challenge(200, html))
+
+    async def test_orchestrator_falls_back_to_next_provider(self) -> None:
+        class EmptyProvider(SearchProvider):
+            provider_name = "primary"
+            source_type = "duckduckgo_search"
+
+            async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+                return SearchDiscoveryResult(
+                    entries=[],
+                    source_type=self.source_type,
+                    discovery_method="search_query",
+                    warning_message="Primary provider blocked.",
+                    queries=queries,
+                    provider_name=self.provider_name,
+                    provider_status="blocked",
+                    failure_reason="anti_bot_challenge",
+                )
+
+        class SuccessProvider(SearchProvider):
+            provider_name = "secondary"
+            source_type = "brave_search"
+
+            async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+                return SearchDiscoveryResult(
+                    entries=[
+                        SearchDiscoveryEntry(
+                            url="https://academiaejemplo.com",
+                            query=queries[0],
+                            title="Academia Ejemplo",
+                            snippet="Cursos online y contacto",
+                            discovery_confidence="high",
+                            business_likeness_score=0.61,
+                        )
+                    ],
+                    source_type=self.source_type,
+                    discovery_method="search_query",
+                    queries=queries,
+                    provider_name=self.provider_name,
+                    provider_status="ok",
+                )
+
+        with patch(
+            "app.services.discovery_orchestrator._build_providers",
+            return_value=[EmptyProvider(), SuccessProvider()],
+        ), patch(
+            "app.services.discovery_orchestrator.get_settings",
+            return_value=SimpleNamespace(DEMO_MODE=False),
+        ):
+            result = await discover_prospect_urls_by_queries(["academias online espana"], max_results=5)
+
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.provider_name, "secondary")
+        self.assertEqual(result.source_type, "brave_search")
+        self.assertIn("Primary provider blocked.", result.warning_message or "")
 
 
 if __name__ == "__main__":
