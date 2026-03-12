@@ -208,6 +208,29 @@ curl -X POST http://localhost:8000/api/v1/jobs/scrape \
   }'
 ```
 
+### 3.5. Caso real: Editor de Video buscando marcas personales y coaches
+
+Gracias al parámetro `allow_social_profiles` derivado de la profesión, este job no bloqueará perfiles de Instagram ni TikTok y buscará explícitamente en esas redes:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/jobs/scrape \
+  -H "Content-Type: application/json" \
+  -d '{
+    "search_query": "marcas personales ecommerce y coaches de negocios España",
+    "user_profession": "Editor de Video",
+    "user_technologies": ["Adobe Premiere Pro", "After Effects", "DaVinci Resolve"],
+    "user_value_proposition": "Ayudo a marcas personales, tiendas online y coaches a escalar su facturación con videos cortos de alta retención para Reels, TikTok y YouTube Shorts.",
+    "user_past_successes": ["Escale un coach de 5k a 50k seguidores en 2 meses con reels dinamicos y capte clientes de alto valor"],
+    "target_niche": "Marcas Personales y Coaches",
+    "target_location": "España",
+    "target_language": "es",
+    "target_pain_points": ["Reels sin alcance", "Falta de consistencia en redes", "Mala retención de audiencia en el inicio de los videos"],
+    "target_budget_signals": ["Venden cursos o infoproductos", "Activos en Instagram o TikTok con mas de 10k seguidores", "Tienen linktree/tienda oficial"],
+    "target_accepted_results": 5,
+    "max_candidates_to_process": 25
+  }'
+```
+
 ---
 
 ## 4. Endpoints disponibles

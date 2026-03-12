@@ -163,7 +163,12 @@ def _append_query(queries: list[str], candidate: str | None) -> None:
 def _chunk_queries(queries: list[str], batch_size: int) -> list[list[str]]:
     if batch_size <= 0:
         return [queries] if queries else []
-    return [queries[index : index + batch_size] for index in range(0, len(queries), batch_size)]
+    
+    result: list[list[str]] = []
+    for index in range(0, len(queries), batch_size):
+        chunk: list[str] = queries[index : index + batch_size]
+        result.append(chunk)
+    return result
 
 
 def _normalize_context_list(values: list[str] | None) -> list[str]:
@@ -181,10 +186,12 @@ def _normalize_context_list(values: list[str] | None) -> list[str]:
 
 def _derive_contextual_negative_terms(
     *,
+    user_profession: str | None,
     target_niche: str | None,
     user_target_offer_focus: str | None,
     user_service_offers: list[str] | None,
     user_service_constraints: list[str] | None,
+    ai_negative_terms: list[str] | None = None,
 ) -> tuple[str, ...]:
     searchable_text = " ".join(
         [
@@ -195,7 +202,13 @@ def _derive_contextual_negative_terms(
         ]
     ).lower()
 
-    extra_terms: list[str] = []
+    profession = _normalize_space(user_profession).lower()
+    is_creative_role = any(
+        role in profession 
+        for role in ["video", "editor", "community", "social", "creador", "diseñador", "designer", "web", "desarrollador", "developer", "seo", "cro"]
+    )
+
+    extra_terms: list[str] = list(ai_negative_terms) if ai_negative_terms else []
     if any(
         token in searchable_text
         for token in (
@@ -212,6 +225,9 @@ def _derive_contextual_negative_terms(
 
     deduped_terms: list[str] = []
     for term in [*NEGATIVE_DISCOVERY_TERMS, *extra_terms]:
+        # If it's a creative role, don't exclude social media or visual platforms
+        if is_creative_role and term in ("-pinterest", "-linkedin", "-instagram", "-tiktok", "-youtube"):
+            continue
         if term not in deduped_terms:
             deduped_terms.append(term)
     return tuple(deduped_terms)
@@ -294,12 +310,16 @@ def determine_capture_stop_reason(
 def build_discovery_queries(
     *,
     search_query: str | None,
+    user_profession: str | None = None,
+    user_technologies: list[str] | None = None,
     target_niche: str | None,
     target_location: str | None,
     target_language: str | None,
     user_service_offers: list[str] | None = None,
     user_service_constraints: list[str] | None = None,
     user_target_offer_focus: str | None = None,
+    ai_dork_queries: list[str] | None = None,
+    ai_negative_terms: list[str] | None = None,
     max_queries: int = MAX_DISCOVERY_QUERIES,
 ) -> list[str]:
     base_query = _normalize_space(search_query)
@@ -324,10 +344,16 @@ def build_discovery_queries(
     localized_intent_seeds = [_normalize_space(f"{intent_seed} {location}") if location else intent_seed for intent_seed in intent_seeds]
     negative_terms = _derive_contextual_negative_terms(
         target_niche=niche,
+        user_profession=user_profession,
         user_target_offer_focus=user_target_offer_focus,
         user_service_offers=user_service_offers,
         user_service_constraints=user_service_constraints,
+        ai_negative_terms=ai_negative_terms,
     )
+
+    if ai_dork_queries:
+        for dork in ai_dork_queries:
+            _append_query(queries, _apply_negative_terms(dork, negative_terms))
 
     _append_query(queries, base_query)
     _append_query(queries, niche_location_query)
@@ -337,6 +363,28 @@ def build_discovery_queries(
 
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
     primary_intent_seed = niche_location_query or geo_base_query or base_query
+
+    profession = _normalize_space(user_profession).lower()
+    needs_social_profiles = any(
+        role in profession 
+        for role in ["video", "editor", "community", "social", "creador", "diseño", "designer"]
+    )
+    
+    if needs_social_profiles:
+        # Prioritize social profiles for creative/social roles
+        for intent_seed in intent_seeds[:2]:
+            localized_seed = _normalize_space(f"{intent_seed} {location}") if location else intent_seed
+            _append_query(queries, _apply_negative_terms(f"{localized_seed} site:instagram.com", negative_terms))
+            _append_query(queries, _apply_negative_terms(f"{localized_seed} site:tiktok.com", negative_terms))
+        _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} site:instagram.com", negative_terms))
+        _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} site:tiktok.com", negative_terms))
+
+    if user_technologies:
+        tech_string = " ".join(_normalize_context_list(user_technologies)).lower()
+        if "shopify" in tech_string:
+            _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} \"powered by shopify\"", negative_terms))
+        if "wordpress" in tech_string:
+            _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} \"creado con wordpress\"", negative_terms))
 
     _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['official']}", negative_terms))
     _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['contact']}", negative_terms))
@@ -366,6 +414,8 @@ def build_discovery_queries(
 def build_retry_discovery_queries(
     *,
     search_query: str | None,
+    user_profession: str | None = None,
+    user_technologies: list[str] | None = None,
     target_niche: str | None,
     target_location: str | None,
     target_language: str | None,
@@ -380,6 +430,7 @@ def build_retry_discovery_queries(
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
     intent_seeds = _derive_intent_seeds(search_query=base_query, target_niche=niche, location=location)
     negative_terms = _derive_contextual_negative_terms(
+        user_profession=user_profession,
         target_niche=niche,
         user_target_offer_focus=user_target_offer_focus,
         user_service_offers=user_service_offers,
@@ -394,6 +445,15 @@ def build_retry_discovery_queries(
 
     for hint in language_hints.get("commercial", []):
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}", negative_terms))
+
+    profession = _normalize_space(user_profession).lower()
+    needs_social_profiles = any(
+        role in profession 
+        for role in ["video", "editor", "community", "social", "creador", "diseño", "designer"]
+    )
+    if needs_social_profiles:
+        _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} site:instagram.com", negative_terms))
+        _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} site:tiktok.com", negative_terms))
 
     for hint in language_hints.get("locations", []):
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}", negative_terms))
@@ -422,25 +482,35 @@ def build_retry_discovery_queries(
 def build_discovery_query_batches(
     *,
     search_query: str | None,
+    user_profession: str | None = None,
+    user_technologies: list[str] | None = None,
     target_niche: str | None,
     target_location: str | None,
     target_language: str | None,
     user_service_offers: list[str] | None = None,
     user_service_constraints: list[str] | None = None,
     user_target_offer_focus: str | None = None,
+    ai_dork_queries: list[str] | None = None,
+    ai_negative_terms: list[str] | None = None,
     query_batch_size: int = DEFAULT_QUERY_BATCH_SIZE,
 ) -> list[list[str]]:
     canonical_queries = build_discovery_queries(
         search_query=search_query,
+        user_profession=user_profession,
+        user_technologies=user_technologies,
         target_niche=target_niche,
         target_location=target_location,
         target_language=target_language,
         user_service_offers=user_service_offers,
         user_service_constraints=user_service_constraints,
         user_target_offer_focus=user_target_offer_focus,
+        ai_dork_queries=ai_dork_queries,
+        ai_negative_terms=ai_negative_terms,
     )
     retry_queries = build_retry_discovery_queries(
         search_query=search_query,
+        user_profession=user_profession,
+        user_technologies=user_technologies,
         target_niche=target_niche,
         target_location=target_location,
         target_language=target_language,

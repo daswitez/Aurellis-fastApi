@@ -49,7 +49,7 @@ def _extract_result_url(result_node: Any) -> str:
     return ""
 
 
-def _extract_search_results(html: str, query: str) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]]]:
+def _extract_search_results(html: str, query: str, allow_social_profiles: bool = False) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]]]:
     """Parse raw DDG HTML SERP page. Used by offline fixture tests."""
     soup = BeautifulSoup(html, "html.parser")
     entries: list[SearchDiscoveryEntry] = []
@@ -70,12 +70,12 @@ def _extract_search_results(html: str, query: str) -> tuple[list[SearchDiscovery
             excluded.append({"url": url or None, "reason": "invalid_url", "query": query, "title": title, "snippet": snippet})
             continue
 
-        blocked_reason = is_blocked_result(url)
+        blocked_reason = is_blocked_result(url, allow_social_profiles=allow_social_profiles)
         if blocked_reason:
             excluded.append({"url": url, "reason": blocked_reason, "query": query, "title": title, "snippet": snippet})
             continue
 
-        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet)
+        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet, allow_social_profiles=allow_social_profiles)
         if exclusion_reason:
             excluded.append(
                 {
@@ -126,6 +126,7 @@ def _extract_search_results(html: str, query: str) -> tuple[list[SearchDiscovery
 def _process_ddg_results(
     raw_results: list[dict[str, Any]],
     query: str,
+    allow_social_profiles: bool = False,
 ) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]]]:
     """Process raw DDG API results through the business scoring pipeline."""
     entries: list[SearchDiscoveryEntry] = []
@@ -140,12 +141,12 @@ def _process_ddg_results(
             excluded.append({"url": url or None, "reason": "invalid_url", "query": query, "title": title, "snippet": snippet})
             continue
 
-        blocked_reason = is_blocked_result(url)
+        blocked_reason = is_blocked_result(url, allow_social_profiles=allow_social_profiles)
         if blocked_reason:
             excluded.append({"url": url, "reason": blocked_reason, "query": query, "title": title, "snippet": snippet})
             continue
 
-        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet)
+        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet, allow_social_profiles=allow_social_profiles)
         if exclusion_reason:
             excluded.append(
                 {
@@ -246,6 +247,7 @@ async def _search_single_query_async(
     query: str,
     max_results: int = 15,
     region: str = "es-es",
+    allow_social_profiles: bool = False,
 ) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]], str | None, str | None]:
     """Async wrapper: runs DDG search in thread pool + processes results."""
     loop = asyncio.get_running_loop()
@@ -259,7 +261,7 @@ async def _search_single_query_async(
     if failure:
         return [], [], warning, failure
 
-    entries, excluded = _process_ddg_results(raw_results, query)
+    entries, excluded = _process_ddg_results(raw_results, query, allow_social_profiles=allow_social_profiles)
     return entries, excluded, warning, None
 
 
@@ -271,7 +273,7 @@ def _extract_official_site_from_seed_html(seed_url: str, html: str) -> tuple[str
     return ranker_extract_official_site_from_seed_html(seed_url, html)
 
 
-async def _expand_directory_seed_entry(entry: SearchDiscoveryEntry) -> tuple[SearchDiscoveryEntry | None, dict[str, Any] | None]:
+async def _expand_directory_seed_entry(entry: SearchDiscoveryEntry, allow_social_profiles: bool = False) -> tuple[SearchDiscoveryEntry | None, dict[str, Any] | None]:
     directory_token = get_directory_seed_token(entry.url)
     if not directory_token:
         return entry, None
@@ -305,6 +307,7 @@ async def _expand_directory_seed_entry(entry: SearchDiscoveryEntry) -> tuple[Sea
         official_url,
         entry.title or "",
         entry.snippet or "",
+        allow_social_profiles=allow_social_profiles,
     )
     if exclusion_reason:
         seed_excluded["seed_resolution_error"] = exclusion_reason
@@ -335,11 +338,11 @@ class DuckDuckGoHtmlSearchProvider(SearchProvider):
     provider_name = "duckduckgo_html"
     source_type = "duckduckgo_search"
 
-    async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
-        return await find_prospect_urls_by_queries(queries, max_results=max_results)
+    async def search(self, queries: list[str], allow_social_profiles: bool = False, max_results: int = 10) -> SearchDiscoveryResult:
+        return await find_prospect_urls_by_queries(queries, max_results=max_results, allow_social_profiles=allow_social_profiles)
 
 
-async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 10, allow_social_profiles: bool = False) -> SearchDiscoveryResult:
     logger.info("Buscador DDG: ejecutando %s queries canonicas", len(queries))
     entries: list[SearchDiscoveryEntry] = []
     excluded_results: list[dict[str, Any]] = []
@@ -349,7 +352,7 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
     provider_status = "ok"
 
     for query in queries:
-        query_entries, query_excluded, warning_message, query_failure_reason = await _search_single_query_async(query)
+        query_entries, query_excluded, warning_message, query_failure_reason = await _search_single_query_async(query, allow_social_profiles=allow_social_profiles)
         excluded_results.extend(query_excluded)
 
         if warning_message:
@@ -358,7 +361,7 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
             failure_reason = query_failure_reason
 
         for query_position, entry in enumerate(query_entries, start=1):
-            expanded_entry, seed_excluded = await _expand_directory_seed_entry(entry)
+            expanded_entry, seed_excluded = await _expand_directory_seed_entry(entry, allow_social_profiles=allow_social_profiles)
             if seed_excluded:
                 excluded_results.append(seed_excluded)
             if expanded_entry is None:
@@ -432,5 +435,5 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
     )
 
 
-async def find_prospect_urls_by_query(query: str, max_results: int = 10) -> SearchDiscoveryResult:
-    return await find_prospect_urls_by_queries([query], max_results=max_results)
+async def find_prospect_urls_by_query(query: str, max_results: int = 10, allow_social_profiles: bool = False) -> SearchDiscoveryResult:
+    return await find_prospect_urls_by_queries([query], max_results=max_results, allow_social_profiles=allow_social_profiles)

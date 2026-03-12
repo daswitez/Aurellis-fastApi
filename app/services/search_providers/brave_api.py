@@ -24,7 +24,7 @@ class BraveSearchProvider(SearchProvider):
     def is_available(self) -> bool:
         return bool(self._api_key)
 
-    async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+    async def search(self, queries: list[str], allow_social_profiles: bool = False, max_results: int = 10) -> SearchDiscoveryResult:
         if not self.is_available():
             return SearchDiscoveryResult(
                 entries=[],
@@ -82,12 +82,12 @@ class BraveSearchProvider(SearchProvider):
                         excluded_results.append({"url": url or None, "reason": "invalid_url", "query": query, "title": title, "snippet": snippet})
                         continue
 
-                    blocked_reason = is_blocked_result(url)
+                    blocked_reason = is_blocked_result(url, allow_social_profiles=allow_social_profiles)
                     if blocked_reason:
                         excluded_results.append({"url": url, "reason": blocked_reason, "query": query, "title": title, "snippet": snippet})
                         continue
 
-                    business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet)
+                    business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet, allow_social_profiles=allow_social_profiles)
                     if exclusion_reason:
                         excluded_results.append(
                             {

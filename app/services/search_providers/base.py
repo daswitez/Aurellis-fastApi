@@ -10,7 +10,7 @@ class SearchProvider(ABC):
     source_type = "duckduckgo_search"
 
     @abstractmethod
-    async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+    async def search(self, queries: list[str], allow_social_profiles: bool = False, max_results: int = 10) -> SearchDiscoveryResult:
         raise NotImplementedError
 
     def is_available(self) -> bool:

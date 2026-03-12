@@ -86,7 +86,7 @@ def _detect_google_block(status_code: int, html: str) -> bool:
     return any(pattern.lower() in lowered for pattern in GOOGLE_BLOCK_PATTERNS)
 
 
-def _extract_google_results(html: str, query: str) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]]]:
+def _extract_google_results(html: str, query: str, allow_social_profiles: bool = False) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]]]:
     """Parse Google SERP HTML and extract results."""
     soup = BeautifulSoup(html, "html.parser")
     entries: list[SearchDiscoveryEntry] = []
@@ -133,12 +133,12 @@ def _extract_google_results(html: str, query: str) -> tuple[list[SearchDiscovery
                     break
 
         # Apply same filters as DDG
-        blocked_reason = is_blocked_result(url)
+        blocked_reason = is_blocked_result(url, allow_social_profiles=allow_social_profiles)
         if blocked_reason:
             excluded.append({"url": url, "reason": blocked_reason, "query": query, "title": title, "snippet": snippet})
             continue
 
-        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet)
+        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet, allow_social_profiles=allow_social_profiles)
         if exclusion_reason:
             excluded.append({
                 "url": url,
@@ -188,6 +188,7 @@ async def _search_single_query(
     query: str,
     client: httpx.AsyncClient,
     num_results: int = 15,
+    allow_social_profiles: bool = False,
 ) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]], str | None, str | None]:
     """Execute a single Google search query with retry on block detection."""
     last_warning: str | None = None
@@ -213,7 +214,7 @@ async def _search_single_query(
                 return [], [], last_warning, "google_captcha"
 
             response.raise_for_status()
-            entries, excluded = _extract_google_results(response.text, query)
+            entries, excluded = _extract_google_results(response.text, query, allow_social_profiles=allow_social_profiles)
             return entries, excluded, None, None
 
         except httpx.HTTPError as exc:
@@ -236,11 +237,11 @@ class GoogleHtmlSearchProvider(SearchProvider):
     provider_name = "google_html"
     source_type = "google_search"
 
-    async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
-        return await find_prospect_urls_via_google(queries, max_results=max_results)
+    async def search(self, queries: list[str], allow_social_profiles: bool = False, max_results: int = 10) -> SearchDiscoveryResult:
+        return await find_prospect_urls_via_google(queries, max_results=max_results, allow_social_profiles=allow_social_profiles)
 
 
-async def find_prospect_urls_via_google(queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+async def find_prospect_urls_via_google(queries: list[str], max_results: int = 10, allow_social_profiles: bool = False) -> SearchDiscoveryResult:
     logger.info("Buscador Google HTML: ejecutando %s queries", len(queries))
     entries: list[SearchDiscoveryEntry] = []
     excluded_results: list[dict[str, Any]] = []
@@ -269,7 +270,7 @@ async def find_prospect_urls_via_google(queries: list[str], max_results: int = 1
                 logger.debug("[Google] Delay inter-query: %.1fs", inter_delay)
                 await asyncio.sleep(inter_delay)
 
-            query_entries, query_excluded, warning, query_failure = await _search_single_query(query, client)
+            query_entries, query_excluded, warning, query_failure = await _search_single_query(query, client, num_results=max_results, allow_social_profiles=allow_social_profiles)
             excluded_results.extend(query_excluded)
 
             if warning:

@@ -37,6 +37,7 @@ from app.services.discovery_orchestrator import discover_prospect_urls_by_querie
 from app.services.discovery_types import SearchDiscoveryEntry, SearchDiscoveryResult
 from app.services.db_upsert import save_scraped_prospect
 from app.services.source_metadata import normalize_discovery_method, normalize_source_type
+from app.services.ai_search_planner import generate_dynamic_search_plan
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +614,7 @@ async def _discover_next_candidate_batch(
     candidate_cap: int,
     remaining_budget: int,
     seen_urls: set[str],
+    user_profession: str | None = None,
 ) -> tuple[list[SearchDiscoveryEntry], int, list[str], list[dict], str | None]:
     warnings: list[str] = []
     excluded_results: list[dict] = []
@@ -632,7 +634,11 @@ async def _discover_next_candidate_batch(
         if batch_budget <= 0:
             break
 
-        discovery_result = await discover_prospect_urls_by_queries(batch_queries, max_results=batch_budget)
+        discovery_result = await discover_prospect_urls_by_queries(
+            batch_queries,
+            max_results=batch_budget,
+            user_profession=user_profession,
+        )
         used_queries.extend(batch_queries)
         excluded_results.extend(discovery_result.excluded_results)
         if discovery_result.warning_message:
@@ -766,6 +772,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         candidate_cap=max_candidates_to_process,
                         remaining_budget=remaining_budget,
                         seen_urls=seen_candidate_urls,
+                        user_profession=job_context.get("user_profession"),
                     )
 
                     if warning_message:
@@ -1151,7 +1158,8 @@ async def create_scraping_job(
         source_type=normalize_source_type("seed_url") or "seed_url",
         discovery_method=normalize_discovery_method("seed_url") or "seed_url",
     )
-    
+    ai_search_plan = await generate_dynamic_search_plan(payload.model_dump())
+
     discovery_query_batches = build_discovery_query_batches(
         search_query=payload.search_query,
         target_niche=payload.target_niche,
@@ -1160,6 +1168,8 @@ async def create_scraping_job(
         user_service_offers=payload.user_service_offers,
         user_service_constraints=payload.user_service_constraints,
         user_target_offer_focus=payload.user_target_offer_focus,
+        ai_dork_queries=ai_search_plan.get("optimal_dork_queries"),
+        ai_negative_terms=ai_search_plan.get("dynamic_negative_terms"),
     )
     canonical_queries = _flatten_query_batches(discovery_query_batches)
     next_discovery_batch_index = 0
@@ -1180,6 +1190,7 @@ async def create_scraping_job(
             batch_result = await discover_prospect_urls_by_queries(
                 query_batch,
                 max_results=initial_discovery_budget,
+                user_profession=payload.user_profession,
             )
             executed_queries.extend(query_batch)
             excluded_results.extend(batch_result.excluded_results)
@@ -1312,6 +1323,8 @@ async def create_scraping_job(
         else []
     )
     job_context["next_discovery_batch_index"] = next_discovery_batch_index
+    job_context["target_entity_hints"] = ai_search_plan.get("target_entity_hints", [])
+    job_context["exclusion_entity_hints"] = ai_search_plan.get("exclusion_entity_hints", [])
     job_context["candidate_batch_size"] = resolve_candidate_batch_size(
         target_accepted_results=capture_targets["target_accepted_results"],
         candidate_cap=capture_targets["max_candidates_to_process"],

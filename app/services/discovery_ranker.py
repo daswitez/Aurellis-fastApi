@@ -134,9 +134,11 @@ def clean_text(value: str | None) -> str:
     return " ".join((value or "").strip().split())
 
 
-def is_blocked_result(url: str) -> str | None:
+def is_blocked_result(url: str, allow_social_profiles: bool = False) -> str | None:
     lowered_url = url.lower()
     for blocked_token in BLOCKED_DOMAIN_TOKENS:
+        if allow_social_profiles and blocked_token in SOCIAL_DOMAIN_TOKENS + ["instagram", "tiktok", "youtube", "facebook", "linkedin", "x.com", "twitter"]:
+            continue
         if blocked_token in lowered_url:
             return f"blocked_domain:{blocked_token}"
     return None
@@ -171,9 +173,15 @@ def is_same_root_domain(left_url: str, right_url: str) -> bool:
     return len(left_parts) >= 2 and len(right_parts) >= 2 and left_parts[-2:] == right_parts[-2:]
 
 
-def looks_like_social_or_marketplace(url: str) -> bool:
+def looks_like_social_or_marketplace(url: str, allow_social_profiles: bool = False) -> bool:
     lowered_url = url.lower()
-    return any(token in lowered_url for token in SOCIAL_DOMAIN_TOKENS + BLOCKED_DOMAIN_TOKENS)
+    tokens_to_check = SOCIAL_DOMAIN_TOKENS + BLOCKED_DOMAIN_TOKENS
+    if allow_social_profiles:
+        tokens_to_check = [
+            t for t in tokens_to_check 
+            if t not in SOCIAL_DOMAIN_TOKENS and t not in ["instagram", "tiktok", "youtube", "facebook", "linkedin", "x.com", "twitter"]
+        ]
+    return any(token in lowered_url for token in tokens_to_check)
 
 
 def score_directory_official_link(seed_url: str, candidate_url: str, anchor_text: str) -> float:
@@ -228,7 +236,12 @@ def extract_official_site_from_seed_html(seed_url: str, html: str) -> tuple[str 
     return None, ["directory_seed_without_official_site"]
 
 
-def score_business_likeness(url: str, title: str, snippet: str) -> tuple[float, list[str], str | None]:
+def score_business_likeness(
+    url: str, 
+    title: str, 
+    snippet: str, 
+    allow_social_profiles: bool = False
+) -> tuple[float, list[str], str | None]:
     score = 0.0
     reasons: list[str] = []
     lowered_blob = f"{title} {snippet}".lower()
@@ -242,6 +255,10 @@ def score_business_likeness(url: str, title: str, snippet: str) -> tuple[float, 
         ("conversion_cta_hint", 0.18, ["reserva", "booking", "agenda", "cotiza", "quote"]),
         ("business_category_hint", 0.12, ["clinica", "clínica", "estudio", "agencia", "tienda", "retail", "consultora"]),
     ]
+    
+    if allow_social_profiles:
+        positive_rules.append(("social_profile_boost", 0.25, ["instagram.com", "tiktok.com", "youtube.com", "linkedin.com/company"]))
+
     negative_rules = [
         ("editorial_path", -0.35, EDITORIAL_PATH_TOKENS),
         ("editorial_title", -0.28, EDITORIAL_TITLE_TOKENS),

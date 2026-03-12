@@ -296,6 +296,21 @@ def _build_system_prompt(domain: str, job_context: Dict[str, Any]) -> str:
     buyer_persona = _build_buyer_persona(job_context)
     expected_schema = _build_expected_output_schema()
 
+    target_hints = job_context.get("target_entity_hints", [])
+    exclusion_hints = job_context.get("exclusion_entity_hints", [])
+    
+    entity_rules_section = ""
+    if target_hints or exclusion_hints:
+        entity_rules_section = "\nREGLAS DE IDENTIFICACION DE ENTIDAD DEL ALGORITMO PLANIFICADOR\n"
+        if target_hints:
+            entity_rules_section += "Considera fuertemente que es el negocio objetivo directo si cumple:\n"
+            for hint in target_hints:
+                entity_rules_section += f"- {hint}\n"
+        if exclusion_hints:
+            entity_rules_section += "Identifica como intermediario (agencia), directorio, o blog y BAJA el score si:\n"
+            for hint in exclusion_hints:
+                entity_rules_section += f"- {hint}\n"
+
     return f"""Eres un analista senior de prospeccion B2B para freelancers y agencias pequenas.
 Tu tarea es evaluar el sitio '{domain}' usando UNICAMENTE el texto extraido del sitio y el contexto comercial del vendedor.
 
@@ -303,6 +318,7 @@ Version de prompt: {PROMPT_VERSION}
 
 CONTEXTO DEL VENDEDOR
 {buyer_persona}
+{entity_rules_section}
 
 OBJETIVO
 1. Inferir el nicho real del prospecto.

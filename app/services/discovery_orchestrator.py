@@ -66,7 +66,23 @@ def _build_demo_result(queries: list[str], max_results: int, warning_message: st
     )
 
 
-async def discover_prospect_urls_by_queries(queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+def _should_allow_social_profiles(user_profession: str | None) -> bool:
+    if not user_profession:
+        return False
+    prof = user_profession.lower()
+    creative_roles = [
+        "editor", "video", "videographer", "creative", "creador", "designer",
+        "diseñador", "developer", "desarrollador", "marketing", "web", "seo",
+        "fotograf", "photograph", "community manager", "social media"
+    ]
+    return any(role in prof for role in creative_roles)
+
+
+async def discover_prospect_urls_by_queries(
+    queries: list[str],
+    max_results: int = 10,
+    user_profession: str | None = None,
+) -> SearchDiscoveryResult:
     if not queries:
         return SearchDiscoveryResult(
             entries=[],
@@ -101,8 +117,14 @@ async def discover_prospect_urls_by_queries(queries: list[str], max_results: int
             failure_reason="no_providers_available",
         )
 
+    allow_social_profiles = _should_allow_social_profiles(user_profession)
+
     for provider in providers:
-        result = await provider.search(queries, max_results=max_results)
+        result = await provider.search(
+            queries,
+            max_results=max_results,
+            allow_social_profiles=allow_social_profiles,
+        )
         last_result = result
         excluded_results.extend(result.excluded_results)
         if result.warning_message:
