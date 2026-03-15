@@ -448,6 +448,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
                 "owned_website_candidates": surface_resolution.get("owned_website_candidates", []),
             },
         )
+        generic_attributes.setdefault("social_quality", quality_data.get("social_quality"))
         generic_attributes.setdefault("service_keywords", quality_data.get("service_keywords"))
         generic_attributes.setdefault("company_size_signal", quality_data.get("company_size_signal"))
         heuristic_generic_attributes = heuristic_baseline.get("generic_attributes") if isinstance(heuristic_baseline, dict) else {}
@@ -530,7 +531,8 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
             None,
         ),
         "facebook_url": next((s for s in merged_metadata.get("social_links", []) if "facebook.com" in s), None),
-        "social_profiles": merged_metadata.get("social_profiles"),
+        "social_profiles": quality_data.get("social_profiles_enriched") or merged_metadata.get("social_profiles"),
+        "social_quality": quality_data.get("social_quality"),
         "primary_cta": quality_data.get("primary_cta"),
         "booking_url": quality_data.get("booking_url"),
         "pricing_page_url": quality_data.get("pricing_page_url"),

@@ -349,11 +349,12 @@ Campos nuevos o relevantes que ahora conviene leer en cada resultado:
 | `contact_surface` | Mejor superficie visible para iniciar contacto |
 | `offer_surface` | Superficie donde la oferta se entiende mejor |
 | `identity_resolution_reason` | Razón compacta de cómo se resolvió la identidad |
+| `social_quality` | Lectura consolidada de calidad social para prospección, con sub-scores de identidad, actividad, comercialidad, contacto y audience fit |
 | `contact_consistency_status` | Si el email principal parece consistente con el dominio del sitio |
 | `primary_email_confidence` | Confianza del email principal elegido |
 | `primary_phone_confidence` | Confianza del teléfono principal elegido |
 | `tiktok_url` | Perfil de TikTok detectado si existe |
-| `social_profiles` | Lista normalizada de perfiles sociales accionables. Excluye `share`, `intent` y posts, y marca `is_primary` cuando el perfil es la mejor identidad social |
+| `social_profiles` | Lista normalizada de perfiles sociales accionables. Excluye `share`, `intent` y posts, marca `is_primary` y ahora incluye señales visibles como bio, CTA, link-in-bio y `social_quality_score` por perfil |
 | `location` | Ubicación visible ya normalizada para consumo |
 | `raw_location_text` | Texto crudo de ubicación antes de normalización |
 | `parsed_location` | Ubicación parseada en piezas |
@@ -378,6 +379,7 @@ Qué mirar en la respuesta:
 - `location` = valor limpio para UI.
 - `validated_location` = evidencia técnica de matching geográfico.
 - `entry_surface` vs `identity_surface` = diferencia entre dónde apareció el lead y quién es realmente.
+- `social_quality` = deja ver si la red es solo presencia o una superficie comercial realmente útil.
 
 ---
 

@@ -201,8 +201,25 @@ class SocialProfileOut(BaseModel):
     handle: Optional[str] = None
     is_primary: bool = False
     profile_kind: Optional[str] = None
+    display_name: Optional[str] = None
+    bio: Optional[str] = None
+    category: Optional[str] = None
+    link_in_bio: Optional[str] = None
     contact_signals: List[str] = Field(default_factory=list)
     activity_signals: List[str] = Field(default_factory=list)
+    visible_ctas: List[str] = Field(default_factory=list)
+    contact_options: List[str] = Field(default_factory=list)
+    activity_evidence: List[str] = Field(default_factory=list)
+    offer_evidence: List[str] = Field(default_factory=list)
+    audience_evidence: List[str] = Field(default_factory=list)
+    profile_completeness: Optional[ConfidenceLevel] = None
+    profile_commerciality: Optional[ConfidenceLevel] = None
+    identity_quality: Optional[float] = None
+    activity_quality: Optional[float] = None
+    commercial_quality: Optional[float] = None
+    contact_quality: Optional[float] = None
+    audience_fit_quality: Optional[float] = None
+    social_quality_score: Optional[float] = None
     confidence: Optional[ConfidenceLevel] = None
 
 
@@ -237,6 +254,7 @@ class ProspectOut(BaseModel):
     tiktok_url: Optional[str]
     facebook_url: Optional[str]
     social_profiles: Optional[List[SocialProfileOut]]
+    social_quality: Optional[Dict[str, Any]]
     entry_surface: Optional[Dict[str, Any]]
     identity_surface: Optional[Dict[str, Any]]
     contact_surface: Optional[Dict[str, Any]]

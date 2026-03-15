@@ -1597,6 +1597,11 @@ async def get_job_results(
             tiktok_url=prospect.tiktok_url,
             facebook_url=prospect.facebook_url,
             social_profiles=prospect.social_profiles,
+            social_quality=(
+                prospect.generic_attributes.get("social_quality")
+                if isinstance(prospect.generic_attributes, dict)
+                else None
+            ),
             entry_surface=surface_resolution.get("entry_surface"),
             identity_surface=surface_resolution.get("identity_surface"),
             contact_surface=surface_resolution.get("contact_surface"),

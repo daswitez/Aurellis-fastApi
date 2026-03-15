@@ -220,6 +220,19 @@ Implicacion:
 - Se resuelven hubs como `Linktree` hacia una web propia o perfil social canonico cuando hay evidencia suficiente.
 - Se implementa `P0.2` para normalizar `social_profiles` y excluir links de `share`, `intent` y posts del output accionable.
 - Los perfiles sociales resueltos como identidad principal ahora quedan marcados con `is_primary`.
+- Se implementa `P0.2.1` con una primera capa de `social_quality` por perfil.
+- Cada perfil social ahora puede incluir:
+  - `display_name`
+  - `bio`
+  - `link_in_bio`
+  - `visible_ctas`
+  - `contact_options`
+  - `activity_evidence`
+  - `offer_evidence`
+  - `audience_evidence`
+  - sub-scores de identidad, actividad, comercialidad, contacto y audience fit
+  - `social_quality_score`
+- Se agrega un resumen `social_quality` a nivel prospecto para usar despues en ranking y readiness.
 - Se agrega trazabilidad operativa en resultados con:
   - `entry_surface`
   - `identity_surface`

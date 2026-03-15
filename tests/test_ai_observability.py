@@ -290,21 +290,12 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         assert result is not None
         self.assertEqual(result["canonical_identity"], "instagram:editorpro")
         self.assertEqual(result["primary_identity_type"], "social_profile")
-        self.assertEqual(
-            result["social_profiles"],
-            [
-                {
-                    "platform": "instagram",
-                    "url": "https://www.instagram.com/editorpro/",
-                    "handle": "editorpro",
-                    "is_primary": True,
-                    "profile_kind": "profile",
-                    "contact_signals": [],
-                    "activity_signals": [],
-                    "confidence": "high",
-                }
-            ],
-        )
+        self.assertEqual(len(result["social_profiles"]), 1)
+        self.assertEqual(result["social_profiles"][0]["platform"], "instagram")
+        self.assertEqual(result["social_profiles"][0]["url"], "https://www.instagram.com/editorpro/")
+        self.assertEqual(result["social_profiles"][0]["handle"], "editorpro")
+        self.assertTrue(result["social_profiles"][0]["is_primary"])
+        self.assertIn("social_quality_score", result["social_profiles"][0])
 
     async def test_blends_ai_score_with_heuristic_baseline_on_success(self) -> None:
         metadata = {

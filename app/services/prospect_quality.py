@@ -6,6 +6,8 @@ import unicodedata
 from typing import Any
 from urllib.parse import urlparse
 
+from app.services.identity_resolution import normalize_social_profile_url
+
 
 LANGUAGE_HINTS = {
     "es": [" el ", " la ", " clinica ", " contacto ", " servicios ", " nosotros "],
@@ -196,6 +198,11 @@ CONTACT_CONFIDENCE_TO_SCORE = {
     "medium": 0.65,
     "high": 0.9,
 }
+QUALITY_LABEL_THRESHOLDS = (
+    (0.75, "high"),
+    (0.4, "medium"),
+    (0.0, "low"),
+)
 TARGET_ECOMMERCE_HINTS = ("ecommerce", "tienda online", "shopify")
 TARGET_EDUCATION_HINTS = ("academia online", "cursos online", "escuela online", "formacion online", "productos digitales", "infoproductos")
 SERVICE_PROVIDER_HINTS = (
@@ -1098,6 +1105,215 @@ def _count_social_business_evidence(
     return len(evidence), evidence
 
 
+def _quality_label(score: float) -> str:
+    normalized_score = max(0.0, min(float(score or 0.0), 1.0))
+    for threshold, label in QUALITY_LABEL_THRESHOLDS:
+        if normalized_score >= threshold:
+            return label
+    return "low"
+
+
+def _score_signal_presence(items: list[str], *, cap: int = 3) -> float:
+    if cap <= 0:
+        return 0.0
+    return round(min(len([item for item in items if item]), cap) / cap, 4)
+
+
+def _select_link_in_bio(external_links: list[str]) -> str | None:
+    normalized_links = [str(link or "").strip() for link in external_links if str(link or "").strip()]
+    if not normalized_links:
+        return None
+
+    def priority(link: str) -> tuple[int, str]:
+        lowered = link.lower()
+        if any(token in lowered for token in ["linktr.ee", "beacons.ai", "stan.store", "solo.to", "msha.ke", "campsite.bio"]):
+            return (0, link)
+        if any(token in lowered for token in ["wa.me", "whatsapp", "mailto:", "tel:"]):
+            return (2, link)
+        return (1, link)
+
+    return sorted(normalized_links, key=priority)[0]
+
+
+def _build_social_quality(
+    metadata: dict[str, Any],
+    heuristic_data: dict[str, Any],
+    *,
+    contact_data: dict[str, Any],
+    location_match_status: str,
+    language_match_status: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    social_profiles = metadata.get("social_profiles") or []
+    if not isinstance(social_profiles, list):
+        return [], None
+
+    primary_social_profile = metadata.get("social_profile") or {}
+    content_profile = ((heuristic_data.get("generic_attributes") or {}).get("content_profile") or {})
+    primary_profile_url = normalize_social_profile_url(metadata.get("primary_identity_url"))
+    enriched_profiles: list[dict[str, Any]] = []
+
+    for raw_profile in social_profiles:
+        if not isinstance(raw_profile, dict):
+            continue
+
+        profile = dict(raw_profile)
+        profile_url = normalize_social_profile_url(profile.get("url")) or str(profile.get("url") or "").strip()
+        if not profile_url:
+            continue
+
+        is_primary_profile = bool(profile.get("is_primary")) or bool(primary_profile_url and profile_url == primary_profile_url)
+        profile["url"] = profile_url
+        profile["is_primary"] = is_primary_profile
+
+        display_name = str(profile.get("display_name") or "").strip()
+        bio = str(profile.get("bio") or "").strip()
+        category = str(profile.get("category") or "").strip() or None
+        link_in_bio = profile.get("link_in_bio")
+        visible_ctas = list(profile.get("visible_ctas") or [])
+        offer_evidence = list(profile.get("offer_evidence") or [])
+        audience_evidence = list(profile.get("audience_evidence") or [])
+        activity_evidence = list(profile.get("activity_evidence") or profile.get("activity_signals") or [])
+        contact_signals = list(profile.get("contact_signals") or [])
+        contact_options = list(profile.get("contact_options") or [])
+
+        if is_primary_profile and isinstance(primary_social_profile, dict):
+            display_name = display_name or str(primary_social_profile.get("display_name") or "").strip()
+            bio = bio or str(primary_social_profile.get("bio") or "").strip()
+            category = category or (str(primary_social_profile.get("category") or "").strip() or None)
+            external_links = list(primary_social_profile.get("external_links") or [])
+            if not link_in_bio and external_links:
+                link_in_bio = _select_link_in_bio(external_links)
+            visible_ctas = sorted(set([*visible_ctas, *(primary_social_profile.get("platform_ctas") or []), *(content_profile.get("platform_ctas") or [])]))
+            offer_evidence = sorted(set([*offer_evidence, *(primary_social_profile.get("offer_signals") or []), *(content_profile.get("offer_signals") or [])]))
+            audience_evidence = sorted(set([*audience_evidence, *(primary_social_profile.get("audience_signals") or []), *(content_profile.get("audience_signals") or [])]))
+            activity_evidence = sorted(set([*activity_evidence, *(primary_social_profile.get("activity_signals") or []), *(content_profile.get("social_activity_signals") or [])]))
+            if external_links and "external_link" not in contact_signals:
+                contact_signals.append("external_link")
+
+        if "public_email" in contact_signals:
+            contact_options.append("email")
+        if "public_phone" in contact_signals:
+            contact_options.append("phone")
+        if "whatsapp" in contact_signals:
+            contact_options.append("whatsapp")
+        if link_in_bio:
+            contact_options.append("link_in_bio")
+        if any(signal in visible_ctas for signal in {"profile_cta_visible", "commercial_cta_detected"}):
+            contact_options.append("dm_or_cta")
+        contact_options = sorted(set(contact_options))
+        contact_signals = sorted(set(contact_signals))
+
+        identity_quality = (
+            (0.35 if profile.get("handle") else 0.0)
+            + (0.25 if display_name else 0.0)
+            + (0.15 if bio else 0.0)
+            + (0.15 if profile.get("profile_kind") == "profile" else 0.0)
+            + (0.10 if is_primary_profile else 0.0)
+        )
+        activity_quality = (
+            (0.6 * _score_signal_presence(activity_evidence, cap=3))
+            + (0.2 if bio else 0.0)
+            + (0.2 if any(signal in activity_evidence for signal in {"content_format_visible", "recent_activity_visible"}) else 0.0)
+        )
+        commercial_quality = (
+            (0.45 * _score_signal_presence(offer_evidence, cap=3))
+            + (0.30 * _score_signal_presence(visible_ctas, cap=3))
+            + (0.25 if link_in_bio else 0.0)
+        )
+        contact_quality = (
+            (0.45 * _score_signal_presence(contact_options, cap=4))
+            + (0.25 if contact_data.get("contact_quality_score") and is_primary_profile else 0.0)
+            + (0.15 if "public_contact_present" in visible_ctas or any(option in contact_options for option in {"email", "phone", "whatsapp"}) else 0.0)
+            + (0.15 if link_in_bio else 0.0)
+        )
+        audience_fit_quality = (
+            (0.6 * _score_signal_presence(audience_evidence, cap=3))
+            + (0.2 if location_match_status == "match" else 0.0)
+            + (0.2 if language_match_status == "match" else 0.0)
+        )
+        social_quality_score = round(
+            (
+                0.22 * min(identity_quality, 1.0)
+                + 0.16 * min(activity_quality, 1.0)
+                + 0.28 * min(commercial_quality, 1.0)
+                + 0.20 * min(contact_quality, 1.0)
+                + 0.14 * min(audience_fit_quality, 1.0)
+            ),
+            4,
+        )
+        completeness_score = (
+            (0.2 if profile.get("handle") else 0.0)
+            + (0.2 if display_name else 0.0)
+            + (0.2 if bio else 0.0)
+            + (0.2 if link_in_bio or contact_options else 0.0)
+            + (0.2 if visible_ctas or offer_evidence or audience_evidence else 0.0)
+        )
+        commerciality_score = (
+            0.45 * min(commercial_quality, 1.0)
+            + 0.35 * min(contact_quality, 1.0)
+            + 0.20 * min(audience_fit_quality, 1.0)
+        )
+        if offer_evidence and (contact_options or visible_ctas):
+            commerciality_score += 0.1
+
+        profile["display_name"] = display_name or None
+        profile["bio"] = bio or None
+        profile["category"] = category
+        profile["link_in_bio"] = link_in_bio
+        profile["visible_ctas"] = visible_ctas
+        profile["contact_options"] = contact_options
+        profile["activity_evidence"] = activity_evidence
+        profile["offer_evidence"] = offer_evidence
+        profile["audience_evidence"] = audience_evidence
+        profile["identity_quality"] = round(min(identity_quality, 1.0), 4)
+        profile["activity_quality"] = round(min(activity_quality, 1.0), 4)
+        profile["commercial_quality"] = round(min(commercial_quality, 1.0), 4)
+        profile["contact_quality"] = round(min(contact_quality, 1.0), 4)
+        profile["audience_fit_quality"] = round(min(audience_fit_quality, 1.0), 4)
+        profile["profile_completeness"] = _quality_label(completeness_score)
+        profile["profile_commerciality"] = _quality_label(commerciality_score)
+        profile["social_quality_score"] = social_quality_score
+        enriched_profiles.append(profile)
+
+    if not enriched_profiles:
+        return [], None
+
+    best_profile = sorted(
+        enriched_profiles,
+        key=lambda item: (
+            0 if item.get("is_primary") else 1,
+            -(float(item.get("social_quality_score") or 0.0)),
+            str(item.get("url") or ""),
+        ),
+    )[0]
+    social_quality = {
+        "profiles_evaluated": len(enriched_profiles),
+        "primary_platform": best_profile.get("platform"),
+        "primary_profile_url": best_profile.get("url"),
+        "primary_profile_handle": best_profile.get("handle"),
+        "identity_quality": best_profile.get("identity_quality"),
+        "activity_quality": best_profile.get("activity_quality"),
+        "commercial_quality": best_profile.get("commercial_quality"),
+        "contact_quality": best_profile.get("contact_quality"),
+        "audience_fit_quality": best_profile.get("audience_fit_quality"),
+        "profile_completeness": best_profile.get("profile_completeness"),
+        "profile_commerciality": best_profile.get("profile_commerciality"),
+        "social_quality_score": best_profile.get("social_quality_score"),
+        "reasoning": [
+            reason
+            for reason in [
+                "offer_visible" if best_profile.get("offer_evidence") else None,
+                "cta_visible" if best_profile.get("visible_ctas") else None,
+                "contact_visible" if best_profile.get("contact_options") else None,
+                "audience_visible" if best_profile.get("audience_evidence") else None,
+                "activity_visible" if best_profile.get("activity_evidence") else None,
+            ]
+            if reason
+        ],
+    }
+    return enriched_profiles, social_quality
+
+
 def _classify_quality_status(
     *,
     has_target_location: bool,
@@ -1250,6 +1466,7 @@ def build_ai_evidence_pack(
         "pricing_page_url": quality_data.get("pricing_page_url"),
         "social_profiles": metadata.get("social_profiles"),
         "social_profile": metadata.get("social_profile"),
+        "social_quality": quality_data.get("social_quality"),
         "contact_channels": quality_data.get("contact_channels_json"),
         "contact_consistency_status": quality_data.get("contact_consistency_status"),
         "primary_email_confidence": quality_data.get("primary_email_confidence"),
@@ -1341,6 +1558,16 @@ def evaluate_prospect_quality(
         location_data["location_match_status"],
         language_data["language_match_status"],
     )
+    social_profiles_enriched, social_quality = _build_social_quality(
+        metadata,
+        heuristic_data,
+        contact_data=contact_data,
+        location_match_status=location_data["location_match_status"],
+        language_match_status=language_data["language_match_status"],
+    )
+    if social_quality and float(social_quality.get("social_quality_score") or 0.0) >= 0.45:
+        social_business_evidence_count += 1
+        social_business_evidence = [*social_business_evidence, "social_quality_strong"]
     quality_status, rejection_reason, quality_flags, technical_score_multiplier = _classify_quality_status(
         has_target_location=bool(str(context.get("target_location") or "").strip()),
         heuristic_score=float(heuristic_data.get("score") or 0.0),
@@ -1401,6 +1628,8 @@ def evaluate_prospect_quality(
         "booking_url": metadata.get("booking_url"),
         "pricing_page_url": metadata.get("pricing_page_url"),
         "whatsapp_url": metadata.get("whatsapp_url"),
+        "social_profiles_enriched": social_profiles_enriched,
+        "social_quality": social_quality,
         "contact_channels_json": contact_data["contact_channels"],
         "contact_quality_score": contact_quality_score,
         "email": contact_data["primary_email"],

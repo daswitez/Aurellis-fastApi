@@ -401,6 +401,122 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertEqual(metadata["whatsapp_url"], "https://wa.me/34600111222")
         self.assertIn("videos", clean_text.lower())
 
+    def test_quality_builds_social_quality_for_strong_social_profile(self) -> None:
+        html = """
+        <html lang="es">
+          <head>
+            <title>EditorPro (@editorpro) • Instagram photos and videos</title>
+            <meta property="og:description" content="Editor de video para coaches y ecommerce. DM o link in bio." />
+          </head>
+          <body>
+            <a href="https://wa.me/34600111222">WhatsApp</a>
+            <a href="https://linktr.ee/editorpro">Link in bio</a>
+            <p>Servicios de edicion de video para marcas personales, ecommerce y coaches.</p>
+            <p>Reels, shorts, retencion y conversion.</p>
+          </body>
+        </html>
+        """
+
+        clean_text, metadata = parse_html_basic(html, "https://www.instagram.com/editorpro/")
+        heuristic_data = {
+            "score": 0.74,
+            "confidence_level": "medium",
+            "inferred_niche": "Marcas Personales y Coaches",
+            "inferred_tech_stack": [],
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.7},
+                "content_profile": {
+                    "offer_signals": ["commercial_offer_detected"],
+                    "audience_signals": ["buyer_audience_visible"],
+                    "platform_ctas": ["profile_cta_visible", "external_link_present", "public_contact_present"],
+                    "external_links": ["https://linktr.ee/editorpro"],
+                    "social_activity_signals": ["content_format_visible"],
+                    "budget_signal_matches": [],
+                },
+            },
+            "heuristic_trace": {"component_scores": {"context_fit": 0.7}},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={"target_language": "es", "target_niche": "Marcas Personales y Coaches"},
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "marcas personales coaches espana", "title": metadata["title"]},
+            entity_data=classify_entity_type(
+                target_url="https://www.instagram.com/editorpro/",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "marcas personales coaches espana", "title": metadata["title"]},
+            ),
+        )
+
+        self.assertIsNotNone(quality["social_quality"])
+        self.assertGreaterEqual(quality["social_quality"]["social_quality_score"], 0.55)
+        self.assertEqual(quality["social_quality"]["profile_commerciality"], "high")
+        self.assertEqual(len(quality["social_profiles_enriched"]), 1)
+        self.assertEqual(quality["social_profiles_enriched"][0]["display_name"], "EditorPro")
+        self.assertEqual(quality["social_profiles_enriched"][0]["link_in_bio"], "https://linktr.ee/editorpro")
+        self.assertIn("profile_cta_visible", quality["social_profiles_enriched"][0]["visible_ctas"])
+        self.assertIn("commercial_offer_detected", quality["social_profiles_enriched"][0]["offer_evidence"])
+
+    def test_quality_builds_low_social_quality_for_weak_social_profile(self) -> None:
+        html = """
+        <html lang="es">
+          <head>
+            <title>Creador Random (@randomcreator) • Instagram photos and videos</title>
+            <meta property="og:description" content="Lifestyle creator." />
+          </head>
+          <body>
+            <p>Fotos y videos personales.</p>
+          </body>
+        </html>
+        """
+
+        clean_text, metadata = parse_html_basic(html, "https://www.instagram.com/randomcreator/")
+        heuristic_data = {
+            "score": 0.41,
+            "confidence_level": "low",
+            "inferred_niche": None,
+            "inferred_tech_stack": [],
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.1},
+                "content_profile": {
+                    "offer_signals": [],
+                    "audience_signals": [],
+                    "platform_ctas": [],
+                    "external_links": [],
+                    "social_activity_signals": [],
+                    "budget_signal_matches": [],
+                },
+            },
+            "heuristic_trace": {"component_scores": {"context_fit": 0.1}},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={"target_language": "es", "target_niche": "Coaches"},
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "coaches espana instagram", "title": metadata["title"]},
+            entity_data={
+                "entity_type_detected": "unknown",
+                "entity_type_confidence": "low",
+                "entity_type_evidence": {},
+                "is_target_entity": True,
+            },
+        )
+
+        self.assertIsNotNone(quality["social_quality"])
+        self.assertLess(quality["social_quality"]["social_quality_score"], 0.45)
+        self.assertEqual(quality["social_quality"]["profile_commerciality"], "low")
+        self.assertEqual(quality["social_profiles_enriched"][0]["profile_completeness"], "medium")
+        self.assertEqual(quality["social_profiles_enriched"][0]["offer_evidence"], [])
+
     def test_quality_accepts_social_first_profile_with_clear_offer(self) -> None:
         html = """
         <html lang="es">
