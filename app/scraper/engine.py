@@ -34,7 +34,9 @@ LIST_METADATA_FIELDS = {
     "emails",
     "phones",
     "social_links",
+    "social_profiles",
     "internal_links",
+    "external_links",
     "map_links",
     "addresses",
     "opening_hours",
@@ -42,6 +44,9 @@ LIST_METADATA_FIELDS = {
     "structured_data",
     "structured_data_evidence",
     "contact_channels",
+}
+COUNT_METADATA_FIELDS = {
+    "phone_validation_rejections",
 }
 
 
@@ -106,11 +111,13 @@ def _merge_html_metadata(base_metadata: Dict[str, Any], incoming_metadata: Dict[
         incoming_value = incoming_metadata.get(key)
         if key in LIST_METADATA_FIELDS:
             merged_metadata[key] = _dedupe_json_like_items(list(base_value or []) + list(incoming_value or []))
-        elif isinstance(base_value, dict) or isinstance(incoming_value, dict):
+        elif key in COUNT_METADATA_FIELDS and (isinstance(base_value, dict) or isinstance(incoming_value, dict)):
             merged_metadata[key] = _merge_count_dicts(
                 base_value if isinstance(base_value, dict) else {},
                 incoming_value if isinstance(incoming_value, dict) else {},
             )
+        elif isinstance(base_value, dict) or isinstance(incoming_value, dict):
+            merged_metadata[key] = incoming_value or base_value
         elif (
             isinstance(base_value, (int, float))
             or isinstance(incoming_value, (int, float))
@@ -204,7 +211,9 @@ async def _crawl_key_pages(root_metadata: Dict[str, Any]) -> tuple[str, Dict[str
         "emails": [],
         "phones": [],
         "social_links": [],
+        "social_profiles": [],
         "internal_links": [],
+        "external_links": [],
         "map_links": [],
         "addresses": [],
         "structured_data": [],
@@ -214,6 +223,8 @@ async def _crawl_key_pages(root_metadata: Dict[str, Any]) -> tuple[str, Dict[str
         "form_detected": False,
         "phone_validation_rejections": {},
         "invalid_phone_candidates_count": 0,
+        "primary_identity_type": "website",
+        "primary_identity_url": None,
     }
     crawled_pages: list[dict[str, str]] = []
 
@@ -255,6 +266,31 @@ def extract_domain(url: str) -> str:
         return url
 
 
+def _extract_primary_identity(target_url: str, metadata: Dict[str, Any]) -> tuple[str, str, str | None]:
+    primary_identity_type = str(metadata.get("primary_identity_type") or "website")
+    primary_identity_url = str(metadata.get("primary_identity_url") or target_url)
+    social_profile = metadata.get("social_profile") or {}
+    if primary_identity_type == "social_profile":
+        platform = str(social_profile.get("platform") or "").strip().lower()
+        handle = str(social_profile.get("handle") or "").strip().lower()
+        if platform and handle:
+            return f"{platform}:{handle}", primary_identity_type, primary_identity_url
+        return primary_identity_url.lower(), primary_identity_type, primary_identity_url
+
+    domain = extract_domain(primary_identity_url)
+    return domain, "website", primary_identity_url
+
+
+def _resolve_primary_website_url(target_url: str, metadata: Dict[str, Any]) -> str | None:
+    if str(metadata.get("primary_identity_type") or "") == "social_profile":
+        social_profile = metadata.get("social_profile") or {}
+        for link in social_profile.get("external_links", []):
+            if link.startswith("http"):
+                return link
+        return None
+    return target_url
+
+
 async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     domain = extract_domain(target_url)
     logger.info("==> Iniciando scraping de dominio: %s <==", domain)
@@ -265,10 +301,17 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         return None
 
     clean_text, html_metadata = parse_html_basic(html_raw, base_url=target_url)
-    key_pages_text, key_pages_metadata, crawled_pages = await _crawl_key_pages(html_metadata)
+    if str(html_metadata.get("primary_identity_type") or "website") == "social_profile":
+        key_pages_text, key_pages_metadata, crawled_pages = "", {}, []
+    else:
+        key_pages_text, key_pages_metadata, crawled_pages = await _crawl_key_pages(html_metadata)
     combined_text = clean_text if not key_pages_text else f"{clean_text}\n\n{key_pages_text}"
     merged_metadata = _merge_html_metadata(html_metadata, key_pages_metadata)
-    merged_metadata["website_url"] = target_url
+    merged_metadata["website_url"] = _resolve_primary_website_url(target_url, merged_metadata)
+    canonical_identity, primary_identity_type, primary_identity_url = _extract_primary_identity(target_url, merged_metadata)
+    merged_metadata["primary_identity_type"] = primary_identity_type
+    merged_metadata["primary_identity_url"] = primary_identity_url
+    identity_key = canonical_identity
     heuristic_baseline = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
 
     discovery_metadata = build_discovery_metadata(
@@ -310,7 +353,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     else:
         try:
             evidence_pack = build_ai_evidence_pack(
-                domain=domain,
+                domain=identity_key,
                 clean_text=combined_text,
                 metadata=merged_metadata,
                 heuristic_data=heuristic_baseline,
@@ -318,11 +361,11 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
                 discovery_metadata=discovery_metadata,
             )
             extracted_data = await extract_business_entity_ai(
-                domain,
+                identity_key,
                 combined_text,
                 job_context,
                 evidence_pack=evidence_pack,
-                cache_key=build_ai_cache_signature(domain, combined_text[:2500], PROMPT_VERSION),
+                cache_key=build_ai_cache_signature(identity_key, combined_text[:2500], PROMPT_VERSION),
             )
             ai_metrics = extracted_data.pop("_ai_metrics", {})
             evaluation_method = "DeepSeek API ({})".format(PROMPT_VERSION)
@@ -396,6 +439,10 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     if isinstance(generic_attributes, dict):
         generic_attributes.setdefault("service_keywords", quality_data.get("service_keywords"))
         generic_attributes.setdefault("company_size_signal", quality_data.get("company_size_signal"))
+        heuristic_generic_attributes = heuristic_baseline.get("generic_attributes") if isinstance(heuristic_baseline, dict) else {}
+        if isinstance(heuristic_generic_attributes, dict):
+            generic_attributes.setdefault("content_profile", heuristic_generic_attributes.get("content_profile"))
+            generic_attributes.setdefault("budget_signal_matches", heuristic_generic_attributes.get("budget_signal_matches", []))
         generic_attributes.setdefault(
             "observed_signals",
             _pick_signal_list(extracted_data, heuristic_baseline, key="observed_signals"),
@@ -425,9 +472,17 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         generic_attributes.setdefault("taxonomy_evidence", taxonomy_data.get("taxonomy_evidence"))
 
     final_prospect = {
-        "domain": domain,
-        "website_url": target_url,
-        "company_name": _pick_first_defined(extracted_data.get("company_name"), heuristic_baseline.get("company_name"), domain),
+        "canonical_identity": canonical_identity,
+        "domain": extract_domain(merged_metadata["website_url"]) if merged_metadata.get("website_url") else None,
+        "primary_identity_type": primary_identity_type,
+        "primary_identity_url": primary_identity_url,
+        "website_url": merged_metadata.get("website_url"),
+        "company_name": _pick_first_defined(
+            extracted_data.get("company_name"),
+            heuristic_baseline.get("company_name"),
+            (merged_metadata.get("social_profile") or {}).get("display_name"),
+            domain,
+        ),
         "category": taxonomy_data.get("display_category") or _pick_first_defined(extracted_data.get("category"), heuristic_baseline.get("category")),
         "location": quality_data.get("location"),
         "raw_location_text": quality_data.get("raw_location_text"),
@@ -447,8 +502,24 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "contact_page_url": contact_page_url,
         "form_detected": merged_metadata.get("form_detected", False),
         "linkedin_url": next((s for s in merged_metadata.get("social_links", []) if "linkedin.com" in s), None),
-        "instagram_url": next((s for s in merged_metadata.get("social_links", []) if "instagram.com" in s), None),
+        "instagram_url": next(
+            (
+                s
+                for s in [primary_identity_url, *merged_metadata.get("social_links", [])]
+                if s and "instagram.com" in s
+            ),
+            None,
+        ),
+        "tiktok_url": next(
+            (
+                s
+                for s in [primary_identity_url, *merged_metadata.get("social_links", [])]
+                if s and "tiktok.com" in s
+            ),
+            None,
+        ),
         "facebook_url": next((s for s in merged_metadata.get("social_links", []) if "facebook.com" in s), None),
+        "social_profiles": merged_metadata.get("social_profiles"),
         "primary_cta": quality_data.get("primary_cta"),
         "booking_url": quality_data.get("booking_url"),
         "pricing_page_url": quality_data.get("pricing_page_url"),

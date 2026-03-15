@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -7,18 +8,53 @@ from bs4 import BeautifulSoup
 
 BLOCKED_DOMAIN_TOKENS = [
     "mercadolibre",
-    "linkedin",
-    "facebook",
-    "instagram",
-    "tiktok",
     "youtube",
+    "reddit.com",
+    "redd.it",
     "twitter",
     "x.com",
+    "whatsapp.com",
+    "web.whatsapp.com",
     "infoisinfo",
     "habitissimo",
     "foursquare",
     "google.com",
     "googleusercontent",
+]
+REFERENCE_DOMAIN_TOKENS = [
+    "wikipedia.org",
+    "wiktionary.org",
+    "concepto.de",
+    "dle.rae.es",
+    "rae.es",
+    "britannica.com",
+    "dictionary.com",
+]
+MEDIA_NEWS_DOMAIN_TOKENS = [
+    "marketwatch.com",
+    "forbes.com",
+    "bloomberg.com",
+    "cnn.com",
+    "elpais.com",
+    "expansion.com",
+]
+FINANCE_DOMAIN_TOKENS = [
+    "marketwatch.com",
+    "investing.com",
+    "finance.yahoo.com",
+    "yahoo.com/finance",
+    "morningstar.",
+    "tradingview.com",
+]
+LARGE_ENTERPRISE_DOMAIN_TOKENS = [
+    "amazon.",
+    "microsoft.",
+    "meta.com",
+    "apple.com",
+    "ibm.com",
+    "salesforce.com",
+    "hubspot.com",
+    "adobe.com",
 ]
 DIRECTORY_SEED_DOMAIN_TOKENS = [
     "doctoralia",
@@ -71,6 +107,7 @@ EDITORIAL_PATH_TOKENS = [
     "/studies/",
     "/insights/",
     "/tag/",
+    "/wiki/",
 ]
 EDITORIAL_TITLE_TOKENS = [
     "100 ideas",
@@ -96,6 +133,7 @@ EDITORIAL_TITLE_TOKENS = [
     "mejores",
     "top ",
     "lista de",
+    "enciclopedia",
 ]
 PRODUCT_PAGE_PATH_TOKENS = [
     "/product/",
@@ -128,6 +166,60 @@ INSTITUTIONAL_TOKENS = [
     "fundación",
     "universidad",
 ]
+SOCIAL_POST_PATH_PATTERNS = (
+    "/p/",
+    "/reel/",
+    "/reels/",
+    "/tv/",
+    "/explore/",
+    "/hashtag/",
+    "/share",
+    "/video/",
+    "/photo/",
+)
+SOCIAL_NOISE_QUERY_TOKENS = ("?hl=", "/share?", "sharer.php", "/intent/")
+SOCIAL_PROFILE_HINTS = (
+    "link in bio",
+    "dm",
+    "escribeme",
+    "escríbeme",
+    "agenda",
+    "book",
+    "consulta",
+    "servicios",
+    "services",
+    "shop",
+)
+COMMERCIAL_HINTS = (
+    "coach",
+    "coaches",
+    "marca personal",
+    "ecommerce",
+    "tienda online",
+    "agencia",
+    "estudio",
+    "editor",
+    "filmmaker",
+    "creator",
+    "creador",
+    "curso",
+    "infoproducto",
+)
+REFERENCE_TOKENS = (
+    "enciclopedia",
+    "definicion",
+    "definición",
+    "concepto",
+    "meaning",
+    "definition",
+)
+LARGE_ENTERPRISE_TOKENS = (
+    "fortune 500",
+    "nasdaq",
+    "nyse",
+    "earnings",
+    "investor relations",
+)
 
 
 def clean_text(value: str | None) -> str:
@@ -137,7 +229,7 @@ def clean_text(value: str | None) -> str:
 def is_blocked_result(url: str, allow_social_profiles: bool = False) -> str | None:
     lowered_url = url.lower()
     for blocked_token in BLOCKED_DOMAIN_TOKENS:
-        if allow_social_profiles and blocked_token in SOCIAL_DOMAIN_TOKENS + ["instagram", "tiktok", "youtube", "facebook", "linkedin", "x.com", "twitter"]:
+        if allow_social_profiles and blocked_token in {"facebook", "instagram", "tiktok", "linkedin"}:
             continue
         if blocked_token in lowered_url:
             return f"blocked_domain:{blocked_token}"
@@ -173,13 +265,77 @@ def is_same_root_domain(left_url: str, right_url: str) -> bool:
     return len(left_parts) >= 2 and len(right_parts) >= 2 and left_parts[-2:] == right_parts[-2:]
 
 
+def _is_social_domain(url: str) -> bool:
+    lowered_url = url.lower()
+    return any(token in lowered_url for token in SOCIAL_DOMAIN_TOKENS)
+
+
+def _is_canonical_social_profile(url: str) -> tuple[bool, str | None, str | None]:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path.strip("/")
+    segments = [segment for segment in path.split("/") if segment]
+
+    if "instagram.com" in host:
+        if not segments or len(segments) != 1:
+            return False, "instagram", None
+        handle = segments[0]
+        if handle.startswith(("p", "reel", "reels", "explore", "stories")):
+            return False, "instagram", None
+        return True, "instagram", handle.lstrip("@")
+
+    if "tiktok.com" in host:
+        if len(segments) != 1 or not segments[0].startswith("@"):
+            return False, "tiktok", None
+        return True, "tiktok", segments[0].lstrip("@")
+
+    return False, None, None
+
+
+def _looks_like_social_post(url: str) -> bool:
+    lowered_url = url.lower()
+    return any(token in lowered_url for token in [*SOCIAL_POST_PATH_PATTERNS, *SOCIAL_NOISE_QUERY_TOKENS])
+
+
+def _looks_like_reference_page(url: str, title: str, snippet: str) -> bool:
+    lowered_blob = f"{title} {snippet}".lower()
+    host = urlparse(url).netloc.lower()
+    return (
+        any(token in host for token in REFERENCE_DOMAIN_TOKENS)
+        or any(token in lowered_blob for token in REFERENCE_TOKENS)
+    )
+
+
+def _looks_like_editorial_article(url: str, title: str, snippet: str) -> bool:
+    lowered_blob = f"{title} {snippet}".lower()
+    path = urlparse(url).path.lower()
+    return any(token in path for token in EDITORIAL_PATH_TOKENS) or any(token in lowered_blob for token in EDITORIAL_TITLE_TOKENS)
+
+
+def _looks_like_media_or_finance(url: str, title: str, snippet: str) -> bool:
+    lowered_blob = f"{title} {snippet}".lower()
+    host = urlparse(url).netloc.lower()
+    return any(token in host for token in [*MEDIA_NEWS_DOMAIN_TOKENS, *FINANCE_DOMAIN_TOKENS]) or any(
+        token in lowered_blob for token in LARGE_ENTERPRISE_TOKENS
+    )
+
+
+def _looks_like_large_enterprise_noise(url: str, title: str, snippet: str) -> bool:
+    lowered_blob = f"{title} {snippet}".lower()
+    host = urlparse(url).netloc.lower()
+    return any(token in host for token in LARGE_ENTERPRISE_DOMAIN_TOKENS) or any(
+        token in lowered_blob for token in LARGE_ENTERPRISE_TOKENS
+    )
+
+
 def looks_like_social_or_marketplace(url: str, allow_social_profiles: bool = False) -> bool:
     lowered_url = url.lower()
     tokens_to_check = SOCIAL_DOMAIN_TOKENS + BLOCKED_DOMAIN_TOKENS
     if allow_social_profiles:
         tokens_to_check = [
-            t for t in tokens_to_check 
-            if t not in SOCIAL_DOMAIN_TOKENS and t not in ["instagram", "tiktok", "youtube", "facebook", "linkedin", "x.com", "twitter"]
+            token
+            for token in tokens_to_check
+            if token not in SOCIAL_DOMAIN_TOKENS and token not in {"facebook", "instagram", "tiktok", "linkedin", "twitter", "x.com"}
         ]
     return any(token in lowered_url for token in tokens_to_check)
 
@@ -236,32 +392,134 @@ def extract_official_site_from_seed_html(seed_url: str, html: str) -> tuple[str 
     return None, ["directory_seed_without_official_site"]
 
 
-def score_business_likeness(
-    url: str, 
-    title: str, 
-    snippet: str, 
-    allow_social_profiles: bool = False
-) -> tuple[float, list[str], str | None]:
-    score = 0.0
-    reasons: list[str] = []
+def classify_discovery_candidate(
+    url: str,
+    title: str,
+    snippet: str,
+    *,
+    allow_social_profiles: bool = False,
+) -> dict[str, Any]:
     lowered_blob = f"{title} {snippet}".lower()
     path = urlparse(url).path.lower()
     title_tokens = extract_brand_tokens(title)
     url_tokens = domain_brand_tokens(url)
+    reasons: list[str] = []
+    blocked_reason = is_blocked_result(url, allow_social_profiles=allow_social_profiles)
 
+    if blocked_reason:
+        return {
+            "result_kind": "website_home" if path in {"", "/"} else "website_inner_page",
+            "website_result_score": -0.5,
+            "social_profile_score": 0.0,
+            "score": -0.5,
+            "reasons": [blocked_reason],
+            "exclusion_reason": blocked_reason,
+        }
+
+    if _looks_like_reference_page(url, title, snippet):
+        return {
+            "result_kind": "article_or_reference",
+            "website_result_score": 0.0,
+            "social_profile_score": 0.0,
+            "score": 0.0,
+            "reasons": ["reference_or_article"],
+            "exclusion_reason": "excluded_reference_page",
+        }
+
+    if _looks_like_editorial_article(url, title, snippet):
+        return {
+            "result_kind": "article_or_reference",
+            "website_result_score": 0.0,
+            "social_profile_score": 0.0,
+            "score": 0.0,
+            "reasons": ["editorial_path" if any(token in path for token in EDITORIAL_PATH_TOKENS) else "editorial_title"],
+            "exclusion_reason": "excluded_as_article",
+        }
+
+    if _looks_like_media_or_finance(url, title, snippet):
+        return {
+            "result_kind": "media_or_news",
+            "website_result_score": 0.0,
+            "social_profile_score": 0.0,
+            "score": 0.0,
+            "reasons": ["media_or_finance"],
+            "exclusion_reason": "excluded_reference_page",
+        }
+
+    if _looks_like_large_enterprise_noise(url, title, snippet):
+        return {
+            "result_kind": "large_enterprise_noise",
+            "website_result_score": 0.0,
+            "social_profile_score": 0.0,
+            "score": 0.0,
+            "reasons": ["large_enterprise_noise"],
+            "exclusion_reason": "excluded_large_enterprise",
+        }
+
+    if _is_social_domain(url):
+        if not allow_social_profiles:
+            return {
+                "result_kind": "social_profile",
+                "website_result_score": 0.0,
+                "social_profile_score": 0.0,
+                "score": 0.0,
+                "reasons": ["social_profiles_not_allowed"],
+                "exclusion_reason": "blocked_domain:social_profile",
+            }
+        if _looks_like_social_post(url):
+            return {
+                "result_kind": "social_post",
+                "website_result_score": 0.0,
+                "social_profile_score": 0.0,
+                "score": 0.0,
+                "reasons": ["social_post_or_share"],
+                "exclusion_reason": "excluded_social_post",
+            }
+
+        is_profile, platform, handle = _is_canonical_social_profile(url)
+        if not is_profile:
+            return {
+                "result_kind": "social_post",
+                "website_result_score": 0.0,
+                "social_profile_score": 0.0,
+                "score": 0.0,
+                "reasons": ["non_canonical_social_profile"],
+                "exclusion_reason": "excluded_social_post",
+            }
+
+        social_score = 0.35
+        reasons.extend(["social_profile_candidate", f"platform:{platform}"])
+        if handle:
+            social_score += 0.2
+            reasons.append("canonical_handle_detected")
+        if any(token in lowered_blob for token in SOCIAL_PROFILE_HINTS):
+            social_score += 0.2
+            reasons.append("social_commercial_cta_hint")
+        if any(token in lowered_blob for token in COMMERCIAL_HINTS):
+            social_score += 0.15
+            reasons.append("social_commercial_niche_hint")
+        if title and len(title.split()) <= 12:
+            social_score += 0.05
+            reasons.append("concise_title")
+
+        return {
+            "result_kind": "social_profile",
+            "website_result_score": 0.0,
+            "social_profile_score": round(min(social_score, 1.0), 4),
+            "score": round(min(social_score, 1.0), 4),
+            "reasons": reasons,
+            "exclusion_reason": None,
+        }
+
+    website_score = 0.0
     positive_rules = [
         ("official_site_hint", 0.35, ["oficial", "official", "sitio oficial"]),
         ("contact_or_services_hint", 0.18, ["contacto", "contact", "servicios", "services", "nosotros", "about"]),
         ("conversion_cta_hint", 0.18, ["reserva", "booking", "agenda", "cotiza", "quote"]),
         ("business_category_hint", 0.12, ["clinica", "clínica", "estudio", "agencia", "tienda", "retail", "consultora"]),
+        ("commercial_hint", 0.14, COMMERCIAL_HINTS),
     ]
-    
-    if allow_social_profiles:
-        positive_rules.append(("social_profile_boost", 0.25, ["instagram.com", "tiktok.com", "youtube.com", "linkedin.com/company"]))
-
     negative_rules = [
-        ("editorial_path", -0.35, EDITORIAL_PATH_TOKENS),
-        ("editorial_title", -0.28, EDITORIAL_TITLE_TOKENS),
         ("product_page", -0.35, PRODUCT_PAGE_PATH_TOKENS + PRODUCT_PAGE_TOKENS),
         ("institutional_page", -0.25, INSTITUTIONAL_TOKENS),
         ("marketplace_or_listing", -0.25, ["marketplace", "listing", "directory", "directorio"]),
@@ -269,46 +527,70 @@ def score_business_likeness(
 
     for reason, delta, tokens in positive_rules:
         if any(token in lowered_blob for token in tokens):
-            score += delta
+            website_score += delta
             reasons.append(reason)
 
     for reason, delta, tokens in negative_rules:
         if any(token in lowered_blob or token in path for token in tokens):
-            score += delta
+            website_score += delta
             reasons.append(reason)
 
     depth = len([segment for segment in path.split("/") if segment])
     if depth <= 1:
-        score += 0.12
+        website_score += 0.12
         reasons.append("shallow_url")
-    elif depth >= 3:
-        score -= 0.15
+    elif depth == 2:
+        website_score += 0.04
+        reasons.append("moderate_depth")
+    else:
+        website_score -= 0.18
         reasons.append("deep_url")
 
     if path.endswith(".html") or path.endswith(".php"):
-        score -= 0.05
+        website_score -= 0.05
         reasons.append("document_like_path")
 
     if title and len(title.split()) <= 10:
-        score += 0.08
+        website_score += 0.08
         reasons.append("concise_title")
 
     if url_tokens and title_tokens and url_tokens & title_tokens:
-        score += 0.22
+        website_score += 0.22
         reasons.append("brand_domain_match")
     if path in {"", "/"}:
-        score += 0.08
+        website_score += 0.08
         reasons.append("root_domain_url")
     if get_directory_seed_token(url):
-        score -= 0.2
+        website_score -= 0.2
         reasons.append("directory_seed_candidate")
 
+    result_kind = "website_home" if path in {"", "/"} else "website_inner_page"
     exclusion_reason = None
     if "product_page" in reasons:
         exclusion_reason = "excluded_as_product_page"
-    elif any(reason in reasons for reason in {"editorial_path", "editorial_title"}):
-        exclusion_reason = "excluded_as_article"
-    elif score < 0.15:
+    elif website_score < 0.15:
         exclusion_reason = "low_business_likeness"
 
-    return round(score, 4), reasons, exclusion_reason
+    return {
+        "result_kind": result_kind,
+        "website_result_score": round(website_score, 4),
+        "social_profile_score": 0.0,
+        "score": round(website_score, 4),
+        "reasons": reasons,
+        "exclusion_reason": exclusion_reason,
+    }
+
+
+def score_business_likeness(
+    url: str,
+    title: str,
+    snippet: str,
+    allow_social_profiles: bool = False,
+) -> tuple[float, list[str], str | None]:
+    classified = classify_discovery_candidate(
+        url,
+        title,
+        snippet,
+        allow_social_profiles=allow_social_profiles,
+    )
+    return classified["score"], classified["reasons"], classified["exclusion_reason"]

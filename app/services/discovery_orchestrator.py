@@ -15,7 +15,7 @@ DEMO_FALLBACK_URLS = [
     "https://www.veterinariarondon.com/",
     "https://www.veterinariaanimalpolis.pe/",
 ]
-DEFAULT_SEARCH_PROVIDER_ORDER = ("duckduckgo_html", "google_html")
+DEFAULT_SEARCH_PROVIDER_ORDER = ("duckduckgo_html",)
 
 
 def _parse_provider_order(raw_value: str | None) -> list[str]:

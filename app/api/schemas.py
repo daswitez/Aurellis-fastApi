@@ -9,6 +9,7 @@ ConfidenceLevel = Literal["low", "medium", "high"]
 MatchStatus = Literal["match", "mismatch", "unknown"]
 ProspectQualityStatus = Literal["accepted", "needs_review", "rejected"]
 ContactConsistencyStatus = Literal["consistent", "inconsistent", "unknown"]
+PrimaryIdentityType = Literal["website", "social_profile"]
 AcceptanceDecision = Literal[
     "accepted_target",
     "accepted_related",
@@ -192,13 +193,28 @@ class JobResponse(BaseModel):
     capture_summary: Optional[JobCaptureSummary] = None
     operational_summary: Optional[JobOperationalSummary] = None
     recent_errors: List[JobLogOut] = Field(default_factory=list)
-    
+
+
+class SocialProfileOut(BaseModel):
+    platform: str
+    url: str
+    handle: Optional[str] = None
+    is_primary: bool = False
+    profile_kind: Optional[str] = None
+    contact_signals: List[str] = Field(default_factory=list)
+    activity_signals: List[str] = Field(default_factory=list)
+    confidence: Optional[ConfidenceLevel] = None
+
+
 class ProspectOut(BaseModel):
     """Salida estandarizada de un Prospecto estructurado para JSON"""
     # Identificación
     id: int
     company_name: Optional[str]
-    domain: str
+    domain: Optional[str]
+    canonical_identity: Optional[str]
+    primary_identity_type: Optional[PrimaryIdentityType]
+    primary_identity_url: Optional[str]
     website_url: Optional[str]
     source_url: Optional[str]
     source_type: Optional[ResultSourceType]
@@ -218,7 +234,9 @@ class ProspectOut(BaseModel):
     primary_contact_source: Optional[str]
     linkedin_url: Optional[str]
     instagram_url: Optional[str]
+    tiktok_url: Optional[str]
     facebook_url: Optional[str]
+    social_profiles: Optional[List[SocialProfileOut]]
 
     # Análisis IA (DeepSeek)
     score: Optional[float]  # Match score 0.0-1.0 con el perfil del vendedor

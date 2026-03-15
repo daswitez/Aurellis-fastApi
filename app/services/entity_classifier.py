@@ -228,6 +228,10 @@ def classify_entity_type(
         any(token in link.lower() for token in ("pricing", "precio", "precios", "book", "booking", "reserv", "agenda"))
         for link in internal_links
     ) or bool(metadata.get("booking_url") or metadata.get("pricing_page_url"))
+    social_profile = metadata.get("social_profile") or {}
+    social_offer_signals = social_profile.get("offer_signals") if isinstance(social_profile, dict) else []
+    social_ctas = social_profile.get("platform_ctas") if isinstance(social_profile, dict) else []
+    social_handle = social_profile.get("handle") if isinstance(social_profile, dict) else None
 
     if has_service_page:
         _append_signal(scores, evidence, "direct_business", 2, "service_navigation_detected")
@@ -249,6 +253,12 @@ def classify_entity_type(
             3,
             f"business_schema_detected:{sorted(structured_types & BUSINESS_SCHEMA_TYPES)[0]}",
         )
+    if metadata.get("primary_identity_type") == "social_profile" and social_handle:
+        _append_signal(scores, evidence, "direct_business", 2, "social_handle_detected")
+    if metadata.get("primary_identity_type") == "social_profile" and social_offer_signals:
+        _append_signal(scores, evidence, "direct_business", 3, "social_offer_signals_detected")
+    if metadata.get("primary_identity_type") == "social_profile" and social_ctas:
+        _append_signal(scores, evidence, "direct_business", 2, "social_cta_detected")
 
     for keyword in _contains_keyword(normalized_summary, AGENCY_KEYWORDS):
         _append_signal(scores, evidence, "agency", 3, f"agency_keyword:{_normalize_text(keyword)}")

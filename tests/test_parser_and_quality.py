@@ -220,6 +220,145 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertEqual(quality["quality_status"], "needs_review")
         self.assertEqual(quality["rejection_reason"], "contact_inconsistent")
 
+    def test_parser_extracts_social_first_profile_metadata(self) -> None:
+        html = """
+        <html lang="es">
+          <head>
+            <title>EditorPro (@editorpro) • Instagram photos and videos</title>
+            <meta property="og:description" content="Editor de video para coaches y ecommerce. DM o link in bio." />
+          </head>
+          <body>
+            <a href="https://wa.me/34600111222">WhatsApp</a>
+            <a href="https://linktr.ee/editorpro">Link in bio</a>
+            <p>Reels, shorts y videos para marcas personales y cursos online.</p>
+          </body>
+        </html>
+        """
+
+        clean_text, metadata = parse_html_basic(html, "https://www.instagram.com/editorpro/")
+
+        self.assertEqual(metadata["primary_identity_type"], "social_profile")
+        self.assertEqual(metadata["primary_identity_url"], "https://www.instagram.com/editorpro/")
+        self.assertEqual(metadata["social_profile"]["platform"], "instagram")
+        self.assertEqual(metadata["social_profile"]["handle"], "editorpro")
+        self.assertIn("https://linktr.ee/editorpro", metadata["social_profile"]["external_links"])
+        self.assertEqual(metadata["whatsapp_url"], "https://wa.me/34600111222")
+        self.assertIn("videos", clean_text.lower())
+
+    def test_quality_accepts_social_first_profile_with_clear_offer(self) -> None:
+        html = """
+        <html lang="es">
+          <head>
+            <title>EditorPro (@editorpro) • Instagram photos and videos</title>
+            <meta property="og:description" content="Editor de video para coaches y ecommerce. DM o link in bio." />
+          </head>
+          <body>
+            <a href="https://wa.me/34600111222">WhatsApp</a>
+            <a href="https://linktr.ee/editorpro">Link in bio</a>
+            <p>Servicios de edicion de video para marcas personales, ecommerce y coaches.</p>
+            <p>Reels, shorts, retencion y conversion.</p>
+          </body>
+        </html>
+        """
+
+        clean_text, metadata = parse_html_basic(html, "https://www.instagram.com/editorpro/")
+        heuristic_data = {
+            "score": 0.74,
+            "confidence_level": "medium",
+            "inferred_niche": "Marcas Personales y Coaches",
+            "inferred_tech_stack": [],
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.7},
+                "content_profile": {
+                    "offer_signals": ["commercial_offer_detected"],
+                    "audience_signals": ["buyer_audience_visible"],
+                    "platform_ctas": ["profile_cta_visible", "external_link_present"],
+                    "external_links": ["https://linktr.ee/editorpro"],
+                    "social_activity_signals": ["content_format_visible"],
+                    "budget_signal_matches": ["Activos en Instagram o TikTok con mas de 10k seguidores"],
+                },
+            },
+            "heuristic_trace": {"component_scores": {"context_fit": 0.7}},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={
+                "target_location": "España",
+                "target_language": "es",
+                "target_niche": "Marcas Personales y Coaches",
+            },
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "marcas personales coaches espana", "title": metadata["title"]},
+            entity_data=classify_entity_type(
+                target_url="https://www.instagram.com/editorpro/",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "marcas personales coaches espana", "title": metadata["title"]},
+            ),
+        )
+
+        self.assertEqual(quality["primary_identity_type"], "social_profile")
+        self.assertEqual(quality["quality_status"], "accepted")
+        self.assertEqual(quality["acceptance_decision"], "accepted_target")
+        self.assertGreaterEqual(quality["social_business_evidence_count"], 2)
+
+    def test_quality_reviews_social_first_profile_with_weak_evidence(self) -> None:
+        html = """
+        <html lang="es">
+          <head>
+            <title>Creador Random (@randomcreator) • Instagram photos and videos</title>
+            <meta property="og:description" content="Lifestyle creator." />
+          </head>
+          <body>
+            <p>Fotos y videos personales.</p>
+          </body>
+        </html>
+        """
+
+        clean_text, metadata = parse_html_basic(html, "https://www.instagram.com/randomcreator/")
+        heuristic_data = {
+            "score": 0.41,
+            "confidence_level": "low",
+            "inferred_niche": None,
+            "inferred_tech_stack": [],
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.1},
+                "content_profile": {
+                    "offer_signals": [],
+                    "audience_signals": [],
+                    "platform_ctas": [],
+                    "external_links": [],
+                    "social_activity_signals": [],
+                    "budget_signal_matches": [],
+                },
+            },
+            "heuristic_trace": {"component_scores": {"context_fit": 0.1}},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={"target_location": "España", "target_language": "es", "target_niche": "Coaches"},
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "coaches espana instagram", "title": metadata["title"]},
+            entity_data={
+                "entity_type_detected": "unknown",
+                "entity_type_confidence": "low",
+                "entity_type_evidence": {},
+                "is_target_entity": True,
+            },
+        )
+
+        self.assertEqual(quality["primary_identity_type"], "social_profile")
+        self.assertEqual(quality["quality_status"], "needs_review")
+        self.assertEqual(quality["rejection_reason"], "rejected_social_low_evidence")
+
     def test_quality_demotes_direct_business_when_target_niche_fit_is_low(self) -> None:
         clean_text = "Portal educativo con recursos, contacto y publicaciones para docentes."
         metadata = {

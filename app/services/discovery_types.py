@@ -13,6 +13,9 @@ class SearchDiscoveryEntry:
     snippet: str | None = None
     discovery_confidence: str | None = None
     business_likeness_score: float | None = None
+    website_result_score: float | None = None
+    social_profile_score: float | None = None
+    result_kind: str | None = None
     discovery_reasons: list[str] = field(default_factory=list)
     seed_source_url: str | None = None
     seed_source_type: str | None = None

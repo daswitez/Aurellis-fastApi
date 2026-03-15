@@ -54,7 +54,10 @@ class Prospect(Base):
     workspace_id = Column(String, index=True, nullable=True)
     
     company_name = Column(String, nullable=True)
-    domain = Column(String, index=True, unique=True, nullable=False) # clave primaria lógica para deduplicación
+    canonical_identity = Column(String, index=True, unique=True, nullable=False)
+    domain = Column(String, index=True, unique=True, nullable=True) # puede ser null para leads social-first
+    primary_identity_type = Column(String, nullable=True)
+    primary_identity_url = Column(String, nullable=True)
     website_url = Column(String, nullable=True)
     category = Column(String, nullable=True)
     location = Column(String, nullable=True)
@@ -90,7 +93,9 @@ class Prospect(Base):
     
     linkedin_url = Column(String, nullable=True)
     instagram_url = Column(String, nullable=True)
+    tiktok_url = Column(String, nullable=True)
     facebook_url = Column(String, nullable=True)
+    social_profiles = Column(JSON, nullable=True)
     
     # Datos genéricos pero adaptativos según la profesión/nicho
     inferred_tech_stack = Column(JSON, nullable=True) # ej: ["WordPress", "Shopify", "React"]

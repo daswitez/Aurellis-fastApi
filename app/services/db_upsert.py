@@ -86,6 +86,9 @@ def _extract_job_prospect_data(
             "source_type": normalize_source_type(job_context.get("source_type") or prospect_data.get("source")),
             "discovery_method": normalize_discovery_method(job_context.get("discovery_method")),
             "search_query": job_context.get("search_query"),
+            "canonical_identity": prospect_data.get("canonical_identity"),
+            "primary_identity_type": prospect_data.get("primary_identity_type"),
+            "primary_identity_url": prospect_data.get("primary_identity_url"),
             "emails": [value for value in [prospect_data.get("email")] if value],
             "phones": [value for value in [prospect_data.get("phone")] if value],
             "socials": [
@@ -93,10 +96,12 @@ def _extract_job_prospect_data(
                 for value in [
                     prospect_data.get("linkedin_url"),
                     prospect_data.get("instagram_url"),
+                    prospect_data.get("tiktok_url"),
                     prospect_data.get("facebook_url"),
                 ]
                 if value
             ],
+            "social_profiles": prospect_data.get("social_profiles"),
             "contact_page_url": prospect_data.get("contact_page_url"),
             "form_detected": prospect_data.get("form_detected", False),
             "contact_consistency_status": prospect_data.get("contact_consistency_status"),
@@ -165,6 +170,9 @@ def _extract_job_prospect_data(
             "primary_email_confidence": prospect_data.get("primary_email_confidence"),
             "primary_phone_confidence": prospect_data.get("primary_phone_confidence"),
             "primary_contact_source": prospect_data.get("primary_contact_source"),
+            "primary_identity_type": prospect_data.get("primary_identity_type"),
+            "primary_identity_url": prospect_data.get("primary_identity_url"),
+            "social_profiles": prospect_data.get("social_profiles"),
             "company_size_signal": prospect_data.get("company_size_signal"),
             "service_keywords": prospect_data.get("service_keywords"),
             "acceptance_decision": prospect_data.get("acceptance_decision"),
@@ -198,6 +206,7 @@ def _build_contact_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> li
         ("booking", prospect_data.get("booking_url"), "booking_link", False),
         ("linkedin", prospect_data.get("linkedin_url"), "linkedin_profile", False),
         ("instagram", prospect_data.get("instagram_url"), "instagram_profile", False),
+        ("tiktok", prospect_data.get("tiktok_url"), "tiktok_profile", False),
         ("facebook", prospect_data.get("facebook_url"), "facebook_profile", False),
     ]
     if prospect_data.get("form_detected"):
@@ -242,7 +251,10 @@ def _build_page_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> list[
             "updated_at": now,
         }
 
-    add_page(prospect_data.get("website_url"), "home")
+    add_page(
+        prospect_data.get("primary_identity_url") or prospect_data.get("website_url"),
+        "social_profile" if prospect_data.get("primary_identity_type") == "social_profile" else "home",
+    )
     add_page(prospect_data.get("contact_page_url"), "contact")
     add_page(prospect_data.get("booking_url"), "booking")
     add_page(prospect_data.get("pricing_page_url"), "pricing")
@@ -322,31 +334,32 @@ async def save_scraped_prospect(
 ) -> Prospect | None:
     """Persist canonical prospect data and contextual job/contact/page data."""
 
-    domain = prospect_data.get("domain")
-    if not domain:
-        logger.error(f"No se puede guardar el prospecto sin dominio válido: {prospect_data}")
+    canonical_identity = prospect_data.get("canonical_identity") or prospect_data.get("domain")
+    if not canonical_identity:
+        logger.error(f"No se puede guardar el prospecto sin identidad canónica válida: {prospect_data}")
         return None
 
+    prospect_data["canonical_identity"] = canonical_identity
     canonical_prospect_data = _extract_canonical_prospect_data(prospect_data)
     stmt = insert(Prospect).values(**canonical_prospect_data)
 
     update_dict = {
         col.name: getattr(stmt.excluded, col.name)
         for col in Prospect.__table__.columns
-        if col.name not in ["id", "domain", "created_at", "job_id"] and col.name in canonical_prospect_data
+        if col.name not in ["id", "canonical_identity", "created_at", "job_id"] and col.name in canonical_prospect_data
     }
 
     if update_dict:
         stmt = stmt.on_conflict_do_update(
-            index_elements=["domain"],
+            index_elements=["canonical_identity"],
             set_=update_dict
         )
     else:
-        stmt = stmt.on_conflict_do_nothing(index_elements=["domain"])
+        stmt = stmt.on_conflict_do_nothing(index_elements=["canonical_identity"])
 
     await db.execute(stmt)
 
-    query = select(Prospect).where(Prospect.domain == domain)
+    query = select(Prospect).where(Prospect.canonical_identity == canonical_identity)
     prospect_obj = await db.execute(query)
     prospect = prospect_obj.scalars().first()
     if not prospect:
@@ -397,5 +410,5 @@ async def save_scraped_prospect(
 
     await db.commit()
     await db.refresh(prospect)
-    logger.info(f"Persistencia completa para dominio: {domain}")
+    logger.info(f"Persistencia completa para identidad: {canonical_identity}")
     return prospect

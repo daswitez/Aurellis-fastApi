@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     HTTP_VERIFY_TLS: bool = True
     HTTP_MAX_RETRIES: int = 2
     HTTP_BACKOFF_BASE_SECONDS: float = 1.0
-    SEARCH_PROVIDER_ORDER: str = "duckduckgo_html,google_html"
+    SEARCH_PROVIDER_ORDER: str = "duckduckgo_html"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="allow")
 

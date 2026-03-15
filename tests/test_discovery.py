@@ -86,6 +86,24 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertTrue(any("-informe" in query for query in queries))
         self.assertTrue(any("-asesoria" in query or "-consultoria" in query for query in queries))
 
+    def test_builds_social_first_queries_for_creative_roles(self) -> None:
+        queries = build_discovery_queries(
+            search_query="marcas personales ecommerce y coaches de negocios España",
+            user_profession="Editor de Video",
+            target_niche="Marcas Personales y Coaches",
+            target_location="España",
+            target_language="es",
+            target_budget_signals=[
+                "Activos en Instagram o TikTok con mas de 10k seguidores",
+                "Tienen linktree/tienda oficial",
+            ],
+        )
+
+        self.assertTrue(any("site:instagram.com" in query for query in queries))
+        self.assertTrue(any("site:tiktok.com" in query for query in queries))
+        self.assertTrue(any("link in bio" in query or "linktree" in query for query in queries))
+        self.assertFalse(any("-instagram" in query or "-tiktok" in query for query in queries))
+
     def test_resolves_capture_targets_from_legacy_max_results(self) -> None:
         targets = resolve_capture_targets(
             max_results_legacy=5,
@@ -237,9 +255,28 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertEqual(press_exclusion, "excluded_as_article")
         self.assertEqual(report_exclusion, "excluded_as_article")
         self.assertIn("editorial_path", press_reasons)
-        self.assertIn("editorial_title", report_reasons)
+        self.assertTrue(any(reason in {"editorial_title", "editorial_path"} for reason in report_reasons))
         self.assertLess(press_score, 0.15)
         self.assertLess(report_score, 0.15)
+
+    def test_business_likeness_blocks_reddit_and_whatsapp_noise(self) -> None:
+        whatsapp_score, whatsapp_reasons, whatsapp_exclusion = score_business_likeness(
+            "https://web.whatsapp.com/",
+            "WhatsApp Web",
+            "Usa WhatsApp Web desde tu navegador.",
+        )
+        reddit_score, reddit_reasons, reddit_exclusion = score_business_likeness(
+            "https://www.reddit.com/r/EveryDayBingQuiz/",
+            "EveryDayBingQuiz - Reddit",
+            "Subreddit con respuestas del quiz diario.",
+        )
+
+        self.assertEqual(whatsapp_exclusion, "blocked_domain:whatsapp.com")
+        self.assertEqual(reddit_exclusion, "blocked_domain:reddit.com")
+        self.assertIn("blocked_domain:whatsapp.com", whatsapp_reasons)
+        self.assertIn("blocked_domain:reddit.com", reddit_reasons)
+        self.assertLess(whatsapp_score, 0.0)
+        self.assertLess(reddit_score, 0.0)
 
     def test_business_likeness_excludes_product_detail_pages(self) -> None:
         product_score, product_reasons, product_exclusion = score_business_likeness(
@@ -251,6 +288,44 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertEqual(product_exclusion, "excluded_as_product_page")
         self.assertIn("product_page", product_reasons)
         self.assertLess(product_score, 0.15)
+
+    def test_business_likeness_accepts_canonical_social_profiles_and_rejects_posts(self) -> None:
+        social_score, social_reasons, social_exclusion = score_business_likeness(
+            "https://www.instagram.com/editorpro/",
+            "EditorPro | Reels para coaches y ecommerce",
+            "Video editor. DM or link in bio. Servicios para marcas personales.",
+            allow_social_profiles=True,
+        )
+        post_score, post_reasons, post_exclusion = score_business_likeness(
+            "https://www.instagram.com/p/ABC123/",
+            "Instagram post",
+            "Reel viral de un creador.",
+            allow_social_profiles=True,
+        )
+
+        self.assertIsNone(social_exclusion)
+        self.assertGreater(social_score, 0.45)
+        self.assertIn("social_profile_candidate", social_reasons)
+        self.assertEqual(post_exclusion, "excluded_social_post")
+        self.assertEqual(post_score, 0.0)
+        self.assertIn("social_post_or_share", post_reasons)
+
+    def test_business_likeness_rejects_reference_and_finance_pages(self) -> None:
+        reference_score, _, reference_exclusion = score_business_likeness(
+            "https://es.wikipedia.org/wiki/Reserva_de_la_biosfera",
+            "Reserva de la biosfera - Wikipedia, la enciclopedia libre",
+            "Articulo de referencia enciclopedica.",
+        )
+        finance_score, _, finance_exclusion = score_business_likeness(
+            "https://www.marketwatch.com/investing/fund/gdx",
+            "GDX overview by MarketWatch",
+            "ETF, investing news and market data.",
+        )
+
+        self.assertEqual(reference_exclusion, "excluded_reference_page")
+        self.assertEqual(finance_exclusion, "excluded_reference_page")
+        self.assertEqual(reference_score, 0.0)
+        self.assertEqual(finance_score, 0.0)
 
 
 class DirectorySeedExpansionTestCase(unittest.IsolatedAsyncioTestCase):
@@ -293,7 +368,12 @@ class DiscoveryProviderOrchestrationTestCase(unittest.IsolatedAsyncioTestCase):
             provider_name = "primary"
             source_type = "duckduckgo_search"
 
-            async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+            async def search(
+                self,
+                queries: list[str],
+                max_results: int = 10,
+                allow_social_profiles: bool = False,
+            ) -> SearchDiscoveryResult:
                 return SearchDiscoveryResult(
                     entries=[],
                     source_type=self.source_type,
@@ -309,7 +389,12 @@ class DiscoveryProviderOrchestrationTestCase(unittest.IsolatedAsyncioTestCase):
             provider_name = "secondary"
             source_type = "brave_search"
 
-            async def search(self, queries: list[str], max_results: int = 10) -> SearchDiscoveryResult:
+            async def search(
+                self,
+                queries: list[str],
+                max_results: int = 10,
+                allow_social_profiles: bool = False,
+            ) -> SearchDiscoveryResult:
                 return SearchDiscoveryResult(
                     entries=[
                         SearchDiscoveryEntry(

@@ -9,6 +9,7 @@ from duckduckgo_search import DDGS
 
 from app.scraper.http_client import FetchHtmlError, fetch_html
 from app.services.discovery_ranker import (
+    classify_discovery_candidate,
     clean_text,
     extract_official_site_from_seed_html as ranker_extract_official_site_from_seed_html,
     get_directory_seed_token,
@@ -75,7 +76,10 @@ def _extract_search_results(html: str, query: str, allow_social_profiles: bool =
             excluded.append({"url": url, "reason": blocked_reason, "query": query, "title": title, "snippet": snippet})
             continue
 
-        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet, allow_social_profiles=allow_social_profiles)
+        classified = classify_discovery_candidate(url, title, snippet, allow_social_profiles=allow_social_profiles)
+        business_score = classified["score"]
+        business_reasons = classified["reasons"]
+        exclusion_reason = classified["exclusion_reason"]
         if exclusion_reason:
             excluded.append(
                 {
@@ -85,6 +89,9 @@ def _extract_search_results(html: str, query: str, allow_social_profiles: bool =
                     "title": title,
                     "snippet": snippet,
                     "business_likeness_score": business_score,
+                    "website_result_score": classified["website_result_score"],
+                    "social_profile_score": classified["social_profile_score"],
+                    "result_kind": classified["result_kind"],
                     "discovery_reasons": business_reasons,
                 }
             )
@@ -92,7 +99,12 @@ def _extract_search_results(html: str, query: str, allow_social_profiles: bool =
 
         discovery_confidence = "medium"
         lowered_blob = f"{title} {snippet}".lower()
-        if "oficial" in lowered_blob or "official" in lowered_blob or business_score >= 0.45:
+        if (
+            "oficial" in lowered_blob
+            or "official" in lowered_blob
+            or classified["result_kind"] == "social_profile"
+            or business_score >= 0.45
+        ):
             discovery_confidence = "high"
         elif business_score <= 0.2:
             discovery_confidence = "low"
@@ -105,6 +117,9 @@ def _extract_search_results(html: str, query: str, allow_social_profiles: bool =
                 snippet=snippet or None,
                 discovery_confidence=discovery_confidence,
                 business_likeness_score=business_score,
+                website_result_score=classified["website_result_score"],
+                social_profile_score=classified["social_profile_score"],
+                result_kind=classified["result_kind"],
                 discovery_reasons=business_reasons,
             )
         )
@@ -146,7 +161,10 @@ def _process_ddg_results(
             excluded.append({"url": url, "reason": blocked_reason, "query": query, "title": title, "snippet": snippet})
             continue
 
-        business_score, business_reasons, exclusion_reason = score_business_likeness(url, title, snippet, allow_social_profiles=allow_social_profiles)
+        classified = classify_discovery_candidate(url, title, snippet, allow_social_profiles=allow_social_profiles)
+        business_score = classified["score"]
+        business_reasons = classified["reasons"]
+        exclusion_reason = classified["exclusion_reason"]
         if exclusion_reason:
             excluded.append(
                 {
@@ -156,6 +174,9 @@ def _process_ddg_results(
                     "title": title,
                     "snippet": snippet,
                     "business_likeness_score": business_score,
+                    "website_result_score": classified["website_result_score"],
+                    "social_profile_score": classified["social_profile_score"],
+                    "result_kind": classified["result_kind"],
                     "discovery_reasons": business_reasons,
                 }
             )
@@ -163,7 +184,12 @@ def _process_ddg_results(
 
         discovery_confidence = "medium"
         lowered_blob = f"{title} {snippet}".lower()
-        if "oficial" in lowered_blob or "official" in lowered_blob or business_score >= 0.45:
+        if (
+            "oficial" in lowered_blob
+            or "official" in lowered_blob
+            or classified["result_kind"] == "social_profile"
+            or business_score >= 0.45
+        ):
             discovery_confidence = "high"
         elif business_score <= 0.2:
             discovery_confidence = "low"
@@ -176,6 +202,9 @@ def _process_ddg_results(
                 snippet=snippet or None,
                 discovery_confidence=discovery_confidence,
                 business_likeness_score=business_score,
+                website_result_score=classified["website_result_score"],
+                social_profile_score=classified["social_profile_score"],
+                result_kind=classified["result_kind"],
                 discovery_reasons=business_reasons,
             )
         )

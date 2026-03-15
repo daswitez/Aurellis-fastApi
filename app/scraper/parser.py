@@ -64,6 +64,22 @@ CTA_PATTERNS = {
     "quote": ["quote", "cotiza", "cotizar", "presupuesto"],
     "signup": ["signup", "sign up", "registrate", "regístrate", "suscribete", "suscríbete"],
 }
+REFERENCE_PAGE_HINTS = (
+    "enciclopedia",
+    "definicion",
+    "definición",
+    "concepto",
+    "wikipedia",
+    "diccionario",
+)
+SOCIAL_PLATFORMS = {
+    "instagram": ["instagram.com"],
+    "tiktok": ["tiktok.com"],
+    "linkedin": ["linkedin.com"],
+    "facebook": ["facebook.com"],
+    "twitter": ["twitter.com", "x.com"],
+}
+SOCIAL_HANDLE_REGEX = re.compile(r"^@?[a-z0-9._]{2,64}$", re.IGNORECASE)
 
 
 def _normalize_href(base_url: str, href: str) -> str | None:
@@ -133,6 +149,10 @@ def _classify_phone_candidate(candidate: str) -> tuple[str | None, str | None]:
         return None, "invalid_length"
     if _looks_like_date_digits(digits_only):
         return None, "date_like"
+    if _looks_like_timestamp_noise(candidate, digits_only):
+        return None, "timestamp_like"
+    if _looks_like_metric_noise(candidate, digits_only):
+        return None, "metric_like"
     if _looks_like_sequence_noise(digits_only):
         return None, "sequence_noise"
     return normalized, None
@@ -140,6 +160,133 @@ def _classify_phone_candidate(candidate: str) -> tuple[str | None, str | None]:
 
 def _normalize_phone(candidate: str) -> str | None:
     return _classify_phone_candidate(candidate)[0]
+
+
+def _looks_like_timestamp_noise(candidate: str, digits_only: str) -> bool:
+    lowered = candidate.lower().strip()
+    if ":" in lowered and len(digits_only) <= 8:
+        return True
+    if re.search(r"\b\d{1,2}:\d{2}\b", lowered):
+        return True
+    return False
+
+
+def _looks_like_metric_noise(candidate: str, digits_only: str) -> bool:
+    lowered = candidate.lower()
+    metric_hints = ("followers", "likes", "views", "seguidores", "vistas", "likes", "k", "m")
+    if any(hint in lowered for hint in metric_hints):
+        return True
+    return len(digits_only) <= 10 and digits_only.startswith(("19", "20")) and len(digits_only) in {8, 10}
+
+
+def _detect_platform(url: str) -> str | None:
+    lowered = url.lower()
+    for platform, tokens in SOCIAL_PLATFORMS.items():
+        if any(token in lowered for token in tokens):
+            return platform
+    return None
+
+
+def _extract_social_handle(url: str) -> tuple[str | None, str | None]:
+    parsed = urlparse(url)
+    platform = _detect_platform(url)
+    segments = [segment for segment in parsed.path.strip("/").split("/") if segment]
+    if not platform or not segments:
+        return platform, None
+    candidate = segments[0]
+    if platform == "tiktok":
+        if not candidate.startswith("@"):
+            return platform, None
+        candidate = candidate[1:]
+    if platform == "instagram" and candidate in {"p", "reel", "reels", "explore"}:
+        return platform, None
+    if not SOCIAL_HANDLE_REGEX.match(candidate):
+        return platform, None
+    return platform, candidate.lstrip("@")
+
+
+def _build_social_profile_record(url: str, *, is_primary: bool = False) -> dict[str, Any] | None:
+    platform, handle = _extract_social_handle(url)
+    if not platform:
+        return None
+    return {
+        "platform": platform,
+        "url": url,
+        "handle": handle,
+        "is_primary": is_primary,
+        "profile_kind": "profile" if handle else "other",
+        "contact_signals": [],
+        "activity_signals": [],
+        "confidence": "high" if handle else "low",
+    }
+
+
+def _looks_like_reference_page(base_url: str, title: str, description: str) -> bool:
+    lowered_blob = f"{base_url} {title} {description}".lower()
+    return any(token in lowered_blob for token in REFERENCE_PAGE_HINTS)
+
+
+def _extract_social_profile_metadata(
+    soup: BeautifulSoup,
+    base_url: str,
+    clean_text: str,
+    metadata: Dict[str, Any],
+) -> dict[str, Any] | None:
+    platform, handle = _extract_social_handle(base_url)
+    if platform not in {"instagram", "tiktok"}:
+        return None
+
+    title = metadata.get("title") or ""
+    description = metadata.get("description") or ""
+    meta_site_name = soup.find("meta", attrs={"property": "og:site_name"})
+    bio = description
+    display_name = title.split("|")[0].split("(")[0].strip() if title else handle or platform
+    if meta_site_name and meta_site_name.get("content"):
+        display_name = display_name or meta_site_name["content"].strip()
+
+    external_links: list[str] = []
+    platform_ctas: list[str] = []
+    offer_signals: list[str] = []
+    activity_signals: list[str] = []
+    audience_signals: list[str] = []
+
+    lowered_text = clean_text.lower()
+    if any(token in lowered_text for token in ["link in bio", "linktree", "agenda", "dm", "mensaje"]):
+        platform_ctas.append("profile_cta_visible")
+    if any(token in lowered_text for token in ["curso", "coaching", "servicios", "editor", "filmmaker", "agencia", "ecommerce", "shop"]):
+        offer_signals.append("commercial_offer_detected")
+    if any(token in lowered_text for token in ["reels", "shorts", "contenido", "videos", "ugc"]):
+        activity_signals.append("content_format_visible")
+    if any(token in lowered_text for token in ["clientes", "marcas", "founder", "ceo", "coach"]):
+        audience_signals.append("buyer_audience_visible")
+
+    for a_tag in soup.find_all("a", href=True):
+        href = a_tag.get("href", "").strip()
+        normalized_href = _normalize_href(base_url, href)
+        if not normalized_href:
+            continue
+        if _detect_platform(normalized_href):
+            continue
+        if normalized_href.startswith("http"):
+            external_links.append(normalized_href)
+
+    deduped_external_links: list[str] = []
+    for link in external_links:
+        if link not in deduped_external_links:
+            deduped_external_links.append(link)
+
+    return {
+        "platform": platform,
+        "handle": handle,
+        "display_name": display_name or handle,
+        "bio": bio,
+        "external_links": deduped_external_links[:5],
+        "platform_ctas": platform_ctas,
+        "offer_signals": offer_signals,
+        "activity_signals": activity_signals,
+        "audience_signals": audience_signals,
+        "content_text": clean_text[:1500],
+    }
 
 
 def _extract_visible_contacts(text: str) -> tuple[set[str], set[str], dict[str, int]]:
@@ -321,14 +468,21 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
         phone_validation_rejections,
     ) = _parse_json_ld_blocks(soup)
 
+    title_value = soup.title.string.strip() if soup.title and soup.title.string else ""
+    description_value = meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else ""
+    is_reference_page = _looks_like_reference_page(base_url, title_value, description_value)
+    primary_social_profile = _build_social_profile_record(base_url, is_primary=True)
+
     metadata = {
-        "title": soup.title.string.strip() if soup.title and soup.title.string else "",
-        "description": meta_desc["content"].strip() if meta_desc and meta_desc.get("content") else "",
+        "title": title_value,
+        "description": description_value,
         "emails": set(structured_emails),
         "phones": set(structured_phones),
         "social_links": set(),
+        "social_profiles": [primary_social_profile] if primary_social_profile else [],
         "internal_links": set(),
         "map_links": set(),
+        "external_links": set(),
         "whatsapp_url": None,
         "booking_url": None,
         "pricing_page_url": None,
@@ -344,6 +498,8 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
         "contact_channels": [],
         "cta_candidates": [],
         "primary_cta": None,
+        "primary_identity_type": "social_profile" if primary_social_profile else "website",
+        "primary_identity_url": base_url,
         "phone_validation_rejections": dict(phone_validation_rejections),
         "invalid_phone_candidates_count": sum(phone_validation_rejections.values()),
     }
@@ -373,6 +529,9 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
         lowered_href = href.lower()
         normalized_href = _normalize_href(base_url, href)
         cta_type = _detect_primary_cta(anchor_text, href)
+
+        if cta_type and cta_type == "booking" and is_reference_page:
+            cta_type = None
 
         if cta_type and cta_type not in metadata["cta_candidates"]:
             metadata["cta_candidates"].append(cta_type)
@@ -417,9 +576,12 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
                 source="whatsapp_link",
             )
 
-        if any(social in lowered_href for social in ["linkedin.com", "instagram.com", "facebook.com", "twitter.com", "x.com"]):
+        if any(social in lowered_href for social in ["linkedin.com", "instagram.com", "facebook.com", "twitter.com", "x.com", "tiktok.com"]):
             if normalized_href:
                 metadata["social_links"].add(normalized_href)
+                social_profile = _build_social_profile_record(normalized_href, is_primary=False)
+                if social_profile:
+                    metadata["social_profiles"].append(social_profile)
             continue
 
         if "google.com/maps" in lowered_href or "maps.app.goo.gl" in lowered_href or "goo.gl/maps" in lowered_href:
@@ -430,7 +592,7 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
             page_type = _classify_page_url(normalized_href)
             if page_type != "other":
                 metadata["internal_links"].add(normalized_href)
-            if page_type == "booking" and not metadata["booking_url"]:
+            if page_type == "booking" and not metadata["booking_url"] and not is_reference_page:
                 metadata["booking_url"] = normalized_href
             elif page_type == "pricing" and not metadata["pricing_page_url"]:
                 metadata["pricing_page_url"] = normalized_href
@@ -438,10 +600,14 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
                 metadata["service_page_url"] = normalized_href
             elif _looks_like_internal_key_page(anchor_text.lower(), href):
                 metadata["internal_links"].add(normalized_href)
+        elif normalized_href and normalized_href.startswith("http"):
+            metadata["external_links"].add(normalized_href)
 
     for button_tag in soup.find_all(["button", "a"]):
         button_text = button_tag.get_text(" ", strip=True)
         cta_type = _detect_primary_cta(button_text, button_tag.get("href", ""))
+        if cta_type and cta_type == "booking" and is_reference_page:
+            cta_type = None
         if cta_type and cta_type not in metadata["cta_candidates"]:
             metadata["cta_candidates"].append(cta_type)
             metadata["primary_cta"] = metadata["primary_cta"] or cta_type
@@ -484,7 +650,7 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
             value=base_url,
             source="html_form",
         )
-    if metadata["booking_url"]:
+    if metadata["booking_url"] and not is_reference_page:
         _append_contact_channel(
             metadata["contact_channels"],
             channel_type="booking",
@@ -504,10 +670,42 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
     metadata["emails"] = sorted(metadata["emails"])
     metadata["phones"] = sorted(metadata["phones"])
     metadata["social_links"] = sorted(metadata["social_links"])
+    deduped_social_profiles: list[dict[str, Any]] = []
+    seen_social_profiles: set[tuple[str, str]] = set()
+    for profile in metadata["social_profiles"]:
+        if not isinstance(profile, dict):
+            continue
+        token = (str(profile.get("platform") or ""), str(profile.get("url") or ""))
+        if token in seen_social_profiles:
+            continue
+        seen_social_profiles.add(token)
+        deduped_social_profiles.append(profile)
+    metadata["social_profiles"] = deduped_social_profiles
     metadata["internal_links"] = sorted(metadata["internal_links"])
+    metadata["external_links"] = sorted(metadata["external_links"])
     metadata["map_links"] = sorted(metadata["map_links"])
     metadata["addresses"] = list(metadata["addresses"])
     metadata["contact_channels"] = deduped_channels
     metadata["social_links_count"] = len(metadata["social_links"])
+    social_profile_metadata = _extract_social_profile_metadata(soup, base_url, clean_text, metadata)
+    if social_profile_metadata:
+        metadata["social_profile"] = social_profile_metadata
+        metadata["primary_identity_type"] = "social_profile"
+        metadata["primary_identity_url"] = base_url
+        for profile in metadata["social_profiles"]:
+            if profile.get("url") == base_url:
+                profile["contact_signals"] = [
+                    signal
+                    for signal in [
+                        "public_email" if metadata["emails"] else None,
+                        "public_phone" if metadata["phones"] else None,
+                        "whatsapp" if metadata["whatsapp_url"] else None,
+                        "external_link" if social_profile_metadata.get("external_links") else None,
+                    ]
+                    if signal
+                ]
+                profile["activity_signals"] = social_profile_metadata.get("activity_signals", [])
+    else:
+        metadata["social_profile"] = None
 
     return clean_text, metadata

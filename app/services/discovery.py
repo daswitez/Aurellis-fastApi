@@ -5,7 +5,7 @@ from typing import Any
 
 DEFAULT_CANDIDATE_MULTIPLIER = 4
 DEFAULT_MIN_CANDIDATES = 5
-MAX_DISCOVERY_QUERIES = 12
+MAX_DISCOVERY_QUERIES = 16
 DEFAULT_QUERY_BATCH_SIZE = 2
 DEFAULT_CANDIDATE_BATCH_SIZE = 5
 NEGATIVE_DISCOVERY_TERMS = (
@@ -67,6 +67,25 @@ GENERIC_QUERY_PREFIXES = (
     "marcas ",
     "negocios ",
     "sitios ",
+)
+SOCIAL_PLATFORM_QUERY_HINTS = (
+    "instagram",
+    "tiktok",
+    "link in bio",
+    "linktree",
+    "reels",
+    "shorts",
+)
+SOCIAL_COMMERCIAL_HINTS = (
+    "marca personal",
+    "coach",
+    "coaches",
+    "ecommerce",
+    "tienda online",
+    "agencia",
+    "curso",
+    "cursos",
+    "infoproductos",
 )
 NICHE_VARIANTS = {
     "ecommerce": ["ecommerce", "tienda online", "shopify"],
@@ -182,6 +201,43 @@ def _normalize_context_list(values: list[str] | None) -> list[str]:
         normalized.append(cleaned)
         seen.add(lowered)
     return normalized
+
+
+def _build_budget_signal_keywords(target_budget_signals: list[str] | None) -> list[str]:
+    keywords: list[str] = []
+    for signal in _normalize_context_list(target_budget_signals):
+        lowered = signal.lower()
+        if "instagram" in lowered or "tiktok" in lowered:
+            keywords.extend(["instagram", "tiktok"])
+        if "linktree" in lowered or "tienda oficial" in lowered or "tienda" in lowered:
+            keywords.extend(["link in bio", "linktree", "tienda online"])
+        if "curso" in lowered or "infoproducto" in lowered:
+            keywords.extend(["curso", "infoproductos"])
+        if "anuncio" in lowered or "ads" in lowered:
+            keywords.extend(["anuncios", "meta ads"])
+        if "seguidores" in lowered:
+            keywords.extend(["creador", "marca personal"])
+
+    deduped: list[str] = []
+    for keyword in keywords:
+        if keyword not in deduped:
+            deduped.append(keyword)
+
+    priority_order = [
+        "link in bio",
+        "linktree",
+        "tienda online",
+        "curso",
+        "infoproductos",
+        "instagram",
+        "tiktok",
+        "meta ads",
+        "anuncios",
+        "creador",
+        "marca personal",
+    ]
+    priority_map = {keyword: index for index, keyword in enumerate(priority_order)}
+    return sorted(deduped, key=lambda keyword: priority_map.get(keyword, len(priority_order)))
 
 
 def _derive_contextual_negative_terms(
@@ -318,6 +374,7 @@ def build_discovery_queries(
     user_service_offers: list[str] | None = None,
     user_service_constraints: list[str] | None = None,
     user_target_offer_focus: str | None = None,
+    target_budget_signals: list[str] | None = None,
     ai_dork_queries: list[str] | None = None,
     ai_negative_terms: list[str] | None = None,
     max_queries: int = MAX_DISCOVERY_QUERIES,
@@ -350,6 +407,7 @@ def build_discovery_queries(
         user_service_constraints=user_service_constraints,
         ai_negative_terms=ai_negative_terms,
     )
+    budget_signal_keywords = _build_budget_signal_keywords(target_budget_signals)
 
     if ai_dork_queries:
         for dork in ai_dork_queries:
@@ -371,13 +429,31 @@ def build_discovery_queries(
     )
     
     if needs_social_profiles:
-        # Prioritize social profiles for creative/social roles
+        social_intent_hints = [*budget_signal_keywords[:3], *SOCIAL_COMMERCIAL_HINTS[:4]]
         for intent_seed in intent_seeds[:2]:
             localized_seed = _normalize_space(f"{intent_seed} {location}") if location else intent_seed
             _append_query(queries, _apply_negative_terms(f"{localized_seed} site:instagram.com", negative_terms))
             _append_query(queries, _apply_negative_terms(f"{localized_seed} site:tiktok.com", negative_terms))
+            for hint in social_intent_hints[:3]:
+                _append_query(
+                    queries,
+                    _apply_negative_terms(f"{localized_seed} {hint} site:instagram.com", negative_terms),
+                )
+                _append_query(
+                    queries,
+                    _apply_negative_terms(f"{localized_seed} {hint} site:tiktok.com", negative_terms),
+                )
         _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} site:instagram.com", negative_terms))
         _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} site:tiktok.com", negative_terms))
+        for hint in [*budget_signal_keywords[:2], *SOCIAL_PLATFORM_QUERY_HINTS[:2]]:
+            _append_query(
+                queries,
+                _apply_negative_terms(f"{primary_intent_seed} {hint} site:instagram.com", negative_terms),
+            )
+            _append_query(
+                queries,
+                _apply_negative_terms(f"{primary_intent_seed} {hint} site:tiktok.com", negative_terms),
+            )
 
     if user_technologies:
         tech_string = " ".join(_normalize_context_list(user_technologies)).lower()
@@ -422,6 +498,7 @@ def build_retry_discovery_queries(
     user_service_offers: list[str] | None = None,
     user_service_constraints: list[str] | None = None,
     user_target_offer_focus: str | None = None,
+    target_budget_signals: list[str] | None = None,
 ) -> list[str]:
     base_query = _normalize_space(search_query)
     niche = _normalize_space(target_niche)
@@ -436,6 +513,7 @@ def build_retry_discovery_queries(
         user_service_offers=user_service_offers,
         user_service_constraints=user_service_constraints,
     )
+    budget_signal_keywords = _build_budget_signal_keywords(target_budget_signals)
 
     intent_seed = _normalize_space(f"{niche} {location}") or niche or _normalize_space(f"{base_query} {location}") or base_query
     if not intent_seed:
@@ -454,6 +532,15 @@ def build_retry_discovery_queries(
     if needs_social_profiles:
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} site:instagram.com", negative_terms))
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} site:tiktok.com", negative_terms))
+        for hint in [*budget_signal_keywords[:2], "marca personal", "coach", "link in bio"]:
+            _append_query(
+                retry_queries,
+                _apply_negative_terms(f"{intent_seed} {hint} site:instagram.com", negative_terms),
+            )
+            _append_query(
+                retry_queries,
+                _apply_negative_terms(f"{intent_seed} {hint} site:tiktok.com", negative_terms),
+            )
 
     for hint in language_hints.get("locations", []):
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}", negative_terms))
@@ -490,6 +577,7 @@ def build_discovery_query_batches(
     user_service_offers: list[str] | None = None,
     user_service_constraints: list[str] | None = None,
     user_target_offer_focus: str | None = None,
+    target_budget_signals: list[str] | None = None,
     ai_dork_queries: list[str] | None = None,
     ai_negative_terms: list[str] | None = None,
     query_batch_size: int = DEFAULT_QUERY_BATCH_SIZE,
@@ -504,6 +592,7 @@ def build_discovery_query_batches(
         user_service_offers=user_service_offers,
         user_service_constraints=user_service_constraints,
         user_target_offer_focus=user_target_offer_focus,
+        target_budget_signals=target_budget_signals,
         ai_dork_queries=ai_dork_queries,
         ai_negative_terms=ai_negative_terms,
     )
@@ -517,6 +606,7 @@ def build_discovery_query_batches(
         user_service_offers=user_service_offers,
         user_service_constraints=user_service_constraints,
         user_target_offer_focus=user_target_offer_focus,
+        target_budget_signals=target_budget_signals,
     )
 
     deduped_retry_queries = [query for query in retry_queries if query not in canonical_queries]
@@ -532,6 +622,9 @@ def build_discovery_metadata(entry: dict[str, Any] | None, queries: list[str]) -
         "snippet": entry.get("snippet"),
         "discovery_confidence": entry.get("discovery_confidence"),
         "business_likeness_score": entry.get("business_likeness_score"),
+        "website_result_score": entry.get("website_result_score"),
+        "social_profile_score": entry.get("social_profile_score"),
+        "result_kind": entry.get("result_kind"),
         "discovery_reasons": entry.get("discovery_reasons"),
         "seed_source_url": entry.get("seed_source_url"),
         "seed_source_type": entry.get("seed_source_type"),

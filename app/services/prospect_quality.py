@@ -1036,6 +1036,9 @@ def _build_contact_quality(metadata: dict[str, Any]) -> dict[str, Any]:
         score += 0.10
     if metadata.get("booking_url"):
         score += 0.10
+    social_profile = metadata.get("social_profile") or {}
+    if isinstance(social_profile, dict) and social_profile.get("external_links"):
+        score += 0.10
 
     return {
         "contact_quality_score": round(min(score, 1.0), 4),
@@ -1074,6 +1077,27 @@ def _extract_service_keywords(clean_text: str, *, limit: int = 5) -> list[str]:
     return [token for token, _ in ordered[:limit]]
 
 
+def _count_social_business_evidence(
+    metadata: dict[str, Any],
+    heuristic_data: dict[str, Any],
+    location_match_status: str,
+    language_match_status: str,
+) -> tuple[int, list[str]]:
+    content_profile = ((heuristic_data.get("generic_attributes") or {}).get("content_profile") or {})
+    evidence: list[str] = []
+    if content_profile.get("offer_signals"):
+        evidence.append("offer_signals")
+    if content_profile.get("platform_ctas") or content_profile.get("external_links"):
+        evidence.append("cta_or_link")
+    if metadata.get("whatsapp_url") or metadata.get("emails") or metadata.get("phones"):
+        evidence.append("public_contact")
+    if location_match_status == "match" or language_match_status == "match":
+        evidence.append("geo_language_fit")
+    if content_profile.get("audience_signals") or content_profile.get("social_activity_signals"):
+        evidence.append("content_consistency")
+    return len(evidence), evidence
+
+
 def _classify_quality_status(
     *,
     has_target_location: bool,
@@ -1085,6 +1109,8 @@ def _classify_quality_status(
     contact_consistency_status: str,
     primary_email_confidence: str,
     primary_phone_confidence: str,
+    primary_identity_type: str | None,
+    social_business_evidence_count: int,
 ) -> tuple[str, str | None, list[str], float]:
     flags: list[str] = []
     score_multiplier = 1.0
@@ -1111,7 +1137,15 @@ def _classify_quality_status(
             return "rejected", "contact_inconsistent", flags, 0.55
         return "needs_review", "contact_inconsistent", flags, 0.75
 
+    is_social_profile = str(primary_identity_type or "").strip().lower() == "social_profile"
+    if is_social_profile and social_business_evidence_count < 2:
+        flags.append("weak_social_business_evidence")
+        return "needs_review", "rejected_social_low_evidence", flags, 0.75
+
     if primary_email_confidence == "low" and primary_phone_confidence == "low" and contact_quality_score < 0.3:
+        if is_social_profile and social_business_evidence_count >= 2:
+            flags.append("social_first_low_direct_contact")
+            return "accepted", None, flags, 0.9
         flags.append("weak_primary_contact")
         return "rejected", "low_contact_quality", flags, 0.7
 
@@ -1133,6 +1167,8 @@ def _derive_acceptance_decision(
     target_niche: str | None,
     context_fit_score: float | None,
     business_model_fit_status: str | None,
+    primary_identity_type: str | None,
+    social_business_evidence_count: int,
 ) -> tuple[str, float, float | None]:
     normalized_entity_type = str(entity_type_detected or "unknown").strip().lower()
     normalized_confidence = str(entity_type_confidence or "low").strip().lower()
@@ -1146,6 +1182,14 @@ def _derive_acceptance_decision(
         return "rejected_media", 0.25, 0.3
     if normalized_entity_type in ARTICLE_ENTITY_TYPES:
         return "rejected_article", 0.15, 0.2
+
+    if str(primary_identity_type or "").strip().lower() == "social_profile":
+        if quality_status == "accepted" and is_target_entity and social_business_evidence_count >= 2:
+            if has_target_niche and normalized_business_model_fit == "mismatch":
+                return "accepted_related", 0.55, 0.6
+            return "accepted_target", 1.0, None
+        if quality_status == "needs_review":
+            return "rejected_low_confidence", 0.5, 0.5
 
     if quality_status == "accepted" and is_target_entity:
         if has_target_niche and normalized_business_model_fit == "mismatch":
@@ -1199,9 +1243,13 @@ def build_ai_evidence_pack(
         "location_match_status": quality_data.get("location_match_status"),
         "detected_language": quality_data.get("detected_language"),
         "language_match_status": quality_data.get("language_match_status"),
+        "primary_identity_type": quality_data.get("primary_identity_type"),
+        "primary_identity_url": quality_data.get("primary_identity_url"),
         "primary_cta": quality_data.get("primary_cta"),
         "booking_url": quality_data.get("booking_url"),
         "pricing_page_url": quality_data.get("pricing_page_url"),
+        "social_profiles": metadata.get("social_profiles"),
+        "social_profile": metadata.get("social_profile"),
         "contact_channels": quality_data.get("contact_channels_json"),
         "contact_consistency_status": quality_data.get("contact_consistency_status"),
         "primary_email_confidence": quality_data.get("primary_email_confidence"),
@@ -1273,6 +1321,8 @@ def evaluate_prospect_quality(
         context=context,
         entity_type_detected=entity_data.get("entity_type_detected"),
     )
+    primary_identity_type = str(metadata.get("primary_identity_type") or "website")
+    primary_identity_url = metadata.get("primary_identity_url") or metadata.get("website_url")
     context_fit_score = None
     heuristic_trace = heuristic_data.get("heuristic_trace")
     if isinstance(heuristic_trace, dict):
@@ -1285,6 +1335,12 @@ def evaluate_prospect_quality(
             score_breakdown = generic_attributes.get("heuristic_score_breakdown")
             if isinstance(score_breakdown, dict) and score_breakdown.get("context_fit") is not None:
                 context_fit_score = float(score_breakdown.get("context_fit") or 0.0)
+    social_business_evidence_count, social_business_evidence = _count_social_business_evidence(
+        metadata,
+        heuristic_data,
+        location_data["location_match_status"],
+        language_data["language_match_status"],
+    )
     quality_status, rejection_reason, quality_flags, technical_score_multiplier = _classify_quality_status(
         has_target_location=bool(str(context.get("target_location") or "").strip()),
         heuristic_score=float(heuristic_data.get("score") or 0.0),
@@ -1295,6 +1351,8 @@ def evaluate_prospect_quality(
         contact_consistency_status=str(contact_data["contact_consistency_status"]),
         primary_email_confidence=str(contact_data["primary_email_confidence"]),
         primary_phone_confidence=str(contact_data["primary_phone_confidence"]),
+        primary_identity_type=primary_identity_type,
+        social_business_evidence_count=social_business_evidence_count,
     )
     is_target_entity = entity_data.get("is_target_entity")
     if is_target_entity is False:
@@ -1309,6 +1367,8 @@ def evaluate_prospect_quality(
         target_niche=context.get("target_niche"),
         context_fit_score=context_fit_score,
         business_model_fit_status=business_model_data.get("business_model_fit_status"),
+        primary_identity_type=primary_identity_type,
+        social_business_evidence_count=social_business_evidence_count,
     )
     score_multiplier = round(technical_score_multiplier * commercial_score_multiplier, 4)
 
@@ -1328,12 +1388,16 @@ def evaluate_prospect_quality(
         "has_location": bool(location_data.get("location") or location_data["geo_evidence"]),
         "has_cta": bool(metadata.get("primary_cta")),
         "has_structured_data": bool(metadata.get("structured_data")),
+        "primary_identity_type": primary_identity_type,
+        "has_social_profile": bool(metadata.get("social_profile")),
     }
 
     return {
         **location_data,
         **language_data,
         "primary_cta": metadata.get("primary_cta") or ("contact_form" if metadata.get("form_detected") else "none"),
+        "primary_identity_type": primary_identity_type,
+        "primary_identity_url": primary_identity_url,
         "booking_url": metadata.get("booking_url"),
         "pricing_page_url": metadata.get("pricing_page_url"),
         "whatsapp_url": metadata.get("whatsapp_url"),
@@ -1359,6 +1423,8 @@ def evaluate_prospect_quality(
         "quality_status": quality_status,
         "quality_flags": quality_flags,
         "rejection_reason": rejection_reason,
+        "social_business_evidence_count": social_business_evidence_count,
+        "social_business_evidence": social_business_evidence,
         "discovery_confidence": discovery_metadata.get("discovery_confidence"),
         "discovery_evidence": discovery_metadata,
         "cta_evidence": metadata.get("cta_candidates", []),

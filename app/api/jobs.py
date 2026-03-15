@@ -5,6 +5,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -136,6 +137,22 @@ def _build_job_context(
         "target_accepted_results": filters_json.get("target_accepted_results"),
         "max_candidates_to_process": filters_json.get("max_candidates_to_process"),
     }
+
+
+def _apply_job_runtime_totals(
+    job: ScrapingJob,
+    *,
+    total_found: int,
+    total_processed: int,
+    total_saved: int,
+    total_failed: int,
+    total_skipped: int,
+) -> None:
+    job.total_found = total_found
+    job.total_processed = total_processed
+    job.total_saved = total_saved
+    job.total_failed = total_failed
+    job.total_skipped = total_skipped
 
 
 def _serialize_job_log(log: ScrapingLog) -> JobLogOut:
@@ -655,6 +672,9 @@ async def _discover_next_candidate_batch(
                         "title": entry.title,
                         "snippet": entry.snippet,
                         "business_likeness_score": entry.business_likeness_score,
+                        "website_result_score": entry.website_result_score,
+                        "social_profile_score": entry.social_profile_score,
+                        "result_kind": entry.result_kind,
                         "discovery_reasons": entry.discovery_reasons,
                         "seed_source_url": entry.seed_source_url,
                     }
@@ -713,6 +733,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                 for entry in candidate_queue
                 if not isinstance(entry, (SearchDiscoveryEntry, dict))
             )
+            total_found = len(candidate_queue)
+            total_processed = 0
+            total_saved = 0
+            total_failed = 0
+            total_skipped = 0
             accepted_results = 0
             stopped_reason: str | None = None
 
@@ -720,11 +745,14 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             job.started_at = _utcnow()
             job.finished_at = None
             job.error_message = None
-            job.total_found = len(candidate_queue)
-            job.total_processed = 0
-            job.total_saved = 0
-            job.total_failed = 0
-            job.total_skipped = 0
+            _apply_job_runtime_totals(
+                job,
+                total_found=total_found,
+                total_processed=total_processed,
+                total_saved=total_saved,
+                total_failed=total_failed,
+                total_skipped=total_skipped,
+            )
             ai_attempts = 0
             ai_successes = 0
             ai_fallbacks = 0
@@ -755,13 +783,13 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             await db.commit()
             batch_number = 0
 
-            while job.total_processed < max_candidates_to_process:
+            while total_processed < max_candidates_to_process:
                 if accepted_results >= target_accepted_results:
                     stopped_reason = "target_reached"
                     break
 
                 if not candidate_queue:
-                    remaining_budget = max_candidates_to_process - int(job.total_found or 0)
+                    remaining_budget = max_candidates_to_process - total_found
                     if remaining_budget <= 0 or next_discovery_batch_index >= len(query_batches):
                         break
 
@@ -807,10 +835,18 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         await db.commit()
                         break
 
-                    for index, entry in enumerate(new_entries, start=int(job.total_found or 0) + 1):
+                    for index, entry in enumerate(new_entries, start=total_found + 1):
                         entry.position = index
                     candidate_queue.extend(new_entries)
-                    job.total_found += len(new_entries)
+                    total_found += len(new_entries)
+                    _apply_job_runtime_totals(
+                        job,
+                        total_found=total_found,
+                        total_processed=total_processed,
+                        total_saved=total_saved,
+                        total_failed=total_failed,
+                        total_skipped=total_skipped,
+                    )
                     await _append_job_log(
                         db,
                         job_id,
@@ -820,7 +856,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         context_json={
                             "queries": used_queries,
                             "new_candidates": len(new_entries),
-                            "total_found": job.total_found,
+                            "total_found": total_found,
                             "accepted_results_so_far": accepted_results,
                         },
                     )
@@ -853,11 +889,14 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         discovery_entry = {
                             "url": entry.url,
                             "query": entry.query,
-                            "position": entry.position or (int(job.total_processed or 0) + 1),
+                            "position": entry.position or (total_processed + 1),
                             "title": entry.title,
                             "snippet": entry.snippet,
                             "discovery_confidence": entry.discovery_confidence,
                             "business_likeness_score": entry.business_likeness_score,
+                            "website_result_score": entry.website_result_score,
+                            "social_profile_score": entry.social_profile_score,
+                            "result_kind": entry.result_kind,
                             "discovery_reasons": entry.discovery_reasons,
                             "seed_source_url": entry.seed_source_url,
                             "seed_source_type": entry.seed_source_type,
@@ -867,9 +906,17 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     else:
                         discovery_entry = {"url": str(entry)}
 
-                    rank_position = int(discovery_entry.get("position") or (int(job.total_processed or 0) + 1))
+                    rank_position = int(discovery_entry.get("position") or (total_processed + 1))
                     url = str(discovery_entry.get("url"))
-                    job.total_processed += 1
+                    total_processed += 1
+                    _apply_job_runtime_totals(
+                        job,
+                        total_found=total_found,
+                        total_processed=total_processed,
+                        total_saved=total_saved,
+                        total_failed=total_failed,
+                        total_skipped=total_skipped,
+                    )
                     try:
                         prospect_dict = await scrape_single_prospect(
                             url,
@@ -877,7 +924,15 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         )
 
                         if not prospect_dict:
-                            job.total_skipped += 1
+                            total_skipped += 1
+                            _apply_job_runtime_totals(
+                                job,
+                                total_found=total_found,
+                                total_processed=total_processed,
+                                total_saved=total_saved,
+                                total_failed=total_failed,
+                                total_skipped=total_skipped,
+                            )
                             await _append_job_log(
                                 db,
                                 job_id,
@@ -977,9 +1032,17 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
 
                         saved_prospect = await save_scraped_prospect(db, prospect_dict, job_context)
                         if saved_prospect:
-                            job.total_saved += 1
+                            total_saved += 1
                             if prospect_dict.get("acceptance_decision") == "accepted_target":
                                 accepted_results += 1
+                            _apply_job_runtime_totals(
+                                job,
+                                total_found=total_found,
+                                total_processed=total_processed,
+                                total_saved=total_saved,
+                                total_failed=total_failed,
+                                total_skipped=total_skipped,
+                            )
                             await _append_job_log(
                                 db,
                                 job_id,
@@ -989,6 +1052,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 context_json={
                                     "url": url,
                                     "domain": saved_prospect.domain,
+                                    "canonical_identity": saved_prospect.canonical_identity,
                                     "rank_position": rank_position,
                                     "quality_status": prospect_dict.get("quality_status"),
                                     "acceptance_decision": prospect_dict.get("acceptance_decision"),
@@ -997,7 +1061,15 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 },
                             )
                         else:
-                            job.total_failed += 1
+                            total_failed += 1
+                            _apply_job_runtime_totals(
+                                job,
+                                total_found=total_found,
+                                total_processed=total_processed,
+                                total_saved=total_saved,
+                                total_failed=total_failed,
+                                total_skipped=total_skipped,
+                            )
                             await _append_job_log(
                                 db,
                                 job_id,
@@ -1019,14 +1091,27 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 context_json={
                                     "target_accepted_results": target_accepted_results,
                                     "accepted_results": accepted_results,
-                                    "processed_candidates": job.total_processed,
+                                    "processed_candidates": total_processed,
                                     "batch_number": batch_number,
                                 },
                             )
                             await db.commit()
                             break
                     except Exception as e:
-                        job.total_failed += 1
+                        await db.rollback()
+                        job = await db.get(ScrapingJob, job_id)
+                        if not job:
+                            raise
+                        total_failed += 1
+                        job.status = "running"
+                        _apply_job_runtime_totals(
+                            job,
+                            total_found=total_found,
+                            total_processed=total_processed,
+                            total_saved=total_saved,
+                            total_failed=total_failed,
+                            total_skipped=total_skipped,
+                        )
                         logger.error(f"Error procesando prospect {url}: {e}")
                         error_context = {
                             "url": url,
@@ -1046,6 +1131,8 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                             context_json=error_context,
                         )
                         await db.commit()
+                        if isinstance(e, SQLAlchemyError):
+                            raise
 
                     await asyncio.sleep(2)
 
@@ -1072,13 +1159,21 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                 stopped_reason = determine_capture_stop_reason(
                     accepted_count=accepted_results,
                     target_accepted_results=target_accepted_results,
-                    processed_count=job.total_processed,
+                    processed_count=total_processed,
                     candidate_cap=max_candidates_to_process,
-                    discovered_candidates=int(job.total_found or 0),
+                    discovered_candidates=total_found,
                 )
 
             job.status = "completed"
             job.finished_at = _utcnow()
+            _apply_job_runtime_totals(
+                job,
+                total_found=total_found,
+                total_processed=total_processed,
+                total_saved=total_saved,
+                total_failed=total_failed,
+                total_skipped=total_skipped,
+            )
             await _append_job_log(
                 db,
                 job_id,
@@ -1086,11 +1181,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                 "Job finalizado",
                 source_name="worker",
                 context_json={
-                    "total_found": job.total_found,
-                    "total_processed": job.total_processed,
-                    "total_saved": job.total_saved,
-                    "total_failed": job.total_failed,
-                    "total_skipped": job.total_skipped,
+                    "total_found": total_found,
+                    "total_processed": total_processed,
+                    "total_saved": total_saved,
+                    "total_failed": total_failed,
+                    "total_skipped": total_skipped,
                     "target_accepted_results": target_accepted_results,
                     "accepted_results": accepted_results,
                     "max_candidates_to_process": max_candidates_to_process,
@@ -1110,10 +1205,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             )
             await db.commit()
             
-            logger.info(f"Worker finalizado para Job {job_id} | Insertados: {job.total_saved}")
+            logger.info(f"Worker finalizado para Job {job_id} | Insertados: {total_saved}")
             
         except Exception as e:
-            logger.error(f"Falla total en Worker del Job {job_id}: {str(e)}")
+            logger.exception("Falla total en Worker del Job %s", job_id)
+            await db.rollback()
             job = await db.get(ScrapingJob, job_id)
             if job:
                 job.status = "failed"
@@ -1162,12 +1258,15 @@ async def create_scraping_job(
 
     discovery_query_batches = build_discovery_query_batches(
         search_query=payload.search_query,
+        user_profession=payload.user_profession,
+        user_technologies=payload.user_technologies,
         target_niche=payload.target_niche,
         target_location=payload.target_location,
         target_language=payload.target_language,
         user_service_offers=payload.user_service_offers,
         user_service_constraints=payload.user_service_constraints,
         user_target_offer_focus=payload.user_target_offer_focus,
+        target_budget_signals=payload.target_budget_signals,
         ai_dork_queries=ai_search_plan.get("optimal_dork_queries"),
         ai_negative_terms=ai_search_plan.get("dynamic_negative_terms"),
     )
@@ -1296,6 +1395,9 @@ async def create_scraping_job(
                     "title": entry.title,
                     "discovery_confidence": entry.discovery_confidence,
                     "business_likeness_score": entry.business_likeness_score,
+                    "website_result_score": entry.website_result_score,
+                    "social_profile_score": entry.social_profile_score,
+                    "result_kind": entry.result_kind,
                     "discovery_reasons": entry.discovery_reasons,
                     "seed_source_url": entry.seed_source_url,
                     "seed_source_type": entry.seed_source_type,
@@ -1462,6 +1564,9 @@ async def get_job_results(
             id=prospect.id,
             company_name=prospect.company_name,
             domain=prospect.domain,
+            canonical_identity=prospect.canonical_identity,
+            primary_identity_type=prospect.primary_identity_type,
+            primary_identity_url=prospect.primary_identity_url,
             website_url=prospect.website_url,
             source_url=job_prospect.source_url or prospect.source_url,
             source_type=normalize_source_type(job_prospect.source_type),
@@ -1479,7 +1584,9 @@ async def get_job_results(
             primary_contact_source=job_prospect.primary_contact_source or prospect.primary_contact_source,
             linkedin_url=prospect.linkedin_url,
             instagram_url=prospect.instagram_url,
+            tiktok_url=prospect.tiktok_url,
             facebook_url=prospect.facebook_url,
+            social_profiles=prospect.social_profiles,
             score=job_prospect.match_score if job_prospect.match_score is not None else prospect.score,
             confidence_level=job_prospect.confidence_level or prospect.confidence_level,
             entity_type_detected=job_prospect.entity_type_detected or prospect.entity_type_detected,

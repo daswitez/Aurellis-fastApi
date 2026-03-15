@@ -91,6 +91,77 @@ def _extract_keywords(value: str) -> list[str]:
     return unique_tokens
 
 
+def _contains_phrase(normalized_text: str, phrase: str) -> bool:
+    return _normalize_text(phrase).strip() in normalized_text
+
+
+def _build_content_profile(
+    text_content: str,
+    metadata: Dict[str, Any],
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    normalized_text = _normalize_text(
+        " ".join(
+            [
+                text_content,
+                metadata.get("title", ""),
+                metadata.get("description", ""),
+                ((metadata.get("social_profile") or {}).get("bio") or ""),
+            ]
+        )
+    )
+    offer_signals: list[str] = list((metadata.get("social_profile") or {}).get("offer_signals", []))
+    audience_signals: list[str] = list((metadata.get("social_profile") or {}).get("audience_signals", []))
+    platform_ctas: list[str] = list((metadata.get("social_profile") or {}).get("platform_ctas", []))
+    social_activity_signals: list[str] = list((metadata.get("social_profile") or {}).get("activity_signals", []))
+    content_themes: list[str] = []
+    budget_signal_matches: list[str] = []
+
+    theme_candidates = {
+        "video_content": ["reels", "shorts", "ugc", "video", "edicion", "edición"],
+        "personal_brand": ["marca personal", "coach", "founder", "creator", "creador"],
+        "ecommerce": ["ecommerce", "tienda online", "shop", "shopify"],
+        "agency_services": ["agencia", "estudio", "marketing", "servicios"],
+        "education_info": ["curso", "cursos", "mentoria", "mentoría", "infoproductos"],
+    }
+    for theme, keywords in theme_candidates.items():
+        if any(_contains_phrase(normalized_text, keyword) for keyword in keywords):
+            content_themes.append(theme)
+
+    if any(_contains_phrase(normalized_text, keyword) for keyword in ["servicios", "trabajemos", "book", "agenda", "contacto", "dm"]):
+        platform_ctas.append("commercial_cta_detected")
+    if any(_contains_phrase(normalized_text, keyword) for keyword in ["curso", "programa", "coaching", "agencia", "edicion", "marketing", "shop"]):
+        offer_signals.append("offer_detected")
+    if any(_contains_phrase(normalized_text, keyword) for keyword in ["clientes", "marcas", "negocios", "founders", "coaches"]):
+        audience_signals.append("buyer_audience_detected")
+    if (metadata.get("social_profile") or {}).get("external_links"):
+        platform_ctas.append("external_link_present")
+    if metadata.get("whatsapp_url"):
+        platform_ctas.append("whatsapp_cta_present")
+    if metadata.get("emails") or metadata.get("phones"):
+        platform_ctas.append("public_contact_present")
+
+    for signal in _normalize_context_list(context.get("target_budget_signals")):
+        if _contains_phrase(normalized_text, signal):
+            budget_signal_matches.append(signal)
+        elif "instagram" in signal and metadata.get("instagram_url"):
+            budget_signal_matches.append(signal)
+        elif "tiktok" in signal and metadata.get("tiktok_url"):
+            budget_signal_matches.append(signal)
+        elif "linktree" in signal and any("linktr.ee" in link for link in metadata.get("external_links", [])):
+            budget_signal_matches.append(signal)
+
+    return {
+        "content_themes": sorted(set(content_themes)),
+        "offer_signals": sorted(set(offer_signals)),
+        "audience_signals": sorted(set(audience_signals)),
+        "platform_ctas": sorted(set(platform_ctas)),
+        "external_links": list((metadata.get("social_profile") or {}).get("external_links", []))[:5],
+        "social_activity_signals": sorted(set(social_activity_signals)),
+        "budget_signal_matches": sorted(set(budget_signal_matches)),
+    }
+
+
 def detect_technologies(html_content: str) -> List[str]:
     """
     Busca firmas básicas en HTML para deducir herramientas comunes
@@ -168,7 +239,7 @@ def _component(normalized_score: float, evidence: list[str], details: Dict[str, 
     }
 
 
-def _score_contact_availability(metadata: Dict[str, Any]) -> Dict[str, Any]:
+def _score_contact_availability(metadata: Dict[str, Any], content_profile: Dict[str, Any]) -> Dict[str, Any]:
     points = 0
     evidence: list[str] = []
     email_count = len(metadata.get("emails", []))
@@ -189,6 +260,9 @@ def _score_contact_availability(metadata: Dict[str, Any]) -> Dict[str, Any]:
     if social_count:
         points += 1
         evidence.append("social_presence_visible")
+    if content_profile.get("platform_ctas"):
+        points += 2
+        evidence.append("social_cta_or_link_visible")
 
     return _component(
         points / 10,
@@ -199,6 +273,7 @@ def _score_contact_availability(metadata: Dict[str, Any]) -> Dict[str, Any]:
             "social_count": social_count,
             "form_detected": form_detected,
             "has_contact_page": has_contact_page,
+            "social_cta_count": len(content_profile.get("platform_ctas", [])),
         },
     )
 
@@ -208,6 +283,7 @@ def _score_commercial_intent(
     *,
     has_active_ads: bool,
     hiring_signals: bool,
+    content_profile: Dict[str, Any],
 ) -> Dict[str, Any]:
     points = 0
     evidence: list[str] = []
@@ -230,6 +306,12 @@ def _score_commercial_intent(
     if has_portfolio:
         points += 1
         evidence.append("portfolio_or_case_studies_visible")
+    if content_profile.get("offer_signals"):
+        points += 2
+        evidence.append("social_offer_signal_detected")
+    if content_profile.get("budget_signal_matches"):
+        points += 1
+        evidence.append("budget_signal_match_detected")
 
     return _component(
         points / 10,
@@ -240,6 +322,8 @@ def _score_commercial_intent(
             "has_pricing": has_pricing,
             "has_testimonials": has_testimonials,
             "has_portfolio": has_portfolio,
+            "offer_signal_count": len(content_profile.get("offer_signals", [])),
+            "budget_signal_match_count": len(content_profile.get("budget_signal_matches", [])),
         },
     )
 
@@ -248,6 +332,7 @@ def _score_digital_maturity(
     text_content: str,
     metadata: Dict[str, Any],
     inferred_tech_stack: list[str],
+    content_profile: Dict[str, Any],
 ) -> Dict[str, Any]:
     points = 0
     evidence: list[str] = []
@@ -288,6 +373,13 @@ def _score_digital_maturity(
     if any("about" in link.lower() or "nosotros" in link.lower() or "equipo" in link.lower() for link in internal_links):
         points += 1
         evidence.append("about_page_detected")
+    if metadata.get("primary_identity_type") == "social_profile":
+        if content_profile.get("social_activity_signals"):
+            points += 2
+            evidence.append("social_activity_detected")
+        if content_profile.get("external_links"):
+            points += 1
+            evidence.append("external_link_in_profile")
 
     return _component(
         points / 10,
@@ -299,11 +391,12 @@ def _score_digital_maturity(
             "tech_stack_count": len(inferred_tech_stack),
             "title_present": title_present,
             "description_present": description_present,
+            "social_activity_count": len(content_profile.get("social_activity_signals", [])),
         },
     )
 
 
-def _score_business_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
+def _score_business_identity(metadata: Dict[str, Any], content_profile: Dict[str, Any]) -> Dict[str, Any]:
     points = 0
     evidence: list[str] = []
     internal_links = metadata.get("internal_links", [])
@@ -359,6 +452,16 @@ def _score_business_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
     if structured_business_types:
         points += 2
         evidence.append("business_structured_data_visible")
+    if metadata.get("primary_identity_type") == "social_profile":
+        if (metadata.get("social_profile") or {}).get("handle"):
+            points += 2
+            evidence.append("social_profile_identity_visible")
+        if content_profile.get("offer_signals"):
+            points += 2
+            evidence.append("social_offer_identity_visible")
+        if content_profile.get("platform_ctas"):
+            points += 1
+            evidence.append("social_conversion_path_visible")
 
     return _component(
         points / 12,
@@ -373,6 +476,7 @@ def _score_business_identity(metadata: Dict[str, Any]) -> Dict[str, Any]:
             "has_contact_page": has_contact_page,
             "has_pricing_or_booking": has_pricing_or_booking,
             "structured_business_types": sorted(structured_business_types),
+            "primary_identity_type": metadata.get("primary_identity_type"),
         },
     )
 
@@ -383,6 +487,7 @@ def _score_context_fit(
     context: Dict[str, Any],
     *,
     inferred_niche: str | None,
+    content_profile: Dict[str, Any],
 ) -> Dict[str, Any]:
     points = 0
     evidence: list[str] = []
@@ -421,6 +526,12 @@ def _score_context_fit(
     if pain_points and any(_normalize_text(signal).strip() in searchable_text for signal in pain_points):
         points += 1
         evidence.append("pain_point_keyword_match")
+    if content_profile.get("offer_signals"):
+        points += 1
+        evidence.append("offer_signal_match")
+    if content_profile.get("budget_signal_matches"):
+        points += 1
+        evidence.append("budget_signal_match")
 
     return _component(
         points / 10,
@@ -432,6 +543,7 @@ def _score_context_fit(
             "detected_language": detected_language,
             "budget_signal_matches": "budget_signal_keyword_match" in evidence,
             "pain_point_matches": "pain_point_keyword_match" in evidence,
+            "content_profile_budget_matches": content_profile.get("budget_signal_matches", []),
         },
     )
 
@@ -541,6 +653,7 @@ def _build_observed_signals(
     metadata: Dict[str, Any],
     context: Dict[str, Any],
     inferred_tech_stack: list[str],
+    content_profile: Dict[str, Any],
 ) -> list[str]:
     observed_signals: list[str] = []
     normalized_text = _normalize_text(text_content)
@@ -559,6 +672,10 @@ def _build_observed_signals(
 
     if not metadata.get("social_links"):
         observed_signals.append("Sin redes sociales visibles")
+    if metadata.get("primary_identity_type") == "social_profile" and not content_profile.get("offer_signals"):
+        observed_signals.append("Perfil social sin oferta comercial clara")
+    if metadata.get("primary_identity_type") == "social_profile" and not content_profile.get("platform_ctas"):
+        observed_signals.append("Perfil social sin CTA comercial visible")
 
     pain_point_hints = _normalize_context_list(context.get("target_pain_points"))
     wants_booking = any(any(hint in pain_point for hint in PAIN_POINT_BOOKING_HINTS) for pain_point in pain_point_hints)
@@ -580,6 +697,8 @@ def _build_inferred_opportunities(observed_signals: list[str]) -> list[str]:
         "No se detecta pagina o formulario de contacto": "habilitar una ruta de contacto mas clara",
         "Meta description ausente": "mejorar metadata publica para captacion organica",
         "Sin redes sociales visibles": "reforzar presencia social visible",
+        "Perfil social sin oferta comercial clara": "aclarar oferta principal y servicios del perfil",
+        "Perfil social sin CTA comercial visible": "sumar CTA comercial y link de conversion visible",
         "No muestra reservas online visibles": "incorporar reservas online visibles",
         "No muestra prueba social visible": "destacar testimonios o casos de exito",
         "No se detectan herramientas visibles de analitica o marketing": "mejorar instrumentacion digital visible",
@@ -599,17 +718,25 @@ def build_heuristic_trace(
     has_active_ads = "Meta Pixel" in inferred_tech_stack
     hiring_signals = has_hiring_signals(clean_text, metadata)
     inferred_niche = _infer_niche(clean_text, metadata, context)
+    content_profile = _build_content_profile(clean_text, metadata, context)
 
     components = {
-        "business_identity": _score_business_identity(metadata),
-        "contact_availability": _score_contact_availability(metadata),
+        "business_identity": _score_business_identity(metadata, content_profile),
+        "contact_availability": _score_contact_availability(metadata, content_profile),
         "commercial_intent": _score_commercial_intent(
             normalized_text,
             has_active_ads=has_active_ads,
             hiring_signals=hiring_signals,
+            content_profile=content_profile,
         ),
-        "digital_maturity": _score_digital_maturity(clean_text, metadata, inferred_tech_stack),
-        "context_fit": _score_context_fit(clean_text, metadata, context, inferred_niche=inferred_niche),
+        "digital_maturity": _score_digital_maturity(clean_text, metadata, inferred_tech_stack, content_profile),
+        "context_fit": _score_context_fit(
+            clean_text,
+            metadata,
+            context,
+            inferred_niche=inferred_niche,
+            content_profile=content_profile,
+        ),
         "stack_fit": _score_stack_fit(context, inferred_tech_stack),
     }
     component_weights = {
@@ -640,7 +767,7 @@ def build_heuristic_trace(
     )
     inferred_niche = taxonomy_data["inferred_niche"]
     fit_summary = _build_fit_summary(heuristic_score, components)
-    observed_signals = _build_observed_signals(clean_text, metadata, context, inferred_tech_stack)
+    observed_signals = _build_observed_signals(clean_text, metadata, context, inferred_tech_stack, content_profile)
     inferred_opportunities = _build_inferred_opportunities(observed_signals)
     legacy_pain_points = build_legacy_pain_points(inferred_opportunities=inferred_opportunities)
 
@@ -677,6 +804,7 @@ def build_heuristic_trace(
             },
             "detected_language": _detect_language_hint(clean_text),
             "fit_summary": fit_summary,
+            "content_profile": content_profile,
         },
     }
 
@@ -696,7 +824,10 @@ async def extract_business_entity_heuristic(
     inferred_niche = heuristic_trace["inferred_niche"]
 
     return {
-        "company_name": metadata.get("title", "").split("|")[0].strip(),
+        "company_name": (
+            ((metadata.get("social_profile") or {}).get("display_name"))
+            or metadata.get("title", "").split("|")[0].strip()
+        ),
         "category": heuristic_trace.get("display_category") or inferred_niche or "Desconocido",
         "location": metadata.get("addresses", [None])[0] if metadata.get("addresses") else None,
         "description": metadata.get("description", "Sin descripcion META encontrada."),
@@ -718,6 +849,8 @@ async def extract_business_entity_heuristic(
             "observed_signals": heuristic_trace["observed_signals"],
             "inferred_opportunities": heuristic_trace["inferred_opportunities"],
             "pain_points_detected": heuristic_trace["pain_points_detected"],
+            "content_profile": heuristic_trace["heuristic_trace"].get("content_profile"),
+            "budget_signal_matches": heuristic_trace["heuristic_trace"].get("content_profile", {}).get("budget_signal_matches", []),
             "taxonomy_top_level": heuristic_trace.get("taxonomy_top_level"),
             "taxonomy_business_type": heuristic_trace.get("taxonomy_business_type"),
             "taxonomy_evidence": heuristic_trace.get("taxonomy_evidence", []),

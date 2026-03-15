@@ -341,9 +341,14 @@ Campos nuevos o relevantes que ahora conviene leer en cada resultado:
 | `acceptance_decision` | Decisión comercial final: `accepted_target`, `accepted_related`, `rejected_directory`, `rejected_media`, `rejected_article`, `rejected_low_confidence` |
 | `entity_type_detected` | Tipo de entidad detectado: `direct_business`, `directory`, `aggregator`, `marketplace`, `media`, `blog_post`, `association`, `agency`, `consultant`, `unknown` |
 | `is_target_entity` | Si el sitio representa una entidad objetivo real o solo contexto relacionado |
+| `canonical_identity` | Identidad canónica estable del prospecto. Puede ser dominio o `instagram:handle` / `tiktok:handle` |
+| `primary_identity_type` | Superficie principal del lead: `website` o `social_profile` |
+| `primary_identity_url` | URL principal del lead. Puede ser el sitio o el perfil social |
 | `contact_consistency_status` | Si el email principal parece consistente con el dominio del sitio |
 | `primary_email_confidence` | Confianza del email principal elegido |
 | `primary_phone_confidence` | Confianza del teléfono principal elegido |
+| `tiktok_url` | Perfil de TikTok detectado si existe |
+| `social_profiles` | Lista normalizada de perfiles sociales detectados con plataforma, handle y confianza |
 | `location` | Ubicación visible ya normalizada para consumo |
 | `raw_location_text` | Texto crudo de ubicación antes de normalización |
 | `parsed_location` | Ubicación parseada en piezas |
