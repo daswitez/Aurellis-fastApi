@@ -8,7 +8,7 @@ from app.services.business_taxonomy import resolve_business_taxonomy
 from app.services.discovery import build_discovery_metadata
 from app.services.entity_classifier import classify_entity_type
 from app.services.heuristic_extractor import extract_business_entity_heuristic
-from app.services.identity_resolution import extract_domain, resolve_identity_surfaces
+from app.services.identity_resolution import extract_domain, normalize_social_profile_url, resolve_identity_surfaces
 from app.services.prospect_quality import (
     build_ai_cache_signature,
     build_ai_evidence_pack,
@@ -202,6 +202,29 @@ def _pick_signal_list(*containers: Any, key: str) -> list[str]:
     return []
 
 
+def _mark_primary_social_profile(
+    social_profiles: list[dict[str, Any]] | None,
+    *,
+    primary_identity_type: str,
+    primary_identity_url: str | None,
+) -> list[dict[str, Any]]:
+    normalized_profiles: list[dict[str, Any]] = []
+    primary_url = normalize_social_profile_url(primary_identity_url) or str(primary_identity_url or "").strip()
+
+    for profile in social_profiles or []:
+        if not isinstance(profile, dict):
+            continue
+        normalized_profile = dict(profile)
+        normalized_profile_url = normalize_social_profile_url(normalized_profile.get("url")) or str(normalized_profile.get("url") or "").strip()
+        normalized_profile["url"] = normalized_profile_url
+        normalized_profile["is_primary"] = bool(
+            primary_identity_type == "social_profile" and primary_url and normalized_profile_url == primary_url
+        )
+        normalized_profiles.append(normalized_profile)
+
+    return normalized_profiles
+
+
 async def _crawl_key_pages(root_metadata: Dict[str, Any]) -> tuple[str, Dict[str, Any], list[dict[str, str]]]:
     selected_pages = _select_key_internal_links(root_metadata.get("internal_links", []))
     merged_text_parts: list[str] = []
@@ -283,6 +306,11 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     merged_metadata["contact_surface"] = surface_resolution.get("contact_surface")
     merged_metadata["offer_surface"] = surface_resolution.get("offer_surface")
     merged_metadata["identity_resolution_reason"] = surface_resolution.get("identity_resolution_reason")
+    merged_metadata["social_profiles"] = _mark_primary_social_profile(
+        merged_metadata.get("social_profiles"),
+        primary_identity_type=primary_identity_type,
+        primary_identity_url=primary_identity_url,
+    )
     identity_key = canonical_identity
     heuristic_baseline = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
 

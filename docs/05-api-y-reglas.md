@@ -353,7 +353,7 @@ Campos nuevos o relevantes que ahora conviene leer en cada resultado:
 | `primary_email_confidence` | Confianza del email principal elegido |
 | `primary_phone_confidence` | Confianza del teléfono principal elegido |
 | `tiktok_url` | Perfil de TikTok detectado si existe |
-| `social_profiles` | Lista normalizada de perfiles sociales detectados con plataforma, handle y confianza |
+| `social_profiles` | Lista normalizada de perfiles sociales accionables. Excluye `share`, `intent` y posts, y marca `is_primary` cuando el perfil es la mejor identidad social |
 | `location` | Ubicación visible ya normalizada para consumo |
 | `raw_location_text` | Texto crudo de ubicación antes de normalización |
 | `parsed_location` | Ubicación parseada en piezas |

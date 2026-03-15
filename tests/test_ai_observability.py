@@ -218,6 +218,94 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
             "website_home",
         )
 
+    async def test_scrape_marks_resolved_social_profile_as_primary(self) -> None:
+        metadata = {
+            "title": "EditorPro links",
+            "description": "Todos mis enlaces",
+            "emails": [],
+            "phones": [],
+            "social_links": ["https://www.instagram.com/editorpro/"],
+            "social_profiles": [
+                {
+                    "platform": "instagram",
+                    "url": "https://www.instagram.com/editorpro/",
+                    "handle": "editorpro",
+                    "is_primary": False,
+                    "profile_kind": "profile",
+                    "contact_signals": [],
+                    "activity_signals": [],
+                    "confidence": "high",
+                }
+            ],
+            "external_links": [],
+            "internal_links": [],
+            "form_detected": False,
+            "contact_channels": [],
+            "addresses": [],
+            "map_links": [],
+            "cta_candidates": [],
+            "structured_data_evidence": [],
+            "structured_data": [],
+        }
+        heuristic_result = {
+            "company_name": "EditorPro",
+            "category": "Creator",
+            "description": "Editor para coaches",
+            "inferred_tech_stack": [],
+            "inferred_niche": "Coaches",
+            "hiring_signals": False,
+            "estimated_revenue_signal": "low",
+            "has_active_ads": False,
+            "score": 0.58,
+            "confidence_level": "medium",
+            "fit_summary": "Perfil social util para prospeccion.",
+            "heuristic_trace": {"component_scores": {"business_identity": 0.7}, "signals": {}},
+            "generic_attributes": {
+                "evaluation_method": "Heuristic Code (No LLM)",
+                "observed_signals": [],
+                "inferred_opportunities": [],
+                "pain_points_detected": [],
+            },
+            "observed_signals": [],
+            "inferred_opportunities": [],
+        }
+
+        with patch("app.scraper.engine.fetch_html", new=AsyncMock(return_value="<html></html>")):
+            with patch("app.scraper.engine.parse_html_basic", return_value=("x" * 180, metadata)):
+                with patch(
+                    "app.scraper.engine._crawl_key_pages",
+                    new=AsyncMock(return_value=("", metadata, [])),
+                ):
+                    with patch(
+                        "app.scraper.engine.extract_business_entity_heuristic",
+                        new=AsyncMock(return_value=heuristic_result),
+                    ):
+                        with patch("app.scraper.engine.should_call_ai", return_value=(False, "unit_test")):
+                            result = await scrape_single_prospect(
+                                "https://linktr.ee/editorpro",
+                                {"job_id": 9, "target_language": "es"},
+                            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["canonical_identity"], "instagram:editorpro")
+        self.assertEqual(result["primary_identity_type"], "social_profile")
+        self.assertEqual(
+            result["social_profiles"],
+            [
+                {
+                    "platform": "instagram",
+                    "url": "https://www.instagram.com/editorpro/",
+                    "handle": "editorpro",
+                    "is_primary": True,
+                    "profile_kind": "profile",
+                    "contact_signals": [],
+                    "activity_signals": [],
+                    "confidence": "high",
+                }
+            ],
+        )
+
     async def test_blends_ai_score_with_heuristic_baseline_on_success(self) -> None:
         metadata = {
             "title": "Dental Home",

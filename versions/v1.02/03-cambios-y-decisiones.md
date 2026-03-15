@@ -218,6 +218,8 @@ Implicacion:
 - `canonical_identity` deja de depender ciegamente de la URL de entrada.
 - Se normaliza entrada web interna hacia `website_home` cuando corresponde.
 - Se resuelven hubs como `Linktree` hacia una web propia o perfil social canonico cuando hay evidencia suficiente.
+- Se implementa `P0.2` para normalizar `social_profiles` y excluir links de `share`, `intent` y posts del output accionable.
+- Los perfiles sociales resueltos como identidad principal ahora quedan marcados con `is_primary`.
 - Se agrega trazabilidad operativa en resultados con:
   - `entry_surface`
   - `identity_surface`

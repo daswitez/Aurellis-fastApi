@@ -5,6 +5,13 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
+from app.services.identity_resolution import (
+    classify_surface as classify_identity_surface,
+    detect_platform as detect_social_platform,
+    extract_social_handle as extract_canonical_social_handle,
+    normalize_social_profile_url,
+)
+
 
 INTERNAL_LINK_KEYWORDS = [
     "contact",
@@ -180,44 +187,32 @@ def _looks_like_metric_noise(candidate: str, digits_only: str) -> bool:
 
 
 def _detect_platform(url: str) -> str | None:
-    lowered = url.lower()
-    for platform, tokens in SOCIAL_PLATFORMS.items():
-        if any(token in lowered for token in tokens):
-            return platform
-    return None
+    return detect_social_platform(url)
 
 
 def _extract_social_handle(url: str) -> tuple[str | None, str | None]:
-    parsed = urlparse(url)
-    platform = _detect_platform(url)
-    segments = [segment for segment in parsed.path.strip("/").split("/") if segment]
-    if not platform or not segments:
+    platform, handle = extract_canonical_social_handle(url)
+    if handle and not SOCIAL_HANDLE_REGEX.match(handle):
         return platform, None
-    candidate = segments[0]
-    if platform == "tiktok":
-        if not candidate.startswith("@"):
-            return platform, None
-        candidate = candidate[1:]
-    if platform == "instagram" and candidate in {"p", "reel", "reels", "explore"}:
-        return platform, None
-    if not SOCIAL_HANDLE_REGEX.match(candidate):
-        return platform, None
-    return platform, candidate.lstrip("@")
+    return platform, handle
 
 
 def _build_social_profile_record(url: str, *, is_primary: bool = False) -> dict[str, Any] | None:
-    platform, handle = _extract_social_handle(url)
-    if not platform:
+    surface = classify_identity_surface(url)
+    if not surface or surface.get("surface_type") != "social_profile":
         return None
+    platform = str(surface.get("platform") or "").strip().lower()
+    handle = str(surface.get("handle") or "").strip()
+    canonical_url = normalize_social_profile_url(url) or str(surface.get("url") or url)
     return {
         "platform": platform,
-        "url": url,
+        "url": canonical_url,
         "handle": handle,
         "is_primary": is_primary,
-        "profile_kind": "profile" if handle else "other",
+        "profile_kind": "profile",
         "contact_signals": [],
         "activity_signals": [],
-        "confidence": "high" if handle else "low",
+        "confidence": "high",
     }
 
 
@@ -233,7 +228,7 @@ def _extract_social_profile_metadata(
     metadata: Dict[str, Any],
 ) -> dict[str, Any] | None:
     platform, handle = _extract_social_handle(base_url)
-    if platform not in {"instagram", "tiktok"}:
+    if platform not in {"instagram", "tiktok"} or not handle:
         return None
 
     title = metadata.get("title") or ""
@@ -578,9 +573,9 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
 
         if any(social in lowered_href for social in ["linkedin.com", "instagram.com", "facebook.com", "twitter.com", "x.com", "tiktok.com"]):
             if normalized_href:
-                metadata["social_links"].add(normalized_href)
                 social_profile = _build_social_profile_record(normalized_href, is_primary=False)
                 if social_profile:
+                    metadata["social_links"].add(social_profile["url"])
                     metadata["social_profiles"].append(social_profile)
             continue
 

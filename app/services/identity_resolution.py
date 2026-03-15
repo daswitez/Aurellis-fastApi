@@ -31,10 +31,10 @@ SOCIAL_PLATFORM_PRIORITY = {
     "facebook": 3,
     "twitter": 4,
 }
-SOCIAL_NOISE_HANDLES = {"company", "in", "intent", "share", "sharer"}
+SOCIAL_NOISE_HANDLES = {"intent", "share", "sharer", "sharearticle"}
 SOCIAL_POST_SEGMENTS = {
     "instagram": {"explore", "p", "reel", "reels", "stories", "tv"},
-    "linkedin": {"feed", "posts", "pulse", "sharearticle"},
+    "linkedin": {"feed", "posts", "pulse"},
     "facebook": {"permalink.php", "posts", "reel", "reels", "share.php", "sharer.php", "watch"},
     "twitter": {"intent", "status"},
     "tiktok": {"video"},
@@ -87,7 +87,11 @@ def extract_social_handle(url: str | None) -> tuple[str | None, str | None]:
         return platform, None
 
     candidate = segments[0]
-    if platform == "tiktok":
+    if platform == "linkedin":
+        if len(segments) < 2 or segments[0].lower() not in {"company", "in"}:
+            return platform, None
+        candidate = segments[1]
+    elif platform == "tiktok":
         if not candidate.startswith("@"):
             return platform, None
         candidate = candidate[1:]
@@ -104,6 +108,74 @@ def extract_social_handle(url: str | None) -> tuple[str | None, str | None]:
     if not candidate or any(char.lower() not in allowed_chars for char in candidate):
         return platform, None
     return platform, candidate
+
+
+def normalize_social_profile_url(url: str | None) -> str | None:
+    if not url:
+        return None
+
+    parsed = urlparse(url)
+    platform = detect_platform(url)
+    if not platform:
+        return None
+    surface_type, handle, profile_root = _classify_social_surface(parsed, platform)
+    if surface_type != "social_profile" or not handle:
+        return None
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc
+    if not netloc:
+        return None
+
+    if platform == "instagram":
+        return f"{scheme}://{netloc}/{handle}/"
+    if platform == "tiktok":
+        return f"{scheme}://{netloc}/@{handle}"
+    if platform == "linkedin":
+        profile_root = str(profile_root or "in").strip("/")
+        return f"{scheme}://{netloc}/{profile_root}/{handle}/"
+    if platform in {"facebook", "twitter"}:
+        return f"{scheme}://{netloc}/{handle}/"
+    return str(url)
+
+
+def _classify_social_surface(parsed_url, platform: str) -> tuple[str, str | None, str | None]:
+    segments = [segment for segment in parsed_url.path.strip("/").split("/") if segment]
+    lowered_segments = [segment.lower() for segment in segments]
+    query = parsed_url.query.lower()
+
+    if platform == "linkedin":
+        if "sharearticle" in parsed_url.path.lower():
+            return "social_share", None, None
+        if lowered_segments[:1] == ["feed"] or "posts" in lowered_segments or "pulse" in lowered_segments:
+            return "social_post", None, None
+        if len(segments) >= 2 and lowered_segments[0] in {"company", "in"}:
+            _, handle = extract_social_handle(parsed_url.geturl())
+            if handle:
+                return "social_profile", handle, lowered_segments[0]
+        return "social_surface", None, None
+
+    if platform == "facebook":
+        if any(token in parsed_url.path.lower() for token in ["share.php", "sharer.php"]):
+            return "social_share", None, None
+        if any(token in lowered_segments for token in {"posts", "reel", "reels", "watch"}):
+            return "social_post", None, None
+    elif platform == "twitter":
+        if "intent" in parsed_url.path.lower() or "intent=" in query:
+            return "social_intent", None, None
+        if len(segments) >= 2 and lowered_segments[1] == "status":
+            return "social_post", None, None
+    elif platform == "instagram":
+        if lowered_segments[:1] and lowered_segments[0] in SOCIAL_POST_SEGMENTS["instagram"]:
+            return "social_post", None, None
+    elif platform == "tiktok":
+        if len(segments) >= 2 and lowered_segments[1] == "video":
+            return "social_post", None, None
+
+    _, handle = extract_social_handle(parsed_url.geturl())
+    if handle:
+        profile_root = lowered_segments[0] if platform == "linkedin" and lowered_segments else None
+        return "social_profile", handle, profile_root
+    return "social_surface", None, None
 
 
 def classify_surface(url: str | None) -> dict[str, Any] | None:
@@ -125,15 +197,16 @@ def classify_surface(url: str | None) -> dict[str, Any] | None:
         }
 
     if platform:
-        _, handle = extract_social_handle(url)
-        surface_type = "social_profile" if handle else "social_post"
+        surface_type, handle, profile_root = _classify_social_surface(parsed, platform)
+        canonical_url = normalize_social_profile_url(url) if surface_type == "social_profile" else None
         return {
-            "url": url,
+            "url": canonical_url or url,
             "surface_type": surface_type,
-            "identity_type": "social_profile" if handle else "social_surface",
+            "identity_type": "social_profile" if surface_type == "social_profile" else "social_surface",
             "domain": domain,
             "platform": platform,
             "handle": handle,
+            "profile_root": profile_root,
             "path_segments": segments[:3],
         }
 

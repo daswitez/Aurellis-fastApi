@@ -141,6 +141,73 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertIn("hola@clinicamadrid.es", metadata["emails"])
         self.assertTrue(any("Madrid" in address for address in metadata["addresses"]))
 
+    def test_parser_keeps_only_actionable_social_profiles(self) -> None:
+        html = """
+        <html>
+          <body>
+            <a href="https://www.instagram.com/editorpro/">Instagram oficial</a>
+            <a href="https://www.linkedin.com/company/editorpro/">LinkedIn company</a>
+            <a href="https://www.linkedin.com/shareArticle?mini=true&url=https://example.com">Compartir</a>
+            <a href="https://twitter.com/intent/tweet?text=hola">Tweet intent</a>
+            <a href="https://www.facebook.com/sharer.php?u=https://example.com">Facebook share</a>
+            <a href="https://www.instagram.com/p/ABC123/">Instagram post</a>
+          </body>
+        </html>
+        """
+
+        _, metadata = parse_html_basic(html, "https://brandstudio.com")
+
+        self.assertEqual(
+            metadata["social_links"],
+            [
+                "https://www.instagram.com/editorpro/",
+                "https://www.linkedin.com/company/editorpro/",
+            ],
+        )
+        self.assertEqual(
+            metadata["social_profiles"],
+            [
+                {
+                    "platform": "instagram",
+                    "url": "https://www.instagram.com/editorpro/",
+                    "handle": "editorpro",
+                    "is_primary": False,
+                    "profile_kind": "profile",
+                    "contact_signals": [],
+                    "activity_signals": [],
+                    "confidence": "high",
+                },
+                {
+                    "platform": "linkedin",
+                    "url": "https://www.linkedin.com/company/editorpro/",
+                    "handle": "editorpro",
+                    "is_primary": False,
+                    "profile_kind": "profile",
+                    "contact_signals": [],
+                    "activity_signals": [],
+                    "confidence": "high",
+                },
+            ],
+        )
+
+    def test_parser_does_not_treat_social_post_as_primary_profile(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>Instagram post</title>
+          </head>
+          <body>
+            <p>Reel con highlights del trabajo.</p>
+          </body>
+        </html>
+        """
+
+        _, metadata = parse_html_basic(html, "https://www.instagram.com/reel/ABC123/")
+
+        self.assertEqual(metadata["primary_identity_type"], "website")
+        self.assertEqual(metadata["social_profiles"], [])
+        self.assertIsNone(metadata["social_profile"])
+
     def test_quality_marks_geo_match_and_builds_compact_pack(self) -> None:
         clean_text = (
             "Clinica dental en Madrid con servicios de implantes, ortodoncia y reservas online. "
