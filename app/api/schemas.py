@@ -237,6 +237,11 @@ class ProspectOut(BaseModel):
     tiktok_url: Optional[str]
     facebook_url: Optional[str]
     social_profiles: Optional[List[SocialProfileOut]]
+    entry_surface: Optional[Dict[str, Any]]
+    identity_surface: Optional[Dict[str, Any]]
+    contact_surface: Optional[Dict[str, Any]]
+    offer_surface: Optional[Dict[str, Any]]
+    identity_resolution_reason: Optional[str]
 
     # Análisis IA (DeepSeek)
     score: Optional[float]  # Match score 0.0-1.0 con el perfil del vendedor

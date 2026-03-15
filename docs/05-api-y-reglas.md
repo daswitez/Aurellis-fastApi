@@ -344,6 +344,11 @@ Campos nuevos o relevantes que ahora conviene leer en cada resultado:
 | `canonical_identity` | Identidad canónica estable del prospecto. Puede ser dominio o `instagram:handle` / `tiktok:handle` |
 | `primary_identity_type` | Superficie principal del lead: `website` o `social_profile` |
 | `primary_identity_url` | URL principal del lead. Puede ser el sitio o el perfil social |
+| `entry_surface` | Superficie exacta por la que entró el lead: artículo, home, perfil social o hub |
+| `identity_surface` | Superficie que el sistema toma como identidad comercial real |
+| `contact_surface` | Mejor superficie visible para iniciar contacto |
+| `offer_surface` | Superficie donde la oferta se entiende mejor |
+| `identity_resolution_reason` | Razón compacta de cómo se resolvió la identidad |
 | `contact_consistency_status` | Si el email principal parece consistente con el dominio del sitio |
 | `primary_email_confidence` | Confianza del email principal elegido |
 | `primary_phone_confidence` | Confianza del teléfono principal elegido |
@@ -372,6 +377,7 @@ Qué mirar en la respuesta:
 - `rejected_directory`, `rejected_media`, `rejected_article` = ruido comercial no objetivo.
 - `location` = valor limpio para UI.
 - `validated_location` = evidencia técnica de matching geográfico.
+- `entry_surface` vs `identity_surface` = diferencia entre dónde apareció el lead y quién es realmente.
 
 ---
 

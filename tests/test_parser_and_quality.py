@@ -2,10 +2,99 @@ import unittest
 
 from app.scraper.parser import parse_html_basic
 from app.services.entity_classifier import classify_entity_type
+from app.services.identity_resolution import resolve_identity_surfaces
 from app.services.prospect_quality import build_ai_evidence_pack, evaluate_prospect_quality
 
 
 class ParserAndQualityTestCase(unittest.TestCase):
+    def test_identity_resolution_normalizes_website_entry_to_home(self) -> None:
+        metadata = {
+            "primary_identity_type": "website",
+            "primary_identity_url": "https://brandstudio.com/blog/caso-de-exito",
+            "website_url": "https://brandstudio.com/blog/caso-de-exito",
+            "contact_page_url": "https://brandstudio.com/contacto",
+            "pricing_page_url": "https://brandstudio.com/precios",
+            "service_page_url": "https://brandstudio.com/servicios",
+            "external_links": [],
+            "social_profiles": [],
+        }
+
+        resolved = resolve_identity_surfaces(
+            "https://brandstudio.com/blog/caso-de-exito",
+            metadata,
+        )
+
+        self.assertEqual(resolved["canonical_identity"], "brandstudio.com")
+        self.assertEqual(resolved["primary_identity_type"], "website")
+        self.assertEqual(resolved["primary_identity_url"], "https://brandstudio.com/")
+        self.assertEqual(resolved["entry_surface"]["surface_type"], "website_page")
+        self.assertEqual(resolved["identity_surface"]["surface_type"], "website_home")
+        self.assertEqual(resolved["contact_surface"]["url"], "https://brandstudio.com/contacto")
+        self.assertEqual(resolved["offer_surface"]["url"], "https://brandstudio.com/precios")
+
+    def test_identity_resolution_uses_owned_website_instead_of_linktree(self) -> None:
+        metadata = {
+            "primary_identity_type": "website",
+            "primary_identity_url": "https://linktr.ee/editorpro",
+            "website_url": "https://linktr.ee/editorpro",
+            "external_links": ["https://editorprostudio.com", "https://calendly.com/editorpro/call"],
+            "social_profiles": [
+                {
+                    "platform": "instagram",
+                    "url": "https://www.instagram.com/editorpro/",
+                    "handle": "editorpro",
+                    "profile_kind": "profile",
+                    "is_primary": False,
+                }
+            ],
+        }
+
+        resolved = resolve_identity_surfaces(
+            "https://linktr.ee/editorpro",
+            metadata,
+        )
+
+        self.assertEqual(resolved["canonical_identity"], "editorprostudio.com")
+        self.assertEqual(resolved["primary_identity_url"], "https://editorprostudio.com/")
+        self.assertEqual(resolved["website_url"], "https://editorprostudio.com/")
+        self.assertEqual(resolved["entry_surface"]["surface_type"], "identity_hub")
+        self.assertEqual(resolved["identity_surface"]["surface_type"], "website_home")
+        self.assertEqual(resolved["identity_resolution_reason"], "identity_hub_resolved_to_website")
+
+    def test_identity_resolution_keeps_social_first_identity_and_ignores_link_hub_as_website(self) -> None:
+        metadata = {
+            "primary_identity_type": "social_profile",
+            "primary_identity_url": "https://www.instagram.com/editorpro/",
+            "social_profile": {
+                "platform": "instagram",
+                "handle": "editorpro",
+                "external_links": ["https://linktr.ee/editorpro"],
+            },
+            "social_profiles": [
+                {
+                    "platform": "instagram",
+                    "url": "https://www.instagram.com/editorpro/",
+                    "handle": "editorpro",
+                    "profile_kind": "profile",
+                    "is_primary": True,
+                }
+            ],
+            "external_links": [],
+            "whatsapp_url": "https://wa.me/34600111222",
+        }
+
+        resolved = resolve_identity_surfaces(
+            "https://www.instagram.com/editorpro/",
+            metadata,
+        )
+
+        self.assertEqual(resolved["canonical_identity"], "instagram:editorpro")
+        self.assertEqual(resolved["primary_identity_type"], "social_profile")
+        self.assertIsNone(resolved["website_url"])
+        self.assertEqual(resolved["identity_surface"]["surface_type"], "social_profile")
+        self.assertEqual(resolved["contact_surface"]["surface_type"], "direct_channel")
+        self.assertEqual(resolved["contact_surface"]["channel"], "whatsapp")
+
     def test_parser_extracts_structured_fields_and_ctas(self) -> None:
         html = """
         <html lang="es">

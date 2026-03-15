@@ -1,6 +1,5 @@
 import logging
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
 
 from app.scraper.http_client import FetchHtmlError, fetch_html
 from app.scraper.parser import parse_html_basic
@@ -9,6 +8,7 @@ from app.services.business_taxonomy import resolve_business_taxonomy
 from app.services.discovery import build_discovery_metadata
 from app.services.entity_classifier import classify_entity_type
 from app.services.heuristic_extractor import extract_business_entity_heuristic
+from app.services.identity_resolution import extract_domain, resolve_identity_surfaces
 from app.services.prospect_quality import (
     build_ai_cache_signature,
     build_ai_evidence_pack,
@@ -255,42 +255,6 @@ async def _crawl_key_pages(root_metadata: Dict[str, Any]) -> tuple[str, Dict[str
     return "\n\n".join(merged_text_parts), merged_metadata, crawled_pages
 
 
-def extract_domain(url: str) -> str:
-    try:
-        parsed = urlparse(url)
-        domain = parsed.netloc or parsed.path
-        if domain.startswith("www."):
-            domain = domain[4:]
-        return domain.lower()
-    except Exception:
-        return url
-
-
-def _extract_primary_identity(target_url: str, metadata: Dict[str, Any]) -> tuple[str, str, str | None]:
-    primary_identity_type = str(metadata.get("primary_identity_type") or "website")
-    primary_identity_url = str(metadata.get("primary_identity_url") or target_url)
-    social_profile = metadata.get("social_profile") or {}
-    if primary_identity_type == "social_profile":
-        platform = str(social_profile.get("platform") or "").strip().lower()
-        handle = str(social_profile.get("handle") or "").strip().lower()
-        if platform and handle:
-            return f"{platform}:{handle}", primary_identity_type, primary_identity_url
-        return primary_identity_url.lower(), primary_identity_type, primary_identity_url
-
-    domain = extract_domain(primary_identity_url)
-    return domain, "website", primary_identity_url
-
-
-def _resolve_primary_website_url(target_url: str, metadata: Dict[str, Any]) -> str | None:
-    if str(metadata.get("primary_identity_type") or "") == "social_profile":
-        social_profile = metadata.get("social_profile") or {}
-        for link in social_profile.get("external_links", []):
-            if link.startswith("http"):
-                return link
-        return None
-    return target_url
-
-
 async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     domain = extract_domain(target_url)
     logger.info("==> Iniciando scraping de dominio: %s <==", domain)
@@ -307,10 +271,18 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         key_pages_text, key_pages_metadata, crawled_pages = await _crawl_key_pages(html_metadata)
     combined_text = clean_text if not key_pages_text else f"{clean_text}\n\n{key_pages_text}"
     merged_metadata = _merge_html_metadata(html_metadata, key_pages_metadata)
-    merged_metadata["website_url"] = _resolve_primary_website_url(target_url, merged_metadata)
-    canonical_identity, primary_identity_type, primary_identity_url = _extract_primary_identity(target_url, merged_metadata)
+    surface_resolution = resolve_identity_surfaces(target_url, merged_metadata)
+    canonical_identity = surface_resolution["canonical_identity"]
+    primary_identity_type = surface_resolution["primary_identity_type"]
+    primary_identity_url = surface_resolution["primary_identity_url"]
+    merged_metadata["website_url"] = surface_resolution.get("website_url")
     merged_metadata["primary_identity_type"] = primary_identity_type
     merged_metadata["primary_identity_url"] = primary_identity_url
+    merged_metadata["entry_surface"] = surface_resolution.get("entry_surface")
+    merged_metadata["identity_surface"] = surface_resolution.get("identity_surface")
+    merged_metadata["contact_surface"] = surface_resolution.get("contact_surface")
+    merged_metadata["offer_surface"] = surface_resolution.get("offer_surface")
+    merged_metadata["identity_resolution_reason"] = surface_resolution.get("identity_resolution_reason")
     identity_key = canonical_identity
     heuristic_baseline = await extract_business_entity_heuristic(combined_text, html_raw, merged_metadata, job_context)
 
@@ -437,6 +409,17 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
     contact_page_url = _select_contact_page_url(internal_links)
     generic_attributes = _pick_first_defined(extracted_data.get("generic_attributes"), heuristic_baseline.get("generic_attributes"), {})
     if isinstance(generic_attributes, dict):
+        generic_attributes.setdefault(
+            "surface_resolution",
+            {
+                "entry_surface": merged_metadata.get("entry_surface"),
+                "identity_surface": merged_metadata.get("identity_surface"),
+                "contact_surface": merged_metadata.get("contact_surface"),
+                "offer_surface": merged_metadata.get("offer_surface"),
+                "identity_resolution_reason": merged_metadata.get("identity_resolution_reason"),
+                "owned_website_candidates": surface_resolution.get("owned_website_candidates", []),
+            },
+        )
         generic_attributes.setdefault("service_keywords", quality_data.get("service_keywords"))
         generic_attributes.setdefault("company_size_signal", quality_data.get("company_size_signal"))
         heuristic_generic_attributes = heuristic_baseline.get("generic_attributes") if isinstance(heuristic_baseline, dict) else {}
@@ -558,6 +541,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "discovery_confidence": quality_data.get("discovery_confidence"),
         "source": "HTTPX_Scraper",
         "source_url": target_url,
+        "surface_resolution": generic_attributes.get("surface_resolution") if isinstance(generic_attributes, dict) else None,
         "job_id": job_context.get("job_id"),
         "internal_links": internal_links,
         "crawled_pages": crawled_pages,

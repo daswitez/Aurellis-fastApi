@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import List
+from typing import Any, List
 
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query
 from sqlalchemy import desc, func, select
@@ -94,6 +94,13 @@ def _job_summary_message(job: ScrapingJob) -> str:
             f"omitidas: {job.total_skipped}, fallidas: {job.total_failed}"
         )
     return "Pendiente"
+
+
+def _extract_surface_resolution(generic_attributes: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(generic_attributes, dict):
+        return {}
+    surface_resolution = generic_attributes.get("surface_resolution")
+    return surface_resolution if isinstance(surface_resolution, dict) else {}
 
 
 def _build_job_context(
@@ -1559,8 +1566,11 @@ async def get_job_results(
     result = await db.execute(query)
     rows = result.all()
 
-    return [
-        ProspectOut(
+    serialized_rows: list[ProspectOut] = []
+    for job_prospect, prospect in rows:
+        surface_resolution = _extract_surface_resolution(prospect.generic_attributes)
+        serialized_rows.append(
+            ProspectOut(
             id=prospect.id,
             company_name=prospect.company_name,
             domain=prospect.domain,
@@ -1587,6 +1597,11 @@ async def get_job_results(
             tiktok_url=prospect.tiktok_url,
             facebook_url=prospect.facebook_url,
             social_profiles=prospect.social_profiles,
+            entry_surface=surface_resolution.get("entry_surface"),
+            identity_surface=surface_resolution.get("identity_surface"),
+            contact_surface=surface_resolution.get("contact_surface"),
+            offer_surface=surface_resolution.get("offer_surface"),
+            identity_resolution_reason=surface_resolution.get("identity_resolution_reason"),
             score=job_prospect.match_score if job_prospect.match_score is not None else prospect.score,
             confidence_level=job_prospect.confidence_level or prospect.confidence_level,
             entity_type_detected=job_prospect.entity_type_detected or prospect.entity_type_detected,
@@ -1625,8 +1640,8 @@ async def get_job_results(
             pricing_page_url=prospect.pricing_page_url,
             category=prospect.category,
         )
-        for job_prospect, prospect in rows
-    ]
+        )
+    return serialized_rows
 
 
 @router.get("/{job_id}/logs", response_model=JobLogsResponse, response_model_exclude_none=True)

@@ -125,6 +125,25 @@ Razon:
 
 - la base debe ayudar a vender mejor, no solo a encontrar coincidencias semanticas
 
+### D-007 La salida operativa en `.xls` debe vivir en un endpoint aparte
+
+Decision:
+
+- la version debe incluir un endpoint nuevo y separado para exportacion `.xls`.
+- el `GET` actual de aceptados y `needs_review` no debe cambiar para devolver Excel.
+
+Razon:
+
+- mezclar JSON operativo y export binario en el endpoint actual complica consumo, mantenimiento y compatibilidad
+- el equipo necesita exportacion comercial, pero sin romper los consumidores actuales del API
+
+Implicacion:
+
+- la exportacion debe nacer del resultado enriquecido final
+- debe incluir identidad, oferta, mejor canal, readiness, why-now, pain hypotheses y resumen de decision
+- el formato debe ser claro, con buen orden visual y campos utiles para ventas
+- el endpoint nuevo puede compartir filtros o criterio de seleccion, pero no reemplaza el `GET` actual
+
 ## Riesgos conocidos
 
 - Sobre-filtrar y perder prospectos validos que viven en hubs o superficies mixtas.
@@ -154,6 +173,11 @@ Razon:
   - oferta detectada
   - hipotesis de dolor
   - razon de contacto
+- endpoint nuevo de export `.xls` util para ventas:
+  - separado del `GET` actual
+  - con filtros y lectura clara
+  - con detalles importantes ya cargados
+  - con contexto suficiente para decidir accion
 
 ## Cambios planificados por bloque
 
@@ -179,13 +203,27 @@ Razon:
 - recalibrar `accepted_target`
 - definir politica de fit
 
-### Bloque 4. Trazabilidad
+### Bloque 4. Trazabilidad y salida operativa
 
 - prospect brief
 - decision trace
+- endpoint nuevo de export `.xls`
 - dataset de regresion
 
 ## Registro de cambios
+
+### 2026-03-15
+
+- Se implementa la primera capa de `P0.1` para resolver identidad comercial real.
+- `canonical_identity` deja de depender ciegamente de la URL de entrada.
+- Se normaliza entrada web interna hacia `website_home` cuando corresponde.
+- Se resuelven hubs como `Linktree` hacia una web propia o perfil social canonico cuando hay evidencia suficiente.
+- Se agrega trazabilidad operativa en resultados con:
+  - `entry_surface`
+  - `identity_surface`
+  - `contact_surface`
+  - `offer_surface`
+  - `identity_resolution_reason`
 
 ### 2026-03-14
 
@@ -199,4 +237,5 @@ Razon:
 - Esta version debe implementarse por capas, no en un solo salto.
 - Primero se limpia identidad y datos.
 - Luego se enriquece para outreach.
-- Al final se recalibra scoring y salida.
+- Despues se recalibra scoring y buckets finales.
+- El cierre operativo de la version incluye brief, trazabilidad y endpoint nuevo de export `.xls`.

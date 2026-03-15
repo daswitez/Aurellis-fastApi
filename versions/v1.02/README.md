@@ -7,6 +7,7 @@ Objetivo de la version:
 - Consolidar lo que ya funciona en precision y social-first.
 - Corregir problemas de identidad, limpieza y calidad de datos.
 - Convertir los resultados en insumos realmente utiles para primer contacto comercial.
+- Agregar un endpoint nuevo de export `.xls` sin cambiar el `GET` actual de aceptados o `needs_review`.
 - Mantener la filosofia actual: `DDG + precision > volumen + foco en prospectos comprables`.
 
 Documentos:

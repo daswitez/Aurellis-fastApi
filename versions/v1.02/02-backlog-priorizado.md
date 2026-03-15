@@ -5,7 +5,7 @@
 - `P0`: bloquea calidad base o produce leads enganiosos.
 - `P1`: mejora directamente el valor del primer contacto.
 - `P2`: mejora scoring, precision fina y politicas comerciales.
-- `P3`: mejora trazabilidad, QA y salida para consumo.
+- `P3`: mejora trazabilidad, QA y salida para consumo humano y comercial.
 
 ## P0 - Higiene de identidad y datos
 
@@ -480,6 +480,14 @@ Implementacion:
   - angulo sugerido de mensaje
   - por que ahora
 
+Salida esperada:
+
+- Cada prospecto tiene un resumen humano reutilizable en UI, revision comercial y export.
+
+Aceptacion:
+
+- El brief permite entender el caso sin leer el JSON completo.
+
 ### 18. Documentar `decision_trace`
 
 Objetivo:
@@ -496,7 +504,92 @@ Implementacion:
   - fit
   - readiness
 
-### 19. Crear dataset de regresion comercial
+Salida esperada:
+
+- Trazabilidad suficiente para explicar por que un lead entro, salio o quedo debil.
+
+Aceptacion:
+
+- El equipo puede auditar decisiones sin reconstruir el flujo manualmente.
+
+### 19. Crear endpoint nuevo de exportacion `.xls`
+
+Objetivo:
+
+- Entregar un archivo `.xls` ya cargado, legible y accionable sin alterar el `GET` actual de aceptados o `needs_review`.
+
+Implementacion:
+
+- Crear un endpoint nuevo y separado para exportacion.
+- Mantener sin cambios semanticos el `GET` actual de resultados aceptados y `needs_review`.
+- Hacer que el endpoint de export use el resultado final enriquecido y no una vista parcial.
+- Permitir exportar al menos los conjuntos relevantes para operacion comercial:
+  - aceptados
+  - `needs_review`
+  - subconjuntos filtrados si ya existen criterios de consulta
+- Incluir como base columnas de alto valor comercial y operativo:
+  - `query`
+  - `prospect_name`
+  - `canonical_identity`
+  - `primary_identity_type`
+  - `entry_surface`
+  - `best_surface_for_identity`
+  - `best_surface_for_contact`
+  - `best_surface_for_offer`
+  - `website_url`
+  - `primary_social_platform`
+  - `primary_social_url`
+  - `recommended_contact_channel`
+  - `contact_email`
+  - `contact_phone`
+  - `location`
+  - `primary_offer_model`
+  - `offer_summary`
+  - `buyer_audience_profile`
+  - `why_now_signals`
+  - `pain_hypotheses`
+  - `estimated_revenue_signal`
+  - `pricing_page_url`
+  - `booking_url`
+  - `has_active_ads`
+  - `outreach_readiness`
+  - `topic_relevance_score`
+  - `commercial_prospect_score`
+  - `accepted_bucket`
+  - `decision_summary`
+- Agregar al menos una hoja principal de trabajo comercial y, si aplica, una hoja secundaria con:
+  - `decision_trace`
+  - evidencia resumida
+  - datos utiles para QA
+- Aplicar diseno funcional para uso real en Excel:
+  - encabezados claros
+  - filtros automaticos
+  - fila superior congelada
+  - anchos de columna ajustados
+  - wrap en campos largos
+  - colores sobrios por estado o bucket
+  - orden inicial por prioridad comercial o readiness
+- Asegurar que los detalles importantes de la respuesta de busqueda queden visibles en el export:
+  - identidad resuelta
+  - oferta detectada
+  - mejor canal
+  - mejor superficie
+  - razon de contacto
+  - senales de timing
+  - senales de presupuesto o madurez
+
+Salida esperada:
+
+- Endpoint nuevo que devuelve un `.xls` listo para abrir en Excel, filtrar y usar como lista operativa de prospeccion.
+
+Aceptacion:
+
+- El `.xls` no sale del `GET` actual de aceptados ni del flujo actual de `needs_review`.
+- El usuario no necesita abrir el JSON para trabajar los leads exportados.
+- Cada fila tiene contexto suficiente para decidir si contactar, por donde entrar y con que angulo.
+- El archivo abre con estructura legible, filtros activos y campos clave visibles desde la primera pantalla.
+
+### 20. Crear dataset de regresion comercial
 
 Objetivo:
 
@@ -519,5 +612,7 @@ Implementacion:
 
 1. Tareas `1` a `5`
 2. Tareas `6` a `11`
-3. Tareas `12` a `15`
-4. Tareas `16` a `18`
+3. Tareas `12` a `16`
+4. Tareas `17` y `18`
+5. Tarea `19`
+6. Tarea `20`

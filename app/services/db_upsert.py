@@ -102,6 +102,7 @@ def _extract_job_prospect_data(
                 if value
             ],
             "social_profiles": prospect_data.get("social_profiles"),
+            "surface_resolution": prospect_data.get("surface_resolution"),
             "contact_page_url": prospect_data.get("contact_page_url"),
             "form_detected": prospect_data.get("form_detected", False),
             "contact_consistency_status": prospect_data.get("contact_consistency_status"),
@@ -173,6 +174,7 @@ def _extract_job_prospect_data(
             "primary_identity_type": prospect_data.get("primary_identity_type"),
             "primary_identity_url": prospect_data.get("primary_identity_url"),
             "social_profiles": prospect_data.get("social_profiles"),
+            "surface_resolution": prospect_data.get("surface_resolution"),
             "company_size_signal": prospect_data.get("company_size_signal"),
             "service_keywords": prospect_data.get("service_keywords"),
             "acceptance_decision": prospect_data.get("acceptance_decision"),

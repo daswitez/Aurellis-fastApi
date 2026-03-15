@@ -137,6 +137,87 @@ class AISummaryTestCase(unittest.TestCase):
 
 
 class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_scrape_resolves_identity_surfaces_from_internal_page_entry(self) -> None:
+        metadata = {
+            "title": "Brand Studio | Caso de exito",
+            "description": "Agencia creativa para ecommerce y marcas personales",
+            "emails": ["hola@brandstudio.com"],
+            "phones": [],
+            "social_links": [],
+            "social_profiles": [],
+            "internal_links": [
+                "https://brandstudio.com/contacto",
+                "https://brandstudio.com/servicios",
+                "https://brandstudio.com/precios",
+            ],
+            "external_links": [],
+            "form_detected": True,
+            "contact_channels": [
+                {"type": "contact_form", "value": "https://brandstudio.com/contacto"},
+                {"type": "email", "value": "hola@brandstudio.com"},
+            ],
+            "addresses": [],
+            "map_links": [],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+            "pricing_page_url": "https://brandstudio.com/precios",
+            "service_page_url": "https://brandstudio.com/servicios",
+            "structured_data_evidence": [],
+            "structured_data": [],
+        }
+        heuristic_result = {
+            "company_name": "Brand Studio",
+            "category": "Agencia",
+            "description": "Agencia creativa",
+            "inferred_tech_stack": ["WordPress"],
+            "inferred_niche": "Agencias",
+            "hiring_signals": False,
+            "estimated_revenue_signal": "medium",
+            "has_active_ads": False,
+            "score": 0.66,
+            "confidence_level": "medium",
+            "fit_summary": "Buena identidad comercial y contacto visible.",
+            "heuristic_trace": {"component_scores": {"business_identity": 0.8}, "signals": {}},
+            "generic_attributes": {
+                "evaluation_method": "Heuristic Code (No LLM)",
+                "observed_signals": [],
+                "inferred_opportunities": [],
+                "pain_points_detected": [],
+            },
+            "observed_signals": [],
+            "inferred_opportunities": [],
+        }
+
+        with patch("app.scraper.engine.fetch_html", new=AsyncMock(return_value="<html></html>")):
+            with patch("app.scraper.engine.parse_html_basic", return_value=("x" * 250, metadata)):
+                with patch(
+                    "app.scraper.engine._crawl_key_pages",
+                    new=AsyncMock(return_value=("", metadata, [])),
+                ):
+                    with patch(
+                        "app.scraper.engine.extract_business_entity_heuristic",
+                        new=AsyncMock(return_value=heuristic_result),
+                    ):
+                        with patch("app.scraper.engine.should_call_ai", return_value=(False, "unit_test")):
+                            result = await scrape_single_prospect(
+                                "https://brandstudio.com/blog/caso-de-exito",
+                                {"job_id": 9, "target_language": "es"},
+                            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["canonical_identity"], "brandstudio.com")
+        self.assertEqual(result["primary_identity_url"], "https://brandstudio.com/")
+        self.assertEqual(result["website_url"], "https://brandstudio.com/")
+        self.assertEqual(
+            result["generic_attributes"]["surface_resolution"]["entry_surface"]["surface_type"],
+            "website_page",
+        )
+        self.assertEqual(
+            result["generic_attributes"]["surface_resolution"]["identity_surface"]["surface_type"],
+            "website_home",
+        )
+
     async def test_blends_ai_score_with_heuristic_baseline_on_success(self) -> None:
         metadata = {
             "title": "Dental Home",

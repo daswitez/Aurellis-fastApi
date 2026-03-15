@@ -194,6 +194,14 @@ Al cerrar esta version, cada prospecto deberia poder responder de forma confiabl
 - Cual seria el mejor primer angulo de contacto.
 - Si esta listo para outreach o necesita mas enriquecimiento.
 
+Y ademas el sistema deberia ofrecer un endpoint nuevo y separado para exportar un archivo `.xls` util para trabajo comercial real:
+
+- sin cambiar el comportamiento del `GET` actual de aceptados o `needs_review`
+- con los datos ya cargados
+- con los detalles importantes de la respuesta de busqueda ya resumidos
+- con columnas legibles para filtrar, revisar y asignar
+- con un formato suficientemente claro para usarlo sin depender del JSON
+
 ## Lista priorizada de trabajo
 
 1. Corregir identidad canonica, superficie principal y superficies utiles de contacto.
@@ -206,3 +214,5 @@ Al cerrar esta version, cada prospecto deberia poder responder de forma confiabl
 8. Separar score de relevancia tematica vs score de prospectabilidad.
 9. Implementar ranking multi-superficie flexible y no arbitrario.
 10. Definir politica de exclusiones por fit comercial y filosofia de negocio.
+11. Construir un `prospect_brief` y `decision_trace` legibles para revision humana y comercial.
+12. Crear un endpoint nuevo de exportacion `.xls`, separado del `GET` actual de aceptados o `needs_review`, con los datos importantes de la busqueda ya cargados y buena presentacion para Excel.
