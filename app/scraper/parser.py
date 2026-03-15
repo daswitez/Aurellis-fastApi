@@ -87,6 +87,20 @@ SOCIAL_PLATFORMS = {
     "twitter": ["twitter.com", "x.com"],
 }
 SOCIAL_HANDLE_REGEX = re.compile(r"^@?[a-z0-9._]{2,64}$", re.IGNORECASE)
+EXTERNAL_BOOKING_HINTS = (
+    "cal.com",
+    "calendly.com",
+    "booksy.com",
+    "simplybook.me",
+    "setmore.com",
+    "acuityscheduling.com",
+    "appointments",
+    "booking",
+    "book",
+    "agenda",
+    "reserv",
+    "cita",
+)
 
 
 def _normalize_href(base_url: str, href: str) -> str | None:
@@ -449,6 +463,13 @@ def _detect_primary_cta(text: str, href: str) -> str | None:
     return None
 
 
+def _looks_like_external_booking_url(url: str) -> bool:
+    lowered = str(url or "").strip().lower()
+    if not lowered.startswith("http"):
+        return False
+    return any(token in lowered for token in EXTERNAL_BOOKING_HINTS)
+
+
 def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
     soup = BeautifulSoup(html_content, "html.parser")
     html_lang = (soup.html.get("lang") if soup.html else None) or ""
@@ -596,6 +617,8 @@ def parse_html_basic(html_content: str, base_url: str) -> Tuple[str, Dict]:
             elif _looks_like_internal_key_page(anchor_text.lower(), href):
                 metadata["internal_links"].add(normalized_href)
         elif normalized_href and normalized_href.startswith("http"):
+            if not metadata["booking_url"] and not is_reference_page and _looks_like_external_booking_url(normalized_href):
+                metadata["booking_url"] = normalized_href
             metadata["external_links"].add(normalized_href)
 
     for button_tag in soup.find_all(["button", "a"]):

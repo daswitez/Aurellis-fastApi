@@ -239,6 +239,10 @@ Implicacion:
   - `contact_surface`
   - `offer_surface`
   - `identity_resolution_reason`
+- Se implementa `P0.3` para tratar hubs de terceros como contenedores operativos.
+- Los hubs ya no contaminan `owned_website_candidates` con superficies de soporte como `Calendly`.
+- Se detectan links externos de booking desde hubs para reforzar `booking_url` y `contact_surface`.
+- Se agrega `identity_hub_evidence` dentro de `surface_resolution` para conservar el hub solo como evidencia secundaria cuando aporta CTA, contacto u oferta.
 
 ### 2026-03-14
 

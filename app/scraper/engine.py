@@ -446,6 +446,7 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
                 "offer_surface": merged_metadata.get("offer_surface"),
                 "identity_resolution_reason": merged_metadata.get("identity_resolution_reason"),
                 "owned_website_candidates": surface_resolution.get("owned_website_candidates", []),
+                "identity_hub_evidence": surface_resolution.get("identity_hub_evidence"),
             },
         )
         generic_attributes.setdefault("social_quality", quality_data.get("social_quality"))

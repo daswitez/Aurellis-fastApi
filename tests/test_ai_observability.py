@@ -237,13 +237,16 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
                     "confidence": "high",
                 }
             ],
-            "external_links": [],
+            "external_links": ["https://calendly.com/editorpro/call"],
             "internal_links": [],
             "form_detected": False,
-            "contact_channels": [],
+            "contact_channels": [
+                {"type": "booking", "value": "https://calendly.com/editorpro/call"},
+            ],
             "addresses": [],
             "map_links": [],
-            "cta_candidates": [],
+            "cta_candidates": ["booking"],
+            "booking_url": "https://calendly.com/editorpro/call",
             "structured_data_evidence": [],
             "structured_data": [],
         }
@@ -296,6 +299,12 @@ class AIScrapeObservabilityTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["social_profiles"][0]["handle"], "editorpro")
         self.assertTrue(result["social_profiles"][0]["is_primary"])
         self.assertIn("social_quality_score", result["social_profiles"][0])
+        self.assertEqual(
+            result["generic_attributes"]["surface_resolution"]["contact_surface"]["url"],
+            "https://calendly.com/editorpro/call",
+        )
+        self.assertIsNotNone(result["generic_attributes"]["surface_resolution"]["identity_hub_evidence"])
+        self.assertTrue(result["generic_attributes"]["surface_resolution"]["identity_hub_evidence"]["supports_contact"])
 
     async def test_blends_ai_score_with_heuristic_baseline_on_success(self) -> None:
         metadata = {

@@ -117,6 +117,10 @@ Objetivo:
 
 - Evitar que `Linktree`, agregadores o superficies puente deformen la base.
 
+Estado actual:
+
+- Implementado en una primera capa operativa el `2026-03-15`.
+
 Implementacion:
 
 - Crear tipo de superficie `identity_hub`.

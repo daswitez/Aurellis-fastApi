@@ -59,7 +59,13 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertEqual(resolved["website_url"], "https://editorprostudio.com/")
         self.assertEqual(resolved["entry_surface"]["surface_type"], "identity_hub")
         self.assertEqual(resolved["identity_surface"]["surface_type"], "website_home")
+        self.assertEqual(resolved["contact_surface"]["url"], "https://calendly.com/editorpro/call")
         self.assertEqual(resolved["identity_resolution_reason"], "identity_hub_resolved_to_website")
+        self.assertIsNotNone(resolved["identity_hub_evidence"])
+        self.assertTrue(resolved["identity_hub_evidence"]["kept_as_secondary"])
+        self.assertTrue(resolved["identity_hub_evidence"]["supports_contact"])
+        self.assertIn("website_home", [item["surface_type"] for item in resolved["identity_hub_evidence"]["identity_candidates"]])
+        self.assertIn("booking", resolved["identity_hub_evidence"]["hub_contact_channels"])
 
     def test_identity_resolution_keeps_social_first_identity_and_ignores_link_hub_as_website(self) -> None:
         metadata = {
@@ -400,6 +406,29 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertIn("https://linktr.ee/editorpro", metadata["social_profile"]["external_links"])
         self.assertEqual(metadata["whatsapp_url"], "https://wa.me/34600111222")
         self.assertIn("videos", clean_text.lower())
+
+    def test_parser_extracts_external_booking_links_from_identity_hub(self) -> None:
+        html = """
+        <html>
+          <head>
+            <title>EditorPro | Todos mis links</title>
+          </head>
+          <body>
+            <a href="https://editorprostudio.com">Web oficial</a>
+            <a href="https://calendly.com/editorpro/call">Agenda una llamada</a>
+            <a href="https://www.instagram.com/editorpro/">Instagram</a>
+          </body>
+        </html>
+        """
+
+        _, metadata = parse_html_basic(html, "https://linktr.ee/editorpro")
+
+        self.assertEqual(metadata["booking_url"], "https://calendly.com/editorpro/call")
+        self.assertIn(
+            {"type": "booking", "value": "https://calendly.com/editorpro/call", "source": "booking_link"},
+            metadata["contact_channels"],
+        )
+        self.assertIn("https://editorprostudio.com", metadata["external_links"])
 
     def test_quality_builds_social_quality_for_strong_social_profile(self) -> None:
         html = """

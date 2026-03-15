@@ -39,6 +39,32 @@ SOCIAL_POST_SEGMENTS = {
     "twitter": {"intent", "status"},
     "tiktok": {"video"},
 }
+BOOKING_URL_HINTS = (
+    "cal.com",
+    "calendly.com",
+    "booksy.com",
+    "simplybook.me",
+    "setmore.com",
+    "acuityscheduling.com",
+    "appointments",
+    "booking",
+    "book",
+    "agenda",
+    "reserv",
+    "cita",
+)
+CONTACT_URL_HINTS = ("contact", "contacto", "whatsapp", "wa.me", "api.whatsapp.com", "dm", "mensaje")
+OFFER_URL_HINTS = (
+    "pricing",
+    "precio",
+    "precios",
+    "servicio",
+    "service",
+    "shop",
+    "store",
+    "curso",
+    "offer",
+)
 
 
 def extract_domain(url: str | None) -> str:
@@ -232,6 +258,13 @@ def _dedupe_urls(candidates: list[str]) -> list[str]:
     return unique_urls
 
 
+def _looks_like_support_surface_url(url: str | None) -> bool:
+    lowered = str(url or "").strip().lower()
+    if not lowered:
+        return False
+    return any(token in lowered for token in [*BOOKING_URL_HINTS, *CONTACT_URL_HINTS])
+
+
 def _website_candidates(target_url: str, metadata: dict[str, Any]) -> list[str]:
     candidates: list[str] = []
     entry_surface = classify_surface(target_url)
@@ -242,19 +275,19 @@ def _website_candidates(target_url: str, metadata: dict[str, Any]) -> list[str]:
 
     for value in [metadata.get("website_url"), metadata.get("primary_identity_url")]:
         root_url = normalize_root_url(value)
-        if root_url and not is_identity_hub_url(root_url) and not detect_platform(root_url):
+        if root_url and not is_identity_hub_url(root_url) and not detect_platform(root_url) and not _looks_like_support_surface_url(value):
             candidates.append(root_url)
 
     social_profile = metadata.get("social_profile")
     if isinstance(social_profile, dict):
         for link in social_profile.get("external_links", []):
             root_url = normalize_root_url(link)
-            if root_url and not is_identity_hub_url(root_url) and not detect_platform(root_url):
+            if root_url and not is_identity_hub_url(root_url) and not detect_platform(root_url) and not _looks_like_support_surface_url(link):
                 candidates.append(root_url)
 
     for link in metadata.get("external_links", []) or []:
         root_url = normalize_root_url(link)
-        if root_url and not is_identity_hub_url(root_url) and not detect_platform(root_url):
+        if root_url and not is_identity_hub_url(root_url) and not detect_platform(root_url) and not _looks_like_support_surface_url(link):
             candidates.append(root_url)
 
     return _dedupe_urls(candidates)
@@ -321,6 +354,164 @@ def _build_direct_channel_surface(channel_type: str, url: str) -> dict[str, Any]
     }
 
 
+def _looks_like_booking_url(url: str | None) -> bool:
+    lowered = str(url or "").strip().lower()
+    return bool(lowered) and any(token in lowered for token in BOOKING_URL_HINTS)
+
+
+def _looks_like_contact_url(url: str | None) -> bool:
+    lowered = str(url or "").strip().lower()
+    return bool(lowered) and any(token in lowered for token in CONTACT_URL_HINTS)
+
+
+def _looks_like_offer_url(url: str | None) -> bool:
+    lowered = str(url or "").strip().lower()
+    return bool(lowered) and any(token in lowered for token in OFFER_URL_HINTS)
+
+
+def _classify_support_surface(url: str | None) -> dict[str, Any] | None:
+    normalized = str(url or "").strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    if any(token in lowered for token in ["wa.me", "api.whatsapp.com", "whatsapp"]):
+        return _build_direct_channel_surface("whatsapp", normalized)
+    return classify_surface(normalized)
+
+
+def _collect_external_surface_candidates(
+    metadata: dict[str, Any],
+    *,
+    predicate,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for link in metadata.get("external_links", []) or []:
+        normalized_link = str(link or "").strip()
+        if not normalized_link or normalized_link in seen or not predicate(normalized_link):
+            continue
+        surface = _classify_support_surface(normalized_link)
+        if not surface:
+            continue
+        seen.add(normalized_link)
+        candidates.append(surface)
+    return candidates
+
+
+def _dedupe_surface_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        surface_type = str(candidate.get("surface_type") or "").strip()
+        url = str(candidate.get("url") or "").strip()
+        token = (surface_type, url)
+        if not surface_type or not url or token in seen:
+            continue
+        seen.add(token)
+        deduped.append(candidate)
+    return deduped
+
+
+def _select_hub_contact_surface(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    contact_candidates = _collect_external_surface_candidates(
+        metadata,
+        predicate=lambda link: _looks_like_booking_url(link) or _looks_like_contact_url(link),
+    )
+    if not contact_candidates:
+        return None
+    ranked = sorted(
+        contact_candidates,
+        key=lambda item: (
+            0 if item.get("surface_type") == "direct_channel" else 1,
+            0 if _looks_like_booking_url(item.get("url")) else 1,
+            str(item.get("url") or ""),
+        ),
+    )
+    return ranked[0]
+
+
+def _select_hub_offer_surface(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    offer_candidates = _collect_external_surface_candidates(
+        metadata,
+        predicate=lambda link: _looks_like_booking_url(link) or _looks_like_offer_url(link),
+    )
+    if not offer_candidates:
+        return None
+    ranked = sorted(
+        offer_candidates,
+        key=lambda item: (
+            0 if _looks_like_offer_url(item.get("url")) else 1,
+            0 if _looks_like_booking_url(item.get("url")) else 1,
+            str(item.get("url") or ""),
+        ),
+    )
+    return ranked[0]
+
+
+def _build_identity_hub_evidence(
+    entry_surface: dict[str, Any],
+    metadata: dict[str, Any],
+    website_candidates: list[str],
+    best_social: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if entry_surface.get("surface_type") != "identity_hub":
+        return None
+
+    identity_candidates = _dedupe_surface_candidates(
+        [
+            *(classify_surface(url) for url in website_candidates),
+            classify_surface(best_social["url"]) if best_social else None,
+        ]
+    )
+    contact_candidates = _dedupe_surface_candidates(
+        [
+            _classify_support_surface(metadata.get("contact_page_url")),
+            _classify_support_surface(metadata.get("whatsapp_url")),
+            _classify_support_surface(metadata.get("booking_url")),
+            *_collect_external_surface_candidates(
+                metadata,
+                predicate=lambda link: _looks_like_booking_url(link) or _looks_like_contact_url(link),
+            ),
+        ]
+    )
+    offer_candidates = _dedupe_surface_candidates(
+        [
+            _classify_support_surface(metadata.get("pricing_page_url")),
+            _classify_support_surface(metadata.get("booking_url")),
+            _classify_support_surface(metadata.get("service_page_url")),
+            *_collect_external_surface_candidates(
+                metadata,
+                predicate=lambda link: _looks_like_booking_url(link) or _looks_like_offer_url(link),
+            ),
+        ]
+    )
+
+    hub_contact_channels = sorted(
+        {
+            str(channel.get("type") or "").strip().lower()
+            for channel in metadata.get("contact_channels", []) or []
+            if isinstance(channel, dict) and str(channel.get("type") or "").strip()
+        }
+    )
+    supports_contact = bool(contact_candidates or hub_contact_channels)
+    supports_offer = bool(offer_candidates or metadata.get("cta_candidates"))
+    if not supports_contact and not supports_offer:
+        return None
+
+    return {
+        "hub_surface": entry_surface,
+        "kept_as_secondary": True,
+        "supports_contact": supports_contact,
+        "supports_offer": supports_offer,
+        "hub_contact_channels": hub_contact_channels,
+        "identity_candidates": identity_candidates,
+        "contact_candidates": contact_candidates,
+        "offer_candidates": offer_candidates,
+    }
+
+
 def resolve_identity_surfaces(target_url: str, metadata: dict[str, Any]) -> dict[str, Any]:
     entry_surface = classify_surface(target_url) or {
         "url": target_url,
@@ -329,6 +520,7 @@ def resolve_identity_surfaces(target_url: str, metadata: dict[str, Any]) -> dict
     }
     website_candidates = _website_candidates(target_url, metadata)
     best_social = _best_social_candidate(target_url, metadata)
+    identity_hub_evidence = _build_identity_hub_evidence(entry_surface, metadata, website_candidates, best_social)
 
     existing_primary_type = str(metadata.get("primary_identity_type") or "").strip().lower()
     identity_surface: dict[str, Any] | None = None
@@ -374,6 +566,8 @@ def resolve_identity_surfaces(target_url: str, metadata: dict[str, Any]) -> dict
         contact_surface = _build_direct_channel_surface("whatsapp", metadata["whatsapp_url"])
     elif metadata.get("booking_url"):
         contact_surface = classify_surface(metadata["booking_url"])
+    elif entry_surface.get("surface_type") == "identity_hub":
+        contact_surface = _select_hub_contact_surface(metadata)
     else:
         contact_surface = identity_surface
 
@@ -382,6 +576,8 @@ def resolve_identity_surfaces(target_url: str, metadata: dict[str, Any]) -> dict
         if offer_url:
             offer_surface = classify_surface(offer_url)
             break
+    if not offer_surface and entry_surface.get("surface_type") == "identity_hub":
+        offer_surface = _select_hub_offer_surface(metadata)
     if not offer_surface:
         offer_surface = identity_surface
 
@@ -396,4 +592,5 @@ def resolve_identity_surfaces(target_url: str, metadata: dict[str, Any]) -> dict
         "offer_surface": offer_surface,
         "identity_resolution_reason": identity_resolution_reason,
         "owned_website_candidates": website_candidates,
+        "identity_hub_evidence": identity_hub_evidence,
     }
