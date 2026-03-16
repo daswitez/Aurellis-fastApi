@@ -103,6 +103,28 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertTrue(any("site:tiktok.com" in query for query in queries))
         self.assertTrue(any("link in bio" in query or "linktree" in query for query in queries))
         self.assertFalse(any("-instagram" in query or "-tiktok" in query for query in queries))
+        self.assertIn("Marcas Personales España", queries)
+        self.assertFalse(any(query == "Personales España" for query in queries))
+        self.assertFalse(any(query == "ecommerce España" for query in queries))
+
+    def test_infers_location_from_search_query_and_prioritizes_niche_queries(self) -> None:
+        queries = build_discovery_queries(
+            search_query="marcas personales ecommerce y coaches de negocios España",
+            user_profession="Editor de Video",
+            target_niche="Marcas Personales y Coaches",
+            target_location=None,
+            target_language="es",
+            target_budget_signals=[
+                "Venden cursos o infoproductos",
+                "Activos en Instagram o TikTok con mas de 10k seguidores",
+                "Tienen linktree/tienda oficial",
+            ],
+        )
+
+        self.assertEqual(queries[0], "Marcas Personales y Coaches España")
+        self.assertIn("Marcas Personales España", queries[:4])
+        self.assertIn("Coaches España", queries[:5])
+        self.assertNotEqual(queries[0], "marcas personales ecommerce y coaches de negocios España")
 
     def test_resolves_capture_targets_from_legacy_max_results(self) -> None:
         targets = resolve_capture_targets(
@@ -327,6 +349,23 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertEqual(reference_score, 0.0)
         self.assertEqual(finance_score, 0.0)
 
+    def test_business_likeness_rejects_encyclopedia_and_qa_platforms(self) -> None:
+        encyclopedia_score, _, encyclopedia_exclusion = score_business_likeness(
+            "https://www.ecured.cu/Número_4",
+            "Número 4 - EcuRed",
+            "Enciclopedia colaborativa en espanol.",
+        )
+        qa_score, _, qa_exclusion = score_business_likeness(
+            "https://zhidao.baidu.com/",
+            "百度知道 - 全球领先中文互动问答平台",
+            "百度知道是全球领先的中文问答互动平台。",
+        )
+
+        self.assertEqual(encyclopedia_exclusion, "excluded_reference_page")
+        self.assertEqual(qa_exclusion, "excluded_reference_page")
+        self.assertEqual(encyclopedia_score, 0.0)
+        self.assertEqual(qa_score, 0.0)
+
 
 class DirectorySeedExpansionTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_directory_seed_resolves_to_official_site(self) -> None:
@@ -426,6 +465,154 @@ class DiscoveryProviderOrchestrationTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.provider_name, "secondary")
         self.assertEqual(result.source_type, "brave_search")
         self.assertIn("Primary provider blocked.", result.warning_message or "")
+
+    async def test_orchestrator_skips_off_target_english_batch_and_keeps_contextual_match(self) -> None:
+        class OffTargetProvider(SearchProvider):
+            provider_name = "primary"
+            source_type = "duckduckgo_search"
+
+            async def search(
+                self,
+                queries: list[str],
+                max_results: int = 10,
+                allow_social_profiles: bool = False,
+            ) -> SearchDiscoveryResult:
+                return SearchDiscoveryResult(
+                    entries=[
+                        SearchDiscoveryEntry(
+                            url="https://collarsandco.com/",
+                            query=queries[0],
+                            title="Collars & Co. - The Original Dress Collar Polo",
+                            snippet="The most comfortable polo shirt with a real English spread collar.",
+                            discovery_confidence="high",
+                            business_likeness_score=0.58,
+                        ),
+                        SearchDiscoveryEntry(
+                            url="https://www.nhl.com/wild/schedule",
+                            query=queries[0],
+                            title="Minnesota Wild Schedule",
+                            snippet="The official calendar for the Minnesota Wild including ticket information.",
+                            discovery_confidence="high",
+                            business_likeness_score=0.51,
+                        ),
+                    ],
+                    source_type=self.source_type,
+                    discovery_method="search_query",
+                    queries=queries,
+                    provider_name=self.provider_name,
+                    provider_status="ok",
+                )
+
+        class ContextualProvider(SearchProvider):
+            provider_name = "secondary"
+            source_type = "duckduckgo_search"
+
+            async def search(
+                self,
+                queries: list[str],
+                max_results: int = 10,
+                allow_social_profiles: bool = False,
+            ) -> SearchDiscoveryResult:
+                return SearchDiscoveryResult(
+                    entries=[
+                        SearchDiscoveryEntry(
+                            url="https://joannaprieto.com/",
+                            query=queries[0],
+                            title="Joanna Prieto - Coaching de Marca Personal",
+                            snippet="Coaching y mentoring para marcas personales.",
+                            discovery_confidence="medium",
+                            business_likeness_score=0.41,
+                        )
+                    ],
+                    source_type=self.source_type,
+                    discovery_method="search_query",
+                    queries=queries,
+                    provider_name=self.provider_name,
+                    provider_status="ok",
+                )
+
+        with patch(
+            "app.services.discovery_orchestrator._build_providers",
+            return_value=[OffTargetProvider(), ContextualProvider()],
+        ), patch(
+            "app.services.discovery_orchestrator.get_settings",
+            return_value=SimpleNamespace(DEMO_MODE=False),
+        ):
+            result = await discover_prospect_urls_by_queries(
+                ["marcas personales coaches espana"],
+                max_results=5,
+                user_profession="Editor de Video",
+                target_niche="Marcas Personales y Coaches",
+                target_language="es",
+                target_location="España",
+                target_budget_signals=[
+                    "Venden cursos o infoproductos",
+                    "Activos en Instagram o TikTok con mas de 10k seguidores",
+                ],
+            )
+
+        self.assertEqual(result.provider_name, "secondary")
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.entries[0].url, "https://joannaprieto.com/")
+        self.assertTrue(any(item["reason"] == "excluded_discovery_language_mismatch" for item in result.excluded_results))
+
+    async def test_orchestrator_excludes_cjk_results_when_target_language_is_spanish(self) -> None:
+        class MixedLanguageProvider(SearchProvider):
+            provider_name = "primary"
+            source_type = "duckduckgo_search"
+
+            async def search(
+                self,
+                queries: list[str],
+                max_results: int = 10,
+                allow_social_profiles: bool = False,
+            ) -> SearchDiscoveryResult:
+                return SearchDiscoveryResult(
+                    entries=[
+                        SearchDiscoveryEntry(
+                            url="https://zhidao.baidu.com/",
+                            query=queries[0],
+                            title="百度知道 - 全球领先中文互动问答平台",
+                            snippet="百度知道通过AI技术实现智能检索和智能推荐。",
+                            discovery_confidence="medium",
+                            business_likeness_score=0.22,
+                        ),
+                        SearchDiscoveryEntry(
+                            url="https://joannaprieto.com/",
+                            query=queries[0],
+                            title="Joanna Prieto - Coaching de Marca Personal",
+                            snippet="Coaching y mentoring para marcas personales.",
+                            discovery_confidence="medium",
+                            business_likeness_score=0.41,
+                        ),
+                    ],
+                    source_type=self.source_type,
+                    discovery_method="search_query",
+                    queries=queries,
+                    provider_name=self.provider_name,
+                    provider_status="ok",
+                )
+
+        with patch(
+            "app.services.discovery_orchestrator._build_providers",
+            return_value=[MixedLanguageProvider()],
+        ), patch(
+            "app.services.discovery_orchestrator.get_settings",
+            return_value=SimpleNamespace(DEMO_MODE=False),
+        ):
+            result = await discover_prospect_urls_by_queries(
+                ["marcas personales coaches espana"],
+                max_results=5,
+                user_profession="Editor de Video",
+                target_niche="Marcas Personales y Coaches",
+                target_language="es",
+                target_location="España",
+                target_budget_signals=["Venden cursos o infoproductos"],
+            )
+
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.entries[0].url, "https://joannaprieto.com/")
+        self.assertTrue(any(item["reason"] == "excluded_discovery_language_mismatch" for item in result.excluded_results))
 
 
 if __name__ == "__main__":

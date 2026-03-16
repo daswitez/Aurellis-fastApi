@@ -103,9 +103,9 @@ def _build_content_profile(
     normalized_text = _normalize_text(
         " ".join(
             [
-                text_content,
-                metadata.get("title", ""),
-                metadata.get("description", ""),
+                str(text_content or ""),
+                str(metadata.get("title") or ""),
+                str(metadata.get("description") or ""),
                 ((metadata.get("social_profile") or {}).get("bio") or ""),
             ]
         )
@@ -216,7 +216,7 @@ def _infer_niche(text_content: str, metadata: Dict[str, Any], context: Dict[str,
         return None
 
     searchable_text = _normalize_text(
-        " ".join([text_content, metadata.get("title", ""), metadata.get("description", "")])
+        " ".join([str(text_content or ""), str(metadata.get("title") or ""), str(metadata.get("description") or "")])
     )
     normalized_niche = _normalize_text(target_niche).strip()
     if normalized_niche and normalized_niche in searchable_text:
@@ -492,7 +492,7 @@ def _score_context_fit(
     points = 0
     evidence: list[str] = []
     searchable_text = _normalize_text(
-        " ".join([text_content, metadata.get("title", ""), metadata.get("description", "")])
+        " ".join([str(text_content or ""), str(metadata.get("title") or ""), str(metadata.get("description") or "")])
     )
     target_niche = str(context.get("target_niche") or "").strip()
     target_location = str(context.get("target_location") or "").strip()
@@ -826,11 +826,11 @@ async def extract_business_entity_heuristic(
     return {
         "company_name": (
             ((metadata.get("social_profile") or {}).get("display_name"))
-            or metadata.get("title", "").split("|")[0].strip()
+            or str(metadata.get("title") or "").split("|")[0].strip()
         ),
         "category": heuristic_trace.get("display_category") or inferred_niche or "Desconocido",
         "location": metadata.get("addresses", [None])[0] if metadata.get("addresses") else None,
-        "description": metadata.get("description", "Sin descripcion META encontrada."),
+        "description": str(metadata.get("description") or "Sin descripcion META encontrada."),
         "inferred_tech_stack": heuristic_trace["inferred_tech_stack"],
         "inferred_niche": inferred_niche,
         "taxonomy_top_level": heuristic_trace.get("taxonomy_top_level"),

@@ -171,6 +171,14 @@ URL_REGEX = re.compile(r"https?://\S+", re.IGNORECASE)
 DIRECTORY_ENTITY_TYPES = {"directory", "aggregator", "marketplace"}
 MEDIA_ENTITY_TYPES = {"media", "association"}
 ARTICLE_ENTITY_TYPES = {"blog_post"}
+NON_TARGET_TAXONOMY_TOP_LEVELS = {"media", "marketplace"}
+NON_TARGET_TAXONOMY_BUSINESS_TYPES = {
+    "editorial_content",
+    "media_publisher",
+    "directory_listing",
+    "aggregator_platform",
+    "marketplace_platform",
+}
 GENERIC_EMAIL_DOMAINS = {
     "gmail.com",
     "outlook.com",
@@ -412,6 +420,9 @@ def _detect_language(clean_text: str, metadata: dict[str, Any]) -> str | None:
     meta_locale = str(metadata.get("meta_locale") or "").strip().lower()
     if meta_locale:
         return meta_locale.split("_")[0].split("-")[0]
+
+    if re.search(r"[\u4e00-\u9fff]", clean_text or ""):
+        return "zh"
 
     searchable = _normalize_text(clean_text)
     scores = {
@@ -1385,12 +1396,16 @@ def _derive_acceptance_decision(
     business_model_fit_status: str | None,
     primary_identity_type: str | None,
     social_business_evidence_count: int,
+    taxonomy_top_level: str | None,
+    taxonomy_business_type: str | None,
 ) -> tuple[str, float, float | None]:
     normalized_entity_type = str(entity_type_detected or "unknown").strip().lower()
     normalized_confidence = str(entity_type_confidence or "low").strip().lower()
     has_target_niche = bool(str(target_niche or "").strip())
     normalized_context_fit = max(0.0, min(float(context_fit_score or 0.0), 1.0))
     normalized_business_model_fit = str(business_model_fit_status or "unknown").strip().lower()
+    normalized_taxonomy_top_level = str(taxonomy_top_level or "").strip().lower()
+    normalized_taxonomy_business_type = str(taxonomy_business_type or "").strip().lower()
 
     if normalized_entity_type in DIRECTORY_ENTITY_TYPES:
         return "rejected_directory", 0.2, 0.25
@@ -1398,6 +1413,14 @@ def _derive_acceptance_decision(
         return "rejected_media", 0.25, 0.3
     if normalized_entity_type in ARTICLE_ENTITY_TYPES:
         return "rejected_article", 0.15, 0.2
+    if normalized_taxonomy_business_type in {"editorial_content", "media_publisher"}:
+        if normalized_taxonomy_business_type == "editorial_content":
+            return "rejected_article", 0.15, 0.2
+        return "rejected_media", 0.25, 0.3
+    if normalized_taxonomy_business_type in {"directory_listing", "aggregator_platform", "marketplace_platform"}:
+        return "rejected_directory", 0.2, 0.25
+    if normalized_taxonomy_top_level in NON_TARGET_TAXONOMY_TOP_LEVELS:
+        return "rejected_media" if normalized_taxonomy_top_level == "media" else "rejected_directory", 0.25, 0.3
 
     if str(primary_identity_type or "").strip().lower() == "social_profile":
         if quality_status == "accepted" and is_target_entity and social_business_evidence_count >= 2:
@@ -1408,6 +1431,13 @@ def _derive_acceptance_decision(
             return "rejected_low_confidence", 0.5, 0.5
 
     if quality_status == "accepted" and is_target_entity:
+        if (
+            has_target_niche
+            and normalized_confidence == "low"
+            and normalized_context_fit < 0.15
+            and normalized_business_model_fit in {"unknown", "mismatch"}
+        ):
+            return "rejected_low_confidence", 0.45, 0.45
         if has_target_niche and normalized_business_model_fit == "mismatch":
             return "accepted_related", 0.5, 0.55
         if has_target_niche and normalized_context_fit < 0.3:
@@ -1596,6 +1626,10 @@ def evaluate_prospect_quality(
         business_model_fit_status=business_model_data.get("business_model_fit_status"),
         primary_identity_type=primary_identity_type,
         social_business_evidence_count=social_business_evidence_count,
+        taxonomy_top_level=heuristic_data.get("taxonomy_top_level")
+        or heuristic_data.get("generic_attributes", {}).get("taxonomy_top_level"),
+        taxonomy_business_type=heuristic_data.get("taxonomy_business_type")
+        or heuristic_data.get("generic_attributes", {}).get("taxonomy_business_type"),
     )
     score_multiplier = round(technical_score_multiplier * commercial_score_multiplier, 4)
 

@@ -98,10 +98,64 @@ NICHE_VARIANTS = {
     "productos digitales": ["productos digitales", "infoproductos", "cursos online"],
     "infoproductos": ["infoproductos", "productos digitales", "cursos online"],
 }
+INTENT_FAMILY_HINTS = {
+    "personal_brand": ["marca personal", "marcas personales", "personal brand", "branding personal"],
+    "coaching": ["coach", "coaches", "coaching", "mentor", "mentoria", "mentoría"],
+    "ecommerce": ["ecommerce", "tienda online", "shopify"],
+    "education": ["academia online", "academias online", "cursos online", "escuela online", "infoproductos", "productos digitales"],
+}
+GLOBAL_LOCATION_TOKENS = {
+    "global",
+    "globales",
+    "worldwide",
+    "mundial",
+    "internacional",
+    "remote",
+    "remoto",
+    "remota",
+    "anywhere",
+}
+LOCATION_ALIAS_RULES = {
+    "España": ("espana", "españa", "spain"),
+    "México": ("mexico", "méxico"),
+    "Argentina": ("argentina",),
+    "Colombia": ("colombia",),
+    "Perú": ("peru", "perú"),
+    "Chile": ("chile",),
+    "Uruguay": ("uruguay",),
+    "Bolivia": ("bolivia",),
+}
 
 
 def _normalize_space(value: str | None) -> str:
     return " ".join((value or "").strip().split())
+
+
+def _is_global_target_location(value: str | None) -> bool:
+    normalized = _normalize_space(value).lower()
+    return normalized in GLOBAL_LOCATION_TOKENS
+
+
+def _effective_target_location(value: str | None) -> str:
+    normalized = _normalize_space(value)
+    return "" if _is_global_target_location(normalized) else normalized
+
+
+def resolve_discovery_target_location(
+    *,
+    search_query: str | None,
+    target_location: str | None,
+    target_niche: str | None = None,
+) -> str:
+    explicit_location = _effective_target_location(target_location)
+    if explicit_location:
+        return explicit_location
+
+    searchable = f" {_normalize_space(search_query)} {_normalize_space(target_niche)} ".lower()
+    for canonical_location, aliases in LOCATION_ALIAS_RULES.items():
+        if any(f" {alias.lower()} " in searchable for alias in aliases):
+            return canonical_location
+    return ""
 
 
 def _query_contains_token(query: str, token: str) -> bool:
@@ -110,11 +164,40 @@ def _query_contains_token(query: str, token: str) -> bool:
     return bool(token) and normalized_token in normalized_query
 
 
+def _extract_keywords(value: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]{3,}", _normalize_space(value).lower())
+    stopwords = {"para", "con", "los", "las", "del", "por", "que"}
+    return [token for token in tokens if token not in stopwords]
+
+
+def _extract_intent_family_tags(value: str) -> set[str]:
+    normalized_value = f" {_normalize_space(value).lower()} "
+    matched_tags: set[str] = set()
+    for tag, hints in INTENT_FAMILY_HINTS.items():
+        if any(f" {hint.lower()} " in normalized_value for hint in hints):
+            matched_tags.add(tag)
+    return matched_tags
+
+
+def _fragment_matches_target_niche(fragment: str, target_niche: str) -> bool:
+    fragment_tokens = set(_extract_keywords(fragment))
+    target_tokens = set(_extract_keywords(target_niche))
+    if fragment_tokens & target_tokens:
+        return True
+
+    fragment_tags = _extract_intent_family_tags(fragment)
+    target_tags = _extract_intent_family_tags(target_niche)
+    return bool(fragment_tags & target_tags)
+
+
 def _strip_generic_prefixes(value: str) -> str:
     normalized = _normalize_space(value)
     lowered = normalized.lower()
     for prefix in GENERIC_QUERY_PREFIXES:
         if lowered.startswith(prefix):
+            stripped = _normalize_space(normalized[len(prefix) :])
+            if prefix == "marcas " and stripped.lower() == "personales":
+                return normalized
             return _normalize_space(normalized[len(prefix) :])
     return normalized
 
@@ -149,17 +232,28 @@ def _derive_intent_seeds(*, search_query: str, target_niche: str, location: str)
     grouped_variants: list[list[str]] = []
 
     for raw_value in (target_niche, search_query):
-        cleaned_value = _strip_generic_prefixes(_remove_location_tokens(raw_value, location))
-        if not cleaned_value:
+        base_value = _remove_location_tokens(raw_value, location)
+        if not base_value:
             continue
 
-        fragments = [fragment for fragment in INTENT_SPLIT_PATTERN.split(cleaned_value) if _normalize_space(fragment)]
+        fragments = [fragment for fragment in INTENT_SPLIT_PATTERN.split(base_value) if _normalize_space(fragment)]
         if not fragments:
-            fragments = [cleaned_value]
+            fragments = [base_value]
+
+        if raw_value == search_query and _normalize_space(target_niche):
+            matching_fragments = [fragment for fragment in fragments if _fragment_matches_target_niche(fragment, target_niche)]
+            if matching_fragments:
+                fragments = matching_fragments
 
         for fragment in fragments:
+            cleaned_fragment = _strip_generic_prefixes(fragment)
+            if not cleaned_fragment:
+                continue
             variants: list[str] = []
-            for variant in _expand_intent_variants(fragment):
+            for variant in _expand_intent_variants(cleaned_fragment):
+                if raw_value == search_query and _normalize_space(target_niche):
+                    if not _fragment_matches_target_niche(variant, target_niche):
+                        continue
                 _append_query(variants, variant)
             if variants:
                 grouped_variants.append(variants)
@@ -238,6 +332,20 @@ def _build_budget_signal_keywords(target_budget_signals: list[str] | None) -> li
     ]
     priority_map = {keyword: index for index, keyword in enumerate(priority_order)}
     return sorted(deduped, key=lambda keyword: priority_map.get(keyword, len(priority_order)))
+
+
+def _filter_budget_signal_keywords_for_niche(keywords: list[str], target_niche: str | None) -> list[str]:
+    niche = _normalize_space(target_niche)
+    if not niche:
+        return keywords
+
+    generic_social_keywords = {"instagram", "tiktok", "link in bio", "linktree", "meta ads", "anuncios", "creador"}
+    filtered = [
+        keyword
+        for keyword in keywords
+        if keyword in generic_social_keywords or _fragment_matches_target_niche(keyword, niche)
+    ]
+    return filtered or keywords
 
 
 def _derive_contextual_negative_terms(
@@ -381,7 +489,11 @@ def build_discovery_queries(
 ) -> list[str]:
     base_query = _normalize_space(search_query)
     niche = _normalize_space(target_niche)
-    location = _normalize_space(target_location)
+    location = resolve_discovery_target_location(
+        search_query=base_query,
+        target_location=target_location,
+        target_niche=niche,
+    )
     language = _normalize_space(target_language).lower()
 
     if not base_query and niche and location:
@@ -407,17 +519,20 @@ def build_discovery_queries(
         user_service_constraints=user_service_constraints,
         ai_negative_terms=ai_negative_terms,
     )
-    budget_signal_keywords = _build_budget_signal_keywords(target_budget_signals)
+    budget_signal_keywords = _filter_budget_signal_keywords_for_niche(
+        _build_budget_signal_keywords(target_budget_signals),
+        niche,
+    )
 
     if ai_dork_queries:
         for dork in ai_dork_queries:
             _append_query(queries, _apply_negative_terms(dork, negative_terms))
 
-    _append_query(queries, base_query)
     _append_query(queries, niche_location_query)
-    _append_query(queries, geo_base_query)
     for localized_intent_seed in localized_intent_seeds[:3]:
         _append_query(queries, localized_intent_seed)
+    _append_query(queries, geo_base_query)
+    _append_query(queries, base_query)
 
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
     primary_intent_seed = niche_location_query or geo_base_query or base_query
@@ -502,7 +617,11 @@ def build_retry_discovery_queries(
 ) -> list[str]:
     base_query = _normalize_space(search_query)
     niche = _normalize_space(target_niche)
-    location = _normalize_space(target_location)
+    location = resolve_discovery_target_location(
+        search_query=base_query,
+        target_location=target_location,
+        target_niche=niche,
+    )
     language = _normalize_space(target_language).lower()
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
     intent_seeds = _derive_intent_seeds(search_query=base_query, target_niche=niche, location=location)
@@ -513,7 +632,10 @@ def build_retry_discovery_queries(
         user_service_offers=user_service_offers,
         user_service_constraints=user_service_constraints,
     )
-    budget_signal_keywords = _build_budget_signal_keywords(target_budget_signals)
+    budget_signal_keywords = _filter_budget_signal_keywords_for_niche(
+        _build_budget_signal_keywords(target_budget_signals),
+        niche,
+    )
 
     intent_seed = _normalize_space(f"{niche} {location}") or niche or _normalize_space(f"{base_query} {location}") or base_query
     if not intent_seed:

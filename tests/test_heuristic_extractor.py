@@ -4,6 +4,28 @@ from app.services.heuristic_extractor import build_heuristic_trace, extract_busi
 
 
 class HeuristicExtractorTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_handles_none_title_and_description_without_crashing(self) -> None:
+        result = await extract_business_entity_heuristic(
+            "Editor de video para coaches y marcas personales.",
+            "<html><body><p>Servicios para coaches.</p></body></html>",
+            {
+                "title": None,
+                "description": None,
+                "emails": [],
+                "phones": [],
+                "social_links": [],
+                "internal_links": [],
+                "form_detected": False,
+            },
+            {
+                "target_niche": "Marcas Personales y Coaches",
+                "target_language": "es",
+            },
+        )
+
+        self.assertIn("score", result)
+        self.assertIn("heuristic_trace", result)
+
     async def test_builds_strong_heuristic_score_with_explainable_breakdown(self) -> None:
         clean_text = (
             "Clinica dental en Madrid con precios claros, testimonios de pacientes y portfolio de tratamientos. "

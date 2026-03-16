@@ -30,6 +30,7 @@ from app.scraper.http_client import FetchHtmlError
 from app.services.discovery import (
     build_discovery_query_batches,
     determine_capture_stop_reason,
+    resolve_discovery_target_location,
     resolve_candidate_batch_size,
     resolve_capture_targets,
     resolve_discovery_batch_budget,
@@ -639,6 +640,10 @@ async def _discover_next_candidate_batch(
     remaining_budget: int,
     seen_urls: set[str],
     user_profession: str | None = None,
+    target_niche: str | None = None,
+    target_language: str | None = None,
+    target_location: str | None = None,
+    target_budget_signals: list[str] | None = None,
 ) -> tuple[list[SearchDiscoveryEntry], int, list[str], list[dict], str | None]:
     warnings: list[str] = []
     excluded_results: list[dict] = []
@@ -662,6 +667,10 @@ async def _discover_next_candidate_batch(
             batch_queries,
             max_results=batch_budget,
             user_profession=user_profession,
+            target_niche=target_niche,
+            target_language=target_language,
+            target_location=target_location,
+            target_budget_signals=target_budget_signals,
         )
         used_queries.extend(batch_queries)
         excluded_results.extend(discovery_result.excluded_results)
@@ -808,6 +817,10 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         remaining_budget=remaining_budget,
                         seen_urls=seen_candidate_urls,
                         user_profession=job_context.get("user_profession"),
+                        target_niche=job_context.get("target_niche"),
+                        target_language=job_context.get("target_language"),
+                        target_location=job_context.get("target_location"),
+                        target_budget_signals=job_context.get("target_budget_signals"),
                     )
 
                     if warning_message:
@@ -1261,6 +1274,11 @@ async def create_scraping_job(
         source_type=normalize_source_type("seed_url") or "seed_url",
         discovery_method=normalize_discovery_method("seed_url") or "seed_url",
     )
+    effective_target_location = resolve_discovery_target_location(
+        search_query=payload.search_query,
+        target_location=payload.target_location,
+        target_niche=payload.target_niche,
+    )
     ai_search_plan = await generate_dynamic_search_plan(payload.model_dump())
 
     discovery_query_batches = build_discovery_query_batches(
@@ -1268,7 +1286,7 @@ async def create_scraping_job(
         user_profession=payload.user_profession,
         user_technologies=payload.user_technologies,
         target_niche=payload.target_niche,
-        target_location=payload.target_location,
+        target_location=effective_target_location,
         target_language=payload.target_language,
         user_service_offers=payload.user_service_offers,
         user_service_constraints=payload.user_service_constraints,
@@ -1297,6 +1315,10 @@ async def create_scraping_job(
                 query_batch,
                 max_results=initial_discovery_budget,
                 user_profession=payload.user_profession,
+                target_niche=payload.target_niche,
+                target_language=payload.target_language,
+                target_location=effective_target_location,
+                target_budget_signals=payload.target_budget_signals,
             )
             executed_queries.extend(query_batch)
             excluded_results.extend(batch_result.excluded_results)
@@ -1353,7 +1375,7 @@ async def create_scraping_job(
         user_past_successes=payload.user_past_successes,
         user_roi_metrics=payload.user_roi_metrics,
         target_niche=payload.target_niche,
-        target_location=payload.target_location,
+        target_location=effective_target_location,
         target_language=payload.target_language,
         target_company_size=payload.target_company_size,
         target_pain_points=payload.target_pain_points,

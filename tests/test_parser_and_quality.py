@@ -720,6 +720,123 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertEqual(quality["acceptance_decision"], "accepted_related")
         self.assertEqual(quality["context_fit_score"], 0.1)
 
+    def test_quality_rejects_low_confidence_low_context_target_when_niche_does_not_match(self) -> None:
+        clean_text = "Portal general con telefono visible y formulario de contacto."
+        metadata = {
+            "website_url": "https://portal-ejemplo.com",
+            "title": "Portal Ejemplo",
+            "description": "Contenido general y pagina principal.",
+            "html_lang": "es",
+            "meta_locale": "es_es",
+            "emails": [],
+            "phones": ["+34911111111"],
+            "social_links": [],
+            "internal_links": ["https://portal-ejemplo.com/contacto"],
+            "map_links": [],
+            "addresses": [],
+            "form_detected": True,
+            "whatsapp_url": None,
+            "booking_url": None,
+            "pricing_page_url": None,
+            "service_page_url": None,
+            "structured_data": [],
+            "structured_data_evidence": [],
+            "contact_channels": [{"type": "phone", "value": "+34911111111", "source": "visible_text"}],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+        }
+        heuristic_data = {
+            "score": 0.58,
+            "confidence_level": "medium",
+            "inferred_niche": "General",
+            "inferred_tech_stack": [],
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.0},
+            },
+            "heuristic_trace": {"component_scores": {"context_fit": 0.0}},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={
+                "target_language": "es",
+                "target_niche": "Marcas Personales y Coaches",
+            },
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "marcas personales coaches espana", "title": "Portal Ejemplo"},
+            entity_data={
+                "entity_type_detected": "direct_business",
+                "entity_type_confidence": "low",
+                "entity_type_evidence": {},
+                "is_target_entity": True,
+            },
+        )
+
+        self.assertEqual(quality["quality_status"], "accepted")
+        self.assertEqual(quality["acceptance_decision"], "rejected_low_confidence")
+
+    def test_quality_rejects_editorial_taxonomy_even_if_entity_classifier_is_weak(self) -> None:
+        clean_text = "Enciclopedia y contenido editorial con telefono visible."
+        metadata = {
+            "website_url": "https://www.ecured.cu/numero-4",
+            "title": "Numero 4 - EcuRed",
+            "description": "Enciclopedia colaborativa.",
+            "html_lang": "es",
+            "meta_locale": "es_es",
+            "emails": [],
+            "phones": ["4506068"],
+            "social_links": [],
+            "internal_links": ["https://www.ecured.cu/contacto"],
+            "map_links": [],
+            "addresses": [],
+            "form_detected": False,
+            "whatsapp_url": None,
+            "booking_url": None,
+            "pricing_page_url": None,
+            "service_page_url": None,
+            "structured_data": [],
+            "structured_data_evidence": [],
+            "contact_channels": [{"type": "phone", "value": "4506068", "source": "visible_text"}],
+            "cta_candidates": [],
+            "primary_cta": None,
+        }
+        heuristic_data = {
+            "score": 0.31,
+            "confidence_level": "low",
+            "inferred_niche": "Editorial",
+            "taxonomy_top_level": "media",
+            "taxonomy_business_type": "editorial_content",
+            "inferred_tech_stack": [],
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.1},
+            },
+            "heuristic_trace": {"component_scores": {"context_fit": 0.1}},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={
+                "target_language": "es",
+                "target_niche": "Marcas Personales y Coaches",
+            },
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "marcas personales coaches espana", "title": "Numero 4 - EcuRed"},
+            entity_data={
+                "entity_type_detected": "direct_business",
+                "entity_type_confidence": "low",
+                "entity_type_evidence": {},
+                "is_target_entity": True,
+            },
+        )
+
+        self.assertEqual(quality["acceptance_decision"], "rejected_article")
+
     def test_quality_demotes_consultant_when_target_requires_seller_or_academy_model(self) -> None:
         clean_text = "Asesoria y consultoria para ecommerce con presupuesto y servicios para empresas."
         metadata = {
