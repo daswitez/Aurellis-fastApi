@@ -83,19 +83,20 @@ class AISummaryTestCase(unittest.TestCase):
     def test_summarizes_quality_distribution(self) -> None:
         summary = _summarize_quality_usage(
             [
-                ("accepted", None),
-                ("rejected", "geo_mismatch"),
-                ("rejected", "geo_mismatch"),
-                ("needs_review", "geo_unknown"),
-                ("rejected", "low_contact_quality"),
-                (None, None),
+                ("accepted", None, "accepted_target"),
+                ("accepted", "rejected_directory", "rejected_directory"),
+                ("rejected", "geo_mismatch", "rejected_low_confidence"),
+                ("needs_review", "geo_unknown", "rejected_low_confidence"),
+                ("rejected", "low_contact_quality", "rejected_low_confidence"),
+                (None, None, None),
             ]
         )
 
         self.assertEqual(summary.accepted, 1)
-        self.assertEqual(summary.needs_review, 1)
-        self.assertEqual(summary.rejected, 3)
-        self.assertEqual(summary.rejection_reasons["geo_mismatch"], 2)
+        self.assertEqual(summary.needs_review, 0)
+        self.assertEqual(summary.rejected, 4)
+        self.assertEqual(summary.rejection_reasons["rejected_directory"], 1)
+        self.assertEqual(summary.rejection_reasons["geo_mismatch"], 1)
         self.assertEqual(summary.rejection_reasons["geo_unknown"], 1)
         self.assertEqual(summary.rejection_reasons["low_contact_quality"], 1)
 
@@ -126,8 +127,8 @@ class AISummaryTestCase(unittest.TestCase):
         )
 
         self.assertEqual(summary.accepted_count, 1)
-        self.assertEqual(summary.needs_review_count, 1)
-        self.assertEqual(summary.rejected_count, 2)
+        self.assertEqual(summary.needs_review_count, 0)
+        self.assertEqual(summary.rejected_count, 3)
         self.assertEqual(summary.candidates_processed, 6)
         self.assertEqual(summary.candidates_discovered, 8)
         self.assertEqual(summary.acceptance_rate, 0.1667)

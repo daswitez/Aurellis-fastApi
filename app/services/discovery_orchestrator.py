@@ -17,6 +17,8 @@ DEMO_FALLBACK_URLS = [
     "https://www.veterinariaanimalpolis.pe/",
 ]
 DEFAULT_SEARCH_PROVIDER_ORDER = ("duckduckgo_html",)
+DISCOVERY_PROVIDER_OVERFETCH_MULTIPLIER = 3
+DISCOVERY_PROVIDER_OVERFETCH_CAP = 30
 DISCOVERY_LANGUAGE_HINTS = {
     "es": [" el ", " la ", " de ", " para ", " con ", " coach ", " coaches ", " marca personal ", " cursos ", " programa ", " negocios "],
     "en": [" the ", " and ", " for ", " with ", " official ", " schedule ", " shop ", " discover ", " article ", " causes "],
@@ -32,7 +34,7 @@ DISCOVERY_TARGET_TOPIC_HINTS = {
 DISCOVERY_OFF_TARGET_HINTS = {
     "sports": [" schedule ", " hockey ", " nhl ", " tickets ", " ticket ", " calendar ", " game "],
     "media": [" broadcasting ", " newsroom ", " radio ", " latest news ", " trusted news ", " worldatlas ", " atlas ", " oscar ", " casual "],
-    "reference": [" crimea ", " peninsula ", " geography ", " encyclopedia ", " enciclopedia ", " historia ", " artigo ", " article "],
+    "reference": [" crimea ", " peninsula ", " geography ", " encyclopedia ", " enciclopedia ", " historia ", " artigo ", " article ", " zhihu ", " q&a ", " question ", " preguntas y respuestas "],
     "retail": [" polo ", " polos ", " shirt ", " shirts ", " collar ", " vitamins ", " supplements ", " collection "],
     "academic_editorial": [" que es el ecommerce ", " qué es el ecommerce ", " posgrado ", " instituto ", ".edu.", " universidad "],
     "search_utility": [" bing ", " imagenes ", " imágenes ", " wallpaper ", " fondos de pantalla ", "/images/feed", "duckduckgo", "search.yahoo.com"],
@@ -328,11 +330,15 @@ async def discover_prospect_urls_by_queries(
         )
 
     allow_social_profiles = _should_allow_social_profiles(user_profession)
+    provider_fetch_limit = max(
+        int(max_results or 0),
+        min(DISCOVERY_PROVIDER_OVERFETCH_CAP, max(int(max_results or 0), 1) * DISCOVERY_PROVIDER_OVERFETCH_MULTIPLIER),
+    )
 
     for provider in providers:
         result = await provider.search(
             queries,
-            max_results=max_results,
+            max_results=provider_fetch_limit,
             allow_social_profiles=allow_social_profiles,
         )
         last_result = result
@@ -350,7 +356,7 @@ async def discover_prospect_urls_by_queries(
             warning_messages.append(result.warning_message)
 
         if filtered_entries:
-            result.entries = filtered_entries
+            result.entries = filtered_entries[:max_results]
             result.excluded_results = excluded_results
             result.warning_message = "; ".join(warning_messages) if warning_messages else None
             return result

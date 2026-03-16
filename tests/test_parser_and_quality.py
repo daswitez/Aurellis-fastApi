@@ -1212,6 +1212,161 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertIsNone(quality["validated_location"])
         self.assertEqual(quality["location_match_status"], "unknown")
 
+    def test_quality_rejects_asset_page_for_creator_coach_target(self) -> None:
+        clean_text = "Tiktok | dafont.com fuente gratis para descargar."
+        metadata = {
+            "website_url": "https://www.dafont.com/es/tiktok.font",
+            "primary_identity_url": "https://www.dafont.com/es/tiktok.font",
+            "title": "Tiktok | dafont.com",
+            "description": "Fuente gratis TikTok",
+            "html_lang": "es",
+            "emails": ["webmaster@dafont.com"],
+            "phones": [],
+            "social_links": [],
+            "internal_links": ["https://www.dafont.com/contact.php"],
+            "structured_data": [],
+            "structured_data_evidence": [],
+            "form_detected": True,
+            "contact_channels": [{"type": "email", "value": "webmaster@dafont.com"}],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+        }
+        heuristic_data = {
+            "score": 0.61,
+            "confidence_level": "medium",
+            "inferred_niche": "Negocio local",
+            "generic_attributes": {"pain_points_detected": []},
+            "taxonomy_top_level": "general_services",
+            "taxonomy_business_type": "local_business",
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={
+                "search_query": "marcas personales ecommerce y coaches de negocios España",
+                "target_niche": "Marcas Personales y Coaches",
+                "target_location": "España",
+                "target_language": "es",
+            },
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "marcas personales coaches españa", "title": "Tiktok | dafont.com"},
+            entity_data=classify_entity_type(
+                target_url="https://www.dafont.com/es/tiktok.font",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "marcas personales coaches españa", "title": "Tiktok | dafont.com"},
+            ),
+        )
+
+        self.assertEqual(quality["acceptance_decision"], "rejected_low_confidence")
+        self.assertEqual(quality["rejection_reason"], "rejected_low_confidence")
+
+    def test_quality_rejects_coach_directory_or_school_for_creator_target(self) -> None:
+        clean_text = "Listado de coaches certificados por escuela de coaching en España."
+        metadata = {
+            "website_url": "https://efic.es/directorio-de-coaches/",
+            "primary_identity_url": "https://efic.es/directorio-de-coaches/",
+            "title": "Listado de Coaches - EFIC Escuela de Coaching",
+            "description": "Busca tu coach profesional.",
+            "html_lang": "es",
+            "emails": ["info@efic.es"],
+            "phones": ["+34954021058"],
+            "social_links": ["https://www.instagram.com/eficcoaching/"],
+            "internal_links": ["https://efic.es/servicios-a-empresas/"],
+            "structured_data": [],
+            "structured_data_evidence": [],
+            "form_detected": True,
+            "contact_channels": [{"type": "email", "value": "info@efic.es"}],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+        }
+        heuristic_data = {
+            "score": 0.88,
+            "confidence_level": "high",
+            "inferred_niche": "Servicios profesionales",
+            "generic_attributes": {"pain_points_detected": []},
+            "taxonomy_top_level": "professional_services",
+            "taxonomy_business_type": "professional_service",
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={
+                "search_query": "marcas personales ecommerce y coaches de negocios España",
+                "target_niche": "Marcas Personales y Coaches",
+                "target_location": "España",
+                "target_language": "es",
+            },
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "coaches españa", "title": "Listado de Coaches - EFIC Escuela de Coaching"},
+            entity_data=classify_entity_type(
+                target_url="https://efic.es/directorio-de-coaches/",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "coaches españa", "title": "Listado de Coaches - EFIC Escuela de Coaching"},
+            ),
+        )
+
+        self.assertEqual(quality["acceptance_decision"], "rejected_directory")
+        self.assertEqual(quality["rejection_reason"], "rejected_directory")
+
+    def test_quality_keeps_final_coach_business_as_target(self) -> None:
+        clean_text = "Servicios de coaching ejecutivo, liderazgo y programas para empresas en Madrid."
+        metadata = {
+            "website_url": "https://www.thecoaches.es/",
+            "primary_identity_url": "https://www.thecoaches.es/",
+            "title": "The Coaches - Leadership and Coaching",
+            "description": "Impulsando liderazgo sostenible",
+            "html_lang": "es",
+            "emails": ["agalofre@thecoaches.es"],
+            "phones": ["+34699094369"],
+            "social_links": [],
+            "internal_links": ["https://www.thecoaches.es/contacto"],
+            "structured_data": [],
+            "structured_data_evidence": [],
+            "form_detected": True,
+            "contact_channels": [{"type": "email", "value": "agalofre@thecoaches.es"}],
+            "cta_candidates": ["contact_form"],
+            "primary_cta": "contact_form",
+        }
+        heuristic_data = {
+            "score": 0.82,
+            "confidence_level": "high",
+            "inferred_niche": "Servicios profesionales",
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.8},
+            },
+            "taxonomy_top_level": "professional_services",
+            "taxonomy_business_type": "professional_service",
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={
+                "search_query": "marcas personales ecommerce y coaches de negocios España",
+                "target_niche": "Marcas Personales y Coaches",
+                "target_location": "España",
+                "target_language": "es",
+            },
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "coaches de negocios españa", "title": "The Coaches - Leadership and Coaching"},
+            entity_data=classify_entity_type(
+                target_url="https://www.thecoaches.es/",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "coaches de negocios españa", "title": "The Coaches - Leadership and Coaching"},
+            ),
+        )
+
+        self.assertEqual(quality["acceptance_decision"], "accepted_target")
+
 
 if __name__ == "__main__":
     unittest.main()

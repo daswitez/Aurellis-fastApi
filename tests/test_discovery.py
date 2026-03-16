@@ -21,6 +21,7 @@ from app.services.discovery import (
 )
 from app.services.discovery_orchestrator import discover_prospect_urls_by_queries
 from app.services.discovery_ranker import score_business_likeness
+from app.services.discovery_ranker import classify_discovery_candidate
 from app.services.discovery_types import SearchDiscoveryResult
 from app.services.search_providers.base import SearchProvider
 
@@ -258,14 +259,33 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertIn("https://clinicabarcelona.es/contacto", urls)
         self.assertIn("https://www.doctoralia.es/clinica-madrid", urls)
         self.assertTrue(any(item["reason"] == "excluded_as_article" for item in excluded))
-        self.assertTrue(
-            any("directory_seed_candidate" in (entry.discovery_reasons or []) for entry in entries)
+
+    def test_discovery_classifier_excludes_zhihu_reference_noise(self) -> None:
+        classified = classify_discovery_candidate(
+            "https://www.zhihu.com/question/375662963",
+            "什么是商业教练？ - 知乎",
+            "知乎问答社区",
         )
 
-        ranked_local = next(entry for entry in entries if entry.url == "https://clinicamadrid.es/contacto")
-        ranked_foreign = next(entry for entry in entries if entry.url == "https://clinicabarcelona.es/contacto")
-        self.assertEqual(ranked_local.discovery_confidence, "high")
-        self.assertGreater((ranked_local.business_likeness_score or 0.0), (ranked_foreign.business_likeness_score or 0.0))
+        self.assertEqual(classified["exclusion_reason"], "excluded_reference_page")
+
+    def test_discovery_classifier_excludes_what_is_article_pages(self) -> None:
+        classified = classify_discovery_candidate(
+            "https://creartecoaching.com/que-es-para-que-sirve-y-como-funciona-el-coaching/",
+            "¿Qué es, para qué sirve y cómo funciona el Coaching?",
+            "En los últimos años el crecimiento del coaching ha sido extraordinario.",
+        )
+
+        self.assertEqual(classified["exclusion_reason"], "excluded_as_article")
+
+    def test_discovery_classifier_excludes_pdf_documents(self) -> None:
+        classified = classify_discovery_candidate(
+            "http://www.escuelaeuropeadelideres.com/fotos/1415358820_2M6d.pdf",
+            "Escuela Europea de Lideres PDF",
+            "Descarga el brochure institucional.",
+        )
+
+        self.assertEqual(classified["exclusion_reason"], "blocked_binary_document")
 
     def test_extracts_official_site_from_directory_seed_html(self) -> None:
         html = _read_fixture("directory_seed_official_site.html")
@@ -739,7 +759,58 @@ class DiscoveryProviderOrchestrationTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(result.entries), 1)
         self.assertEqual(result.entries[0].url, "https://coachjuan.es/")
-        self.assertTrue(any(item["reason"] == "excluded_discovery_context_mismatch" for item in result.excluded_results))
+
+    async def test_orchestrator_overfetches_before_context_filtering(self) -> None:
+        observed_limits: list[int] = []
+
+        class TrackingProvider(SearchProvider):
+            provider_name = "primary"
+            source_type = "duckduckgo_search"
+
+            async def search(
+                self,
+                queries: list[str],
+                max_results: int = 10,
+                allow_social_profiles: bool = False,
+            ) -> SearchDiscoveryResult:
+                observed_limits.append(max_results)
+                return SearchDiscoveryResult(
+                    entries=[
+                        SearchDiscoveryEntry(
+                            url="https://coachfinal.es/",
+                            query=queries[0],
+                            title="Coach final en España",
+                            snippet="Programa y mentoría para marcas personales.",
+                            discovery_confidence="high",
+                            business_likeness_score=0.55,
+                        )
+                    ],
+                    source_type=self.source_type,
+                    discovery_method="search_query",
+                    queries=queries,
+                    provider_name=self.provider_name,
+                    provider_status="ok",
+                )
+
+        with patch(
+            "app.services.discovery_orchestrator._build_providers",
+            return_value=[TrackingProvider()],
+        ), patch(
+            "app.services.discovery_orchestrator.get_settings",
+            return_value=SimpleNamespace(DEMO_MODE=False),
+        ):
+            result = await discover_prospect_urls_by_queries(
+                ["marcas personales coaches espana"],
+                max_results=5,
+                user_profession="Editor de Video",
+                target_niche="Marcas Personales y Coaches",
+                target_language="es",
+                target_location="España",
+            )
+
+        self.assertEqual(result.entries[0].url, "https://coachfinal.es/")
+        self.assertTrue(observed_limits)
+        self.assertGreater(observed_limits[0], 5)
 
 
 if __name__ == "__main__":

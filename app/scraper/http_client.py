@@ -5,10 +5,47 @@ import logging
 import socket
 import ssl
 from typing import Optional
+from urllib.parse import urlparse
 
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+SUPPORTED_TEXT_CONTENT_TYPES = (
+    "text/html",
+    "text/plain",
+    "application/xhtml+xml",
+    "application/xml",
+)
+BINARY_CONTENT_TYPE_PREFIXES = (
+    "image/",
+    "audio/",
+    "video/",
+)
+BINARY_CONTENT_TYPES = {
+    "application/pdf",
+    "application/octet-stream",
+    "application/zip",
+    "application/x-zip-compressed",
+}
+BINARY_DOCUMENT_SUFFIXES = (
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".zip",
+    ".rar",
+    ".7z",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".svg",
+)
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -146,6 +183,33 @@ def _compute_backoff_delay(error: FetchHtmlError, attempt_number: int, base_seco
     return exponential_delay + jitter
 
 
+def _looks_like_binary_document_url(url: str | None) -> bool:
+    path = urlparse(str(url or "")).path.lower()
+    return any(path.endswith(suffix) for suffix in BINARY_DOCUMENT_SUFFIXES)
+
+
+def _is_supported_text_content_type(content_type: str | None) -> bool:
+    normalized = str(content_type or "").split(";", 1)[0].strip().lower()
+    if not normalized:
+        return True
+    if normalized in SUPPORTED_TEXT_CONTENT_TYPES:
+        return True
+    if any(normalized.startswith(prefix) for prefix in BINARY_CONTENT_TYPE_PREFIXES):
+        return False
+    if normalized in BINARY_CONTENT_TYPES:
+        return False
+    return normalized.startswith("text/")
+
+
+def _should_reject_response_content(url: str, content_type: str | None) -> bool:
+    if _looks_like_binary_document_url(url):
+        return True
+    normalized = str(content_type or "").split(";", 1)[0].strip().lower()
+    if not normalized:
+        return False
+    return not _is_supported_text_content_type(normalized)
+
+
 async def fetch_html(url: str, timeout: int = 15) -> str:
     """
     Realiza una petición HTTP asíncrona a la URL indicada seleccionando
@@ -182,7 +246,16 @@ async def fetch_html(url: str, timeout: int = 15) -> str:
             async with httpx.AsyncClient(headers=headers, follow_redirects=True, verify=verify_tls, timeout=timeout) as client:
                 response = await client.get(url)
                 response.raise_for_status() # Lanza excepción para 400s y 500s
-                return response.text
+                response_url = str(getattr(response, "url", url) or url)
+                content_type = response.headers.get("Content-Type")
+                if _should_reject_response_content(response_url, content_type):
+                    raise FetchHtmlError(
+                        url=response_url,
+                        error_type="unsupported_content",
+                        retryable=False,
+                        message=f"Contenido no soportado al visitar {response_url}: {content_type or 'unknown'}",
+                    )
+                return response.text.replace("\x00", "")
 
         except httpx.HTTPStatusError as e:
             classified_error = _classify_http_status(

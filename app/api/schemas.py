@@ -64,6 +64,9 @@ class JobCreateRequest(BaseModel):
     max_results: int = Field(default=10, ge=1, le=100)
     target_accepted_results: Optional[int] = Field(default=None, ge=1, le=100)
     max_candidates_to_process: Optional[int] = Field(default=None, ge=1, le=300)
+    adaptive_discovery: bool = True
+    adaptive_refinement_every_processed: int = Field(default=10, ge=1, le=100)
+    max_query_refinements: Optional[int] = Field(default=None, ge=0, le=20)
     
     
 class JobLogOut(BaseModel):
@@ -133,6 +136,16 @@ class JobOperationalSummary(BaseModel):
     article_directory_exclusion_ratio: float = 0.0
 
 
+class JobAdaptiveSummary(BaseModel):
+    adaptive_enabled: bool = False
+    iteration_count: int = 0
+    last_refinement_reason: Optional[str] = None
+    queries_executed_count: int = 0
+    unique_queries_generated_count: int = 0
+    accepted_since_last_refinement: int = 0
+    stopped_by: Optional[str] = None
+
+
 class JobsOperationalMetricsResponse(BaseModel):
     total_jobs: int = 0
     completed_jobs: int = 0
@@ -192,7 +205,28 @@ class JobResponse(BaseModel):
     quality_summary: Optional[JobQualitySummary] = None
     capture_summary: Optional[JobCaptureSummary] = None
     operational_summary: Optional[JobOperationalSummary] = None
+    adaptive_summary: Optional[JobAdaptiveSummary] = None
     recent_errors: List[JobLogOut] = Field(default_factory=list)
+
+
+class JobDiscoveryIterationOut(BaseModel):
+    id: int
+    iteration_index: int
+    phase: str
+    trigger_reason: str
+    input_context_json: Optional[Dict[str, Any]] = None
+    planner_output_json: Optional[Dict[str, Any]] = None
+    executed_queries_json: Optional[List[str]] = None
+    batch_stats_json: Optional[Dict[str, Any]] = None
+    excluded_reason_counts_json: Optional[Dict[str, int]] = None
+    sample_results_json: Optional[List[Dict[str, Any]]] = None
+    created_at: datetime
+
+
+class JobDiscoveryIterationsResponse(BaseModel):
+    job_id: int
+    total: int
+    items: List[JobDiscoveryIterationOut] = Field(default_factory=list)
 
 
 class SocialProfileOut(BaseModel):

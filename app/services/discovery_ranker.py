@@ -23,6 +23,7 @@ BLOCKED_DOMAIN_TOKENS = [
     "foursquare",
     "google.com",
     "googleusercontent",
+    "dafont.com",
 ]
 REFERENCE_DOMAIN_TOKENS = [
     "wikipedia.org",
@@ -42,6 +43,7 @@ REFERENCE_DOMAIN_TOKENS = [
     "verywellhealth.com",
     "verywellmind.com",
     "verywellfit.com",
+    "zhihu.com",
 ]
 MEDIA_NEWS_DOMAIN_TOKENS = [
     "marketwatch.com",
@@ -123,6 +125,13 @@ EDITORIAL_PATH_TOKENS = [
     "/insights/",
     "/tag/",
     "/wiki/",
+    "/question/",
+    "/questions/",
+    "/pregunta/",
+    "/que-es",
+    "/que-es-",
+    "/como-funciona",
+    "/como-funciona-",
 ]
 EDITORIAL_TITLE_TOKENS = [
     "100 ideas",
@@ -143,6 +152,12 @@ EDITORIAL_TITLE_TOKENS = [
     "prensa",
     "press",
     "newsroom",
+    "que es",
+    "qué es",
+    "como funciona",
+    "cómo funciona",
+    "para que sirve",
+    "para qué sirve",
     "estadisticas",
     "estadísticas",
     "mejores",
@@ -268,6 +283,18 @@ LARGE_ENTERPRISE_TOKENS = (
     "earnings",
     "investor relations",
 )
+BINARY_DOCUMENT_PATH_SUFFIXES = (
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".zip",
+    ".rar",
+    ".7z",
+)
 
 
 def clean_text(value: str | None) -> str:
@@ -276,6 +303,9 @@ def clean_text(value: str | None) -> str:
 
 def is_blocked_result(url: str, allow_social_profiles: bool = False) -> str | None:
     lowered_url = url.lower()
+    path = urlparse(url).path.lower()
+    if any(path.endswith(suffix) for suffix in BINARY_DOCUMENT_PATH_SUFFIXES):
+        return "blocked_binary_document"
     for blocked_token in BLOCKED_DOMAIN_TOKENS:
         if allow_social_profiles and blocked_token in {"facebook", "instagram", "tiktok", "linkedin"}:
             continue

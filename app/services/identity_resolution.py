@@ -376,6 +376,8 @@ def _classify_support_surface(url: str | None) -> dict[str, Any] | None:
     lowered = normalized.lower()
     if any(token in lowered for token in ["wa.me", "api.whatsapp.com", "whatsapp"]):
         return _build_direct_channel_surface("whatsapp", normalized)
+    if _looks_like_booking_url(normalized):
+        return _build_direct_channel_surface("booking", normalized)
     return classify_surface(normalized)
 
 
@@ -490,9 +492,21 @@ def _build_identity_hub_evidence(
 
     hub_contact_channels = sorted(
         {
-            str(channel.get("type") or "").strip().lower()
-            for channel in metadata.get("contact_channels", []) or []
-            if isinstance(channel, dict) and str(channel.get("type") or "").strip()
+            *[
+                str(channel.get("type") or "").strip().lower()
+                for channel in metadata.get("contact_channels", []) or []
+                if isinstance(channel, dict) and str(channel.get("type") or "").strip()
+            ],
+            *[
+                str(candidate.get("channel") or "").strip().lower()
+                for candidate in contact_candidates
+                if isinstance(candidate, dict) and str(candidate.get("channel") or "").strip()
+            ],
+            *[
+                str(candidate.get("channel") or "").strip().lower()
+                for candidate in offer_candidates
+                if isinstance(candidate, dict) and str(candidate.get("channel") or "").strip()
+            ],
         }
     )
     supports_contact = bool(contact_candidates or hub_contact_channels)

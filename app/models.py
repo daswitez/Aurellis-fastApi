@@ -44,6 +44,7 @@ class ScrapingJob(Base):
     prospects = relationship("Prospect", back_populates="job")
     job_prospects = relationship("JobProspect", back_populates="job")
     logs = relationship("ScrapingLog", back_populates="job")
+    discovery_iterations = relationship("JobDiscoveryIteration", back_populates="job")
 
 
 class Prospect(Base):
@@ -256,3 +257,22 @@ class ScrapingLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     job = relationship("ScrapingJob", back_populates="logs")
+
+
+class JobDiscoveryIteration(Base):
+    __tablename__ = "job_discovery_iterations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("scraping_jobs.id"), nullable=False, index=True)
+    iteration_index = Column(Integer, nullable=False)
+    phase = Column(String, nullable=False)
+    trigger_reason = Column(String, nullable=False)
+    input_context_json = Column(JSON, nullable=True)
+    planner_output_json = Column(JSON, nullable=True)
+    executed_queries_json = Column(JSON, nullable=True)
+    batch_stats_json = Column(JSON, nullable=True)
+    excluded_reason_counts_json = Column(JSON, nullable=True)
+    sample_results_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    job = relationship("ScrapingJob", back_populates="discovery_iterations")

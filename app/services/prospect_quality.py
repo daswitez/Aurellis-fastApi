@@ -214,6 +214,49 @@ QUALITY_LABEL_THRESHOLDS = (
 )
 TARGET_ECOMMERCE_HINTS = ("ecommerce", "tienda online", "shopify")
 TARGET_EDUCATION_HINTS = ("academia online", "cursos online", "escuela online", "formacion online", "productos digitales", "infoproductos")
+STRICT_CREATOR_COACH_HINTS = (
+    "marca personal",
+    "marcas personales",
+    "personal brand",
+    "coach",
+    "coaches",
+    "coaching",
+    "mentor",
+    "mentoria",
+    "mentoría",
+)
+STRICT_CREATOR_DIRECTORY_HINTS = (
+    "directorio",
+    "directory",
+    "listado",
+    "escuela",
+    "academy",
+    "instituto",
+    "school",
+    "certificacion",
+    "certificación",
+    "directorio de coaches",
+    "listado de coaches",
+    "escuela de coaching",
+)
+STRICT_CREATOR_ASSET_HINTS = (
+    "dafont",
+    ".font",
+    " fuente ",
+    " fuentes ",
+    " font ",
+    " fonts ",
+    " template ",
+    " templates ",
+    " icon ",
+    " icons ",
+    " wallpaper ",
+    " wallpapers ",
+    " mockup ",
+    " mockups ",
+    " trivia ",
+    " quiz ",
+)
 SERVICE_PROVIDER_HINTS = (
     "asesoria",
     "asesoría",
@@ -316,6 +359,57 @@ def _derive_target_business_models(context: dict[str, Any]) -> set[str]:
     if any(token in searchable for token in TARGET_EDUCATION_HINTS):
         models.add("education_business")
     return models
+
+
+def _is_strict_creator_coach_target(context: dict[str, Any]) -> bool:
+    searchable = _normalize_text(
+        " ".join(
+            [
+                str(context.get("target_niche") or ""),
+                str(context.get("search_query") or ""),
+                str(context.get("user_target_offer_focus") or ""),
+            ]
+        )
+    )
+    return any(hint in searchable for hint in STRICT_CREATOR_COACH_HINTS)
+
+
+def _detect_target_policy_violation(
+    *,
+    clean_text: str,
+    metadata: dict[str, Any],
+    discovery_metadata: dict[str, Any],
+    context: dict[str, Any],
+) -> str | None:
+    if not _is_strict_creator_coach_target(context):
+        return None
+
+    target_url = str(
+        metadata.get("primary_identity_url")
+        or metadata.get("website_url")
+        or discovery_metadata.get("url")
+        or ""
+    ).strip()
+    parsed = urlparse(target_url)
+    searchable = _normalize_text(
+        " ".join(
+            [
+                clean_text[:1800],
+                str(metadata.get("title") or ""),
+                str(metadata.get("description") or ""),
+                str(discovery_metadata.get("title") or ""),
+                str(discovery_metadata.get("query") or ""),
+                str(parsed.hostname or ""),
+                str(parsed.path or ""),
+            ]
+        )
+    )
+
+    if any(hint in searchable for hint in STRICT_CREATOR_DIRECTORY_HINTS):
+        return "rejected_directory"
+    if any(hint in searchable for hint in STRICT_CREATOR_ASSET_HINTS):
+        return "rejected_low_confidence"
+    return None
 
 
 def _detect_observed_business_model(
@@ -489,6 +583,8 @@ def _sanitize_location_text(value: str | None) -> str | None:
     if not normalized:
         return None
 
+    normalized = normalized.replace("\x00", "")
+    normalized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", normalized)
     normalized = URL_REGEX.sub(" ", normalized)
     normalized = re.sub(r"[\n\r\t|;]+", ", ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip(" ,.-")
@@ -1342,15 +1438,19 @@ def _classify_quality_status(
 ) -> tuple[str, str | None, list[str], float]:
     flags: list[str] = []
     score_multiplier = 1.0
+    is_social_profile = str(primary_identity_type or "").strip().lower() == "social_profile"
 
     if has_target_location and location_match_status == "mismatch":
         flags.append("geo_mismatch")
         return "rejected", "geo_mismatch", flags, 0.35
     if has_target_location and location_match_status == "unknown":
         flags.append("geo_unknown")
-        if heuristic_score < 0.45:
+        if is_social_profile:
+            score_multiplier = 0.9
+        elif heuristic_score < 0.45:
             return "rejected", "geo_unknown_low_score", flags, 0.8
-        return "needs_review", "geo_unknown", flags, 0.9
+        else:
+            return "needs_review", "geo_unknown", flags, 0.9
 
     if language_match_status == "mismatch":
         flags.append("language_mismatch")
@@ -1365,7 +1465,6 @@ def _classify_quality_status(
             return "rejected", "contact_inconsistent", flags, 0.55
         return "needs_review", "contact_inconsistent", flags, 0.75
 
-    is_social_profile = str(primary_identity_type or "").strip().lower() == "social_profile"
     if is_social_profile and social_business_evidence_count < 2:
         flags.append("weak_social_business_evidence")
         return "needs_review", "rejected_social_low_evidence", flags, 0.75
@@ -1388,6 +1487,7 @@ def _derive_acceptance_decision(
     *,
     quality_status: str,
     rejection_reason: str | None,
+    target_policy_violation: str | None,
     entity_type_detected: str | None,
     entity_type_confidence: str | None,
     is_target_entity: bool | None,
@@ -1407,6 +1507,15 @@ def _derive_acceptance_decision(
     normalized_business_model_fit = str(business_model_fit_status or "unknown").strip().lower()
     normalized_taxonomy_top_level = str(taxonomy_top_level or "").strip().lower()
     normalized_taxonomy_business_type = str(taxonomy_business_type or "").strip().lower()
+
+    if target_policy_violation == "rejected_directory":
+        return "rejected_directory", 0.2, 0.25
+    if target_policy_violation == "rejected_media":
+        return "rejected_media", 0.25, 0.3
+    if target_policy_violation == "rejected_article":
+        return "rejected_article", 0.15, 0.2
+    if target_policy_violation == "rejected_low_confidence":
+        return "rejected_low_confidence", 0.45, 0.45
 
     if normalized_entity_type in DIRECTORY_ENTITY_TYPES:
         return "rejected_directory", 0.2, 0.25
@@ -1617,12 +1726,21 @@ def evaluate_prospect_quality(
         primary_identity_type=primary_identity_type,
         social_business_evidence_count=social_business_evidence_count,
     )
+    target_policy_violation = _detect_target_policy_violation(
+        clean_text=clean_text,
+        metadata=metadata,
+        discovery_metadata=discovery_metadata,
+        context=context,
+    )
     is_target_entity = entity_data.get("is_target_entity")
     if is_target_entity is False:
         quality_flags.append("non_target_entity")
+    if target_policy_violation:
+        quality_flags.append(target_policy_violation)
     acceptance_decision, commercial_score_multiplier, score_cap = _derive_acceptance_decision(
         quality_status=quality_status,
         rejection_reason=rejection_reason,
+        target_policy_violation=target_policy_violation,
         entity_type_detected=entity_data.get("entity_type_detected"),
         entity_type_confidence=entity_data.get("entity_type_confidence"),
         is_target_entity=is_target_entity,
@@ -1637,6 +1755,10 @@ def evaluate_prospect_quality(
         taxonomy_business_type=heuristic_data.get("taxonomy_business_type")
         or heuristic_data.get("generic_attributes", {}).get("taxonomy_business_type"),
     )
+    if target_policy_violation:
+        rejection_reason = target_policy_violation
+    elif acceptance_decision.startswith("rejected_") and not rejection_reason:
+        rejection_reason = acceptance_decision
     score_multiplier = round(technical_score_multiplier * commercial_score_multiplier, 4)
 
     content_coverage = {

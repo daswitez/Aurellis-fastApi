@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import math
 from datetime import datetime
 from typing import Any, List
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, Query
 from sqlalchemy import desc, func, select
@@ -9,12 +11,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import JobProspect, Prospect, ScrapingJob, ScrapingLog
+from app.models import JobDiscoveryIteration, JobProspect, Prospect, ScrapingJob, ScrapingLog
 from app.api.schemas import (
+    JobAdaptiveSummary,
     JobAISummary,
     JobCaptureSummary,
     JobCommercialSummary,
     JobCreateRequest,
+    JobDiscoveryIterationOut,
+    JobDiscoveryIterationsResponse,
     JobLogOut,
     JobLogsResponse,
     JobOperationalSummary,
@@ -39,7 +44,7 @@ from app.services.discovery_orchestrator import discover_prospect_urls_by_querie
 from app.services.discovery_types import SearchDiscoveryEntry, SearchDiscoveryResult
 from app.services.db_upsert import save_scraped_prospect
 from app.services.source_metadata import normalize_discovery_method, normalize_source_type
-from app.services.ai_search_planner import generate_dynamic_search_plan
+from app.services.ai_search_planner import initial_search_plan, refine_search_plan
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,18 @@ COMMERCIAL_ROLLOUT_LAYERS = [
     "stage_4_public_api",
 ]
 COMMERCIAL_ROLLOUT_STAGE = COMMERCIAL_ROLLOUT_LAYERS[-1]
+DEFAULT_ADAPTIVE_REFINEMENT_WINDOW = 10
+MAX_REFINEMENT_DISCOVERY_BUDGET = 20
+COACH_DIRECTORY_HINTS = (
+    "directorio",
+    "directory",
+    "listado de coaches",
+    "escuela de coaching",
+    "escuela",
+    "instituto",
+    "academy",
+)
+ADAPTIVE_NOISE_DECISIONS = frozenset({"rejected_low_confidence", "rejected_media", "rejected_directory", "rejected_article"})
 
 
 def _utcnow() -> datetime:
@@ -144,6 +161,9 @@ def _build_job_context(
         "search_warning": search_warning,
         "target_accepted_results": filters_json.get("target_accepted_results"),
         "max_candidates_to_process": filters_json.get("max_candidates_to_process"),
+        "adaptive_discovery": filters_json.get("adaptive_discovery"),
+        "adaptive_refinement_every_processed": filters_json.get("adaptive_refinement_every_processed"),
+        "max_query_refinements": filters_json.get("max_query_refinements"),
     }
 
 
@@ -180,6 +200,214 @@ def _serialize_job_log(log: ScrapingLog) -> JobLogOut:
         url=context.get("url"),
         rank_position=context.get("rank_position"),
         error=context.get("error"),
+    )
+
+
+def _extract_domain_from_url(url: str | None) -> str | None:
+    parsed = urlparse(str(url or "").strip())
+    hostname = (parsed.hostname or "").strip().lower()
+    return hostname or None
+
+
+def _compute_default_max_query_refinements(max_candidates_to_process: int) -> int:
+    candidate_target = max(int(max_candidates_to_process or 0), 1)
+    return max(3, min(10, math.ceil(candidate_target / 5)))
+
+
+def _serialize_discovery_entry(entry: SearchDiscoveryEntry | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(entry, SearchDiscoveryEntry):
+        return {
+            "url": entry.url,
+            "query": entry.query,
+            "title": entry.title,
+            "snippet": entry.snippet,
+            "position": entry.position,
+            "discovery_confidence": entry.discovery_confidence,
+            "business_likeness_score": entry.business_likeness_score,
+            "result_kind": entry.result_kind,
+            "discovery_reasons": entry.discovery_reasons,
+        }
+    entry_dict = dict(entry)
+    return {
+        "url": entry_dict.get("url"),
+        "query": entry_dict.get("query"),
+        "title": entry_dict.get("title"),
+        "snippet": entry_dict.get("snippet"),
+        "position": entry_dict.get("position"),
+        "discovery_confidence": entry_dict.get("discovery_confidence"),
+        "business_likeness_score": entry_dict.get("business_likeness_score"),
+        "result_kind": entry_dict.get("result_kind"),
+        "discovery_reasons": entry_dict.get("discovery_reasons"),
+    }
+
+
+def _build_false_positive_samples(processed_window: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for item in processed_window:
+        normalized_decision = str(item.get("acceptance_decision") or "").strip().lower()
+        if normalized_decision not in {
+            "rejected_low_confidence",
+            "rejected_directory",
+            "rejected_media",
+            "rejected_article",
+        }:
+            continue
+        samples.append(
+            {
+                "url": item.get("url"),
+                "domain": item.get("domain"),
+                "title": item.get("title"),
+                "query": item.get("query"),
+                "acceptance_decision": item.get("acceptance_decision"),
+                "rejection_reason": item.get("rejection_reason"),
+            }
+        )
+        if len(samples) >= 8:
+            break
+    return samples
+
+
+def _build_accepted_samples(processed_window: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for item in processed_window:
+        if str(item.get("acceptance_decision") or "").strip().lower() != "accepted_target":
+            continue
+        samples.append(
+            {
+                "url": item.get("url"),
+                "domain": item.get("domain"),
+                "title": item.get("title"),
+                "query": item.get("query"),
+                "company_name": item.get("company_name"),
+            }
+        )
+        if len(samples) >= 4:
+            break
+    return samples
+
+
+def _summarize_processed_window(processed_window: list[dict[str, Any]]) -> dict[str, Any]:
+    accepted_target_delta = 0
+    rejected_reasons: dict[str, int] = {}
+    acceptance_decisions: dict[str, int] = {}
+
+    for item in processed_window:
+        decision = str(item.get("acceptance_decision") or "").strip().lower()
+        rejection_reason = str(item.get("rejection_reason") or "").strip().lower()
+        if decision == "accepted_target":
+            accepted_target_delta += 1
+        if decision:
+            acceptance_decisions[decision] = acceptance_decisions.get(decision, 0) + 1
+        if rejection_reason:
+            rejected_reasons[rejection_reason] = rejected_reasons.get(rejection_reason, 0) + 1
+
+    noise_count = sum(
+        acceptance_decisions.get(reason, 0)
+        for reason in ("rejected_low_confidence", "rejected_media", "rejected_directory", "rejected_article")
+    )
+    processed_count = len(processed_window)
+    return {
+        "processed_count": processed_count,
+        "accepted_target_delta": accepted_target_delta,
+        "acceptance_decisions": acceptance_decisions,
+        "rejection_reasons": rejected_reasons,
+        "noise_count": noise_count,
+        "noise_ratio": round((noise_count / processed_count), 4) if processed_count else 0.0,
+    }
+
+
+def _should_trigger_adaptive_refinement(
+    *,
+    window_stats: dict[str, Any],
+    candidate_queue_empty: bool,
+    refinement_window: int,
+) -> tuple[bool, str | None]:
+    processed_count = int(window_stats.get("processed_count") or 0)
+    accepted_target_delta = int(window_stats.get("accepted_target_delta") or 0)
+    noise_ratio = float(window_stats.get("noise_ratio") or 0.0)
+    if candidate_queue_empty:
+        return True, "queue_exhausted"
+    if processed_count >= refinement_window and accepted_target_delta == 0:
+        return True, "low_acceptance_window"
+    if processed_count >= refinement_window and noise_ratio >= 0.5:
+        return True, "high_noise_window"
+    return False, None
+
+
+def _prepend_query_batches(
+    *,
+    existing_batches: list[list[str]],
+    next_batch_index: int,
+    new_batches: list[list[str]],
+) -> tuple[list[list[str]], int]:
+    pending_existing = [batch for batch in existing_batches[next_batch_index:] if batch]
+    prepended = [batch for batch in new_batches if batch]
+    return prepended + pending_existing, 0
+
+
+def _filter_new_queries(
+    query_batches: list[list[str]],
+    *,
+    seen_queries: set[str],
+) -> list[list[str]]:
+    filtered_batches: list[list[str]] = []
+    for batch in query_batches:
+        filtered_batch: list[str] = []
+        for query in batch:
+            normalized = " ".join(str(query or "").strip().split())
+            lowered = normalized.lower()
+            if not normalized or lowered in seen_queries:
+                continue
+            seen_queries.add(lowered)
+            filtered_batch.append(normalized)
+        if filtered_batch:
+            filtered_batches.append(filtered_batch)
+    return filtered_batches
+
+
+async def _append_discovery_iteration(
+    db: AsyncSession,
+    *,
+    job_id: int,
+    iteration_index: int,
+    phase: str,
+    trigger_reason: str,
+    input_context_json: dict[str, Any] | None,
+    planner_output_json: dict[str, Any] | None,
+    executed_queries_json: list[str] | None,
+    batch_stats_json: dict[str, Any] | None,
+    excluded_reason_counts_json: dict[str, int] | None,
+    sample_results_json: list[dict[str, Any]] | None,
+) -> None:
+    db.add(
+        JobDiscoveryIteration(
+            job_id=job_id,
+            iteration_index=iteration_index,
+            phase=phase,
+            trigger_reason=trigger_reason,
+            input_context_json=input_context_json,
+            planner_output_json=planner_output_json,
+            executed_queries_json=executed_queries_json,
+            batch_stats_json=batch_stats_json,
+            excluded_reason_counts_json=excluded_reason_counts_json,
+            sample_results_json=sample_results_json,
+        )
+    )
+
+
+def _serialize_discovery_iteration(iteration: JobDiscoveryIteration) -> JobDiscoveryIterationOut:
+    return JobDiscoveryIterationOut(
+        id=iteration.id,
+        iteration_index=iteration.iteration_index,
+        phase=iteration.phase,
+        trigger_reason=iteration.trigger_reason,
+        input_context_json=iteration.input_context_json,
+        planner_output_json=iteration.planner_output_json,
+        executed_queries_json=iteration.executed_queries_json,
+        batch_stats_json=iteration.batch_stats_json,
+        excluded_reason_counts_json=iteration.excluded_reason_counts_json,
+        sample_results_json=iteration.sample_results_json,
+        created_at=iteration.created_at,
     )
 
 
@@ -245,14 +473,23 @@ async def _get_job_ai_summary(db: AsyncSession, job_id: int) -> JobAISummary:
     return _summarize_ai_usage(raw_extractions)
 
 
-def _summarize_quality_usage(rows: list[tuple[str | None, str | None]]) -> JobQualitySummary:
+def _summarize_quality_usage(
+    rows: list[tuple[str | None, str | None] | tuple[str | None, str | None, str | None]]
+) -> JobQualitySummary:
     accepted = 0
     needs_review = 0
     rejected = 0
     rejection_reasons: dict[str, int] = {}
 
-    for quality_status, rejection_reason in rows:
-        if quality_status == "accepted":
+    for row in rows:
+        quality_status = row[0] if len(row) >= 1 else None
+        rejection_reason = row[1] if len(row) >= 2 else None
+        acceptance_decision = row[2] if len(row) >= 3 else None
+        normalized_decision = str(acceptance_decision or "").strip().lower()
+
+        if normalized_decision.startswith("rejected_"):
+            rejected += 1
+        elif quality_status == "accepted":
             accepted += 1
         elif quality_status == "needs_review":
             needs_review += 1
@@ -289,7 +526,7 @@ def _parse_results_quality_filter(value: str | None) -> list[str]:
 
 async def _get_job_quality_summary(db: AsyncSession, job_id: int) -> JobQualitySummary:
     result = await db.execute(
-        select(JobProspect.quality_status, JobProspect.rejection_reason)
+        select(JobProspect.quality_status, JobProspect.rejection_reason, JobProspect.acceptance_decision)
         .where(JobProspect.job_id == job_id)
     )
     rows = list(result.all())
@@ -316,7 +553,7 @@ def _summarize_capture_usage(
     max_candidates_to_process: int,
     stopped_reason: str | None,
 ) -> JobCaptureSummary:
-    quality_summary = _summarize_quality_usage([(quality_status, rejection_reason) for quality_status, rejection_reason, _ in rows])
+    quality_summary = _summarize_quality_usage(rows)
     dropoff: dict[str, int] = {}
     accepted_count = 0
     for quality_status, rejection_reason, acceptance_decision in rows:
@@ -405,6 +642,53 @@ async def _get_job_operational_summary(
         job=job,
         capture_summary=capture_summary,
         excluded_reason_counts=excluded_reason_counts,
+    )
+
+
+async def _get_job_adaptive_summary(db: AsyncSession, job: ScrapingJob) -> JobAdaptiveSummary:
+    filters_json = job.filters_json or {}
+    adaptive_enabled = bool(filters_json.get("adaptive_discovery"))
+    if not adaptive_enabled:
+        return JobAdaptiveSummary(adaptive_enabled=False)
+
+    iteration_rows = (
+        await db.execute(
+            select(JobDiscoveryIteration)
+            .where(JobDiscoveryIteration.job_id == job.id)
+            .order_by(JobDiscoveryIteration.iteration_index.asc(), JobDiscoveryIteration.created_at.asc())
+        )
+    ).scalars().all()
+    final_log = (
+        await db.execute(
+            select(ScrapingLog)
+            .where(ScrapingLog.job_id == job.id, ScrapingLog.message == "Job finalizado")
+            .order_by(desc(ScrapingLog.created_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    final_context = final_log.context_json if final_log and isinstance(final_log.context_json, dict) else {}
+
+    queries_executed: list[str] = []
+    unique_queries: set[str] = set()
+    last_refinement_reason: str | None = None
+    for iteration in iteration_rows:
+        for query in iteration.executed_queries_json or []:
+            normalized = " ".join(str(query or "").strip().split())
+            if not normalized:
+                continue
+            queries_executed.append(normalized)
+            unique_queries.add(normalized.lower())
+        if iteration.phase == "refinement":
+            last_refinement_reason = iteration.trigger_reason
+
+    return JobAdaptiveSummary(
+        adaptive_enabled=adaptive_enabled,
+        iteration_count=len(iteration_rows),
+        last_refinement_reason=last_refinement_reason,
+        queries_executed_count=len(queries_executed),
+        unique_queries_generated_count=len(unique_queries),
+        accepted_since_last_refinement=int(final_context.get("accepted_since_last_refinement") or 0),
+        stopped_by=final_context.get("stopped_reason"),
     )
 
 
@@ -644,6 +928,7 @@ async def _discover_next_candidate_batch(
     target_language: str | None = None,
     target_location: str | None = None,
     target_budget_signals: list[str] | None = None,
+    batch_budget_override: int | None = None,
 ) -> tuple[list[SearchDiscoveryEntry], int, list[str], list[dict], str | None]:
     warnings: list[str] = []
     excluded_results: list[dict] = []
@@ -655,10 +940,14 @@ async def _discover_next_candidate_batch(
         if not batch_queries:
             continue
 
-        batch_budget = resolve_discovery_batch_budget(
-            target_accepted_results=target_accepted_results,
-            candidate_cap=candidate_cap,
-            remaining_budget=remaining_budget,
+        batch_budget = (
+            int(batch_budget_override)
+            if batch_budget_override is not None
+            else resolve_discovery_batch_budget(
+                target_accepted_results=target_accepted_results,
+                candidate_cap=candidate_cap,
+                remaining_budget=remaining_budget,
+            )
         )
         if batch_budget <= 0:
             break
@@ -713,9 +1002,9 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
     pero para este MVP podemos instanciar una nueva AsyncSession aquí dentro.
     """
     from app.database import AsyncSessionLocal
-    
+
     logger.info(f"Worker Iniciado. Lanzando Scraping para Job {job_id}")
-    
+
     async with AsyncSessionLocal() as db:
         try:
             job = await db.get(ScrapingJob, job_id)
@@ -757,6 +1046,33 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             total_skipped = 0
             accepted_results = 0
             stopped_reason: str | None = None
+            adaptive_discovery = bool(
+                job_context.get("adaptive_discovery")
+                and normalize_discovery_method(job_context.get("discovery_method")) == "search_query"
+            )
+            adaptive_refinement_every_processed = int(
+                job_context.get("adaptive_refinement_every_processed") or DEFAULT_ADAPTIVE_REFINEMENT_WINDOW
+            )
+            max_query_refinements = int(job_context.get("max_query_refinements") or 0)
+            refinement_count = 0
+            last_refinement_reason: str | None = None
+            accepted_since_last_refinement = 0
+            processed_window: list[dict[str, Any]] = []
+            window_excluded_reason_counts: dict[str, int] = {}
+            executed_queries_history = [
+                " ".join(str(query or "").strip().split())
+                for query in (job_context.get("discovery_queries") or [])
+                if " ".join(str(query or "").strip().split())
+            ]
+            seen_queries = {query.lower() for query in executed_queries_history}
+            seen_domains = {
+                domain
+                for domain in (
+                    _extract_domain_from_url(entry.url) if isinstance(entry, SearchDiscoveryEntry) else _extract_domain_from_url(entry.get("url")) if isinstance(entry, dict) else _extract_domain_from_url(str(entry))
+                    for entry in candidate_queue
+                )
+                if domain
+            }
 
             job.status = "running"
             job.started_at = _utcnow()
@@ -795,6 +1111,9 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     "max_candidates_to_process": max_candidates_to_process,
                     "candidate_batch_size": candidate_batch_size,
                     "pending_discovery_batches": max(len(query_batches) - next_discovery_batch_index, 0),
+                    "adaptive_discovery": adaptive_discovery,
+                    "adaptive_refinement_every_processed": adaptive_refinement_every_processed,
+                    "max_query_refinements": max_query_refinements,
                 },
             )
             await db.commit()
@@ -807,81 +1126,216 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
 
                 if not candidate_queue:
                     remaining_budget = max_candidates_to_process - total_found
-                    if remaining_budget <= 0 or next_discovery_batch_index >= len(query_batches):
+                    if remaining_budget <= 0:
                         break
 
-                    new_entries, next_discovery_batch_index, used_queries, excluded_results, warning_message = await _discover_next_candidate_batch(
-                        query_batches=query_batches,
-                        next_batch_index=next_discovery_batch_index,
-                        target_accepted_results=target_accepted_results,
-                        candidate_cap=max_candidates_to_process,
-                        remaining_budget=remaining_budget,
-                        seen_urls=seen_candidate_urls,
-                        user_profession=job_context.get("user_profession"),
-                        target_niche=job_context.get("target_niche"),
-                        target_language=job_context.get("target_language"),
-                        target_location=job_context.get("target_location"),
-                        target_budget_signals=job_context.get("target_budget_signals"),
-                    )
+                    discovery_opened = False
+                    while remaining_budget > 0:
+                        if next_discovery_batch_index >= len(query_batches):
+                            if not adaptive_discovery:
+                                break
 
-                    if warning_message:
-                        await _append_job_log(
-                            db,
-                            job_id,
-                            "WARNING",
-                            "Discovery incremental devolvio avisos",
-                            source_name="discovery",
-                            context_json={
-                                "queries": used_queries,
-                                "warning_message": warning_message,
-                            },
+                            window_stats = _summarize_processed_window(processed_window)
+                            should_refine, trigger_reason = _should_trigger_adaptive_refinement(
+                                window_stats=window_stats,
+                                candidate_queue_empty=True,
+                                refinement_window=adaptive_refinement_every_processed,
+                            )
+                            if (
+                                not should_refine
+                                or refinement_count >= max_query_refinements
+                            ):
+                                if refinement_count >= max_query_refinements:
+                                    stopped_reason = "refinement_limit_reached"
+                                break
+
+                            false_positive_samples = _build_false_positive_samples(processed_window)
+                            accepted_samples = _build_accepted_samples(processed_window)
+                            top_rejection_reasons = dict(
+                                sorted(
+                                    (window_stats.get("rejection_reasons") or {}).items(),
+                                    key=lambda item: (-int(item[1] or 0), str(item[0])),
+                                )[:5]
+                            )
+                            iteration_memory = {
+                                "trigger_reason": trigger_reason,
+                                "window_stats": window_stats,
+                                "top_rejection_reasons": top_rejection_reasons,
+                                "queries_already_executed": executed_queries_history[-25:],
+                                "seen_domains": sorted(seen_domains)[:40],
+                                "false_positive_samples": false_positive_samples,
+                                "accepted_samples": accepted_samples,
+                            }
+                            refined_plan = await refine_search_plan(job_context, iteration_memory)
+                            refined_batches = build_discovery_query_batches(
+                                search_query=job_context.get("search_query"),
+                                user_profession=job_context.get("user_profession"),
+                                user_technologies=job_context.get("user_technologies"),
+                                target_niche=job_context.get("target_niche"),
+                                target_location=job_context.get("target_location"),
+                                target_language=job_context.get("target_language"),
+                                user_service_offers=job_context.get("user_service_offers"),
+                                user_service_constraints=job_context.get("user_service_constraints"),
+                                user_target_offer_focus=job_context.get("user_target_offer_focus"),
+                                target_budget_signals=job_context.get("target_budget_signals"),
+                                ai_dork_queries=refined_plan.get("optimal_dork_queries"),
+                                ai_negative_terms=refined_plan.get("dynamic_negative_terms"),
+                            )
+                            refined_batches = _filter_new_queries(refined_batches, seen_queries=seen_queries)
+                            if not refined_batches:
+                                stopped_reason = "refinement_limit_reached" if refinement_count >= max_query_refinements else "discovery_exhausted"
+                                break
+
+                            appended_queries = _flatten_query_batches(refined_batches)
+                            query_batches, next_discovery_batch_index = _prepend_query_batches(
+                                existing_batches=query_batches,
+                                next_batch_index=next_discovery_batch_index,
+                                new_batches=refined_batches,
+                            )
+                            executed_queries_history.extend(appended_queries)
+                            refinement_count += 1
+                            last_refinement_reason = trigger_reason
+                            accepted_since_last_refinement = 0
+                            await _append_discovery_iteration(
+                                db,
+                                job_id=job_id,
+                                iteration_index=refinement_count,
+                                phase="refinement",
+                                trigger_reason=trigger_reason or "queue_exhausted",
+                                input_context_json=iteration_memory,
+                                planner_output_json=refined_plan,
+                                executed_queries_json=appended_queries,
+                                batch_stats_json=window_stats,
+                                excluded_reason_counts_json=window_excluded_reason_counts or {},
+                                sample_results_json=false_positive_samples or accepted_samples,
+                            )
+                            await _append_job_log(
+                                db,
+                                job_id,
+                                "INFO",
+                                "Discovery refinado con DeepSeek",
+                                source_name="discovery",
+                                context_json={
+                                    "iteration_index": refinement_count,
+                                    "trigger_reason": trigger_reason,
+                                    "refinement_goal": refined_plan.get("refinement_goal"),
+                                    "queries": appended_queries,
+                                    "window_stats": window_stats,
+                                    "top_rejection_reasons": top_rejection_reasons,
+                                },
+                            )
+                            await db.commit()
+                            processed_window = []
+                            window_excluded_reason_counts = {}
+                            remaining_budget = max_candidates_to_process - total_found
+                            continue
+
+                        discovery_budget_override = None
+                        if adaptive_discovery and refinement_count > 0:
+                            discovery_budget_override = min(MAX_REFINEMENT_DISCOVERY_BUDGET, remaining_budget)
+                        new_entries, next_discovery_batch_index, used_queries, excluded_results, warning_message = await _discover_next_candidate_batch(
+                            query_batches=query_batches,
+                            next_batch_index=next_discovery_batch_index,
+                            target_accepted_results=target_accepted_results,
+                            candidate_cap=max_candidates_to_process,
+                            remaining_budget=remaining_budget,
+                            seen_urls=seen_candidate_urls,
+                            user_profession=job_context.get("user_profession"),
+                            target_niche=job_context.get("target_niche"),
+                            target_language=job_context.get("target_language"),
+                            target_location=job_context.get("target_location"),
+                            target_budget_signals=job_context.get("target_budget_signals"),
+                            batch_budget_override=discovery_budget_override,
                         )
 
-                    if excluded_results:
+                        if used_queries:
+                            for query in used_queries:
+                                normalized_query = " ".join(str(query or "").strip().split())
+                                if not normalized_query:
+                                    continue
+                                executed_queries_history.append(normalized_query)
+                                seen_queries.add(normalized_query.lower())
+
+                        excluded_reason_counts = _summarize_excluded_reason_counts(excluded_results)
+                        if excluded_reason_counts:
+                            window_excluded_reason_counts = _merge_reason_counts(
+                                window_excluded_reason_counts,
+                                excluded_reason_counts,
+                            )
+
+                        if warning_message:
+                            await _append_job_log(
+                                db,
+                                job_id,
+                                "WARNING",
+                                "Discovery incremental devolvio avisos",
+                                source_name="discovery",
+                                context_json={
+                                    "queries": used_queries,
+                                    "warning_message": warning_message,
+                                },
+                            )
+
+                        if excluded_results:
+                            await _append_job_log(
+                                db,
+                                job_id,
+                                "INFO",
+                                "Discovery incremental registro exclusiones tempranas",
+                                source_name="discovery",
+                                context_json={
+                                    "queries": used_queries,
+                                    "excluded_results_count": len(excluded_results),
+                                    "excluded_reason_counts": excluded_reason_counts,
+                                    "excluded_results_preview": excluded_results[:20],
+                                },
+                            )
+
+                        if not new_entries:
+                            await db.commit()
+                            if adaptive_discovery:
+                                continue
+                            break
+
+                        for index, entry in enumerate(new_entries, start=total_found + 1):
+                            entry.position = index
+                            if entry.url:
+                                domain = _extract_domain_from_url(entry.url)
+                                if domain:
+                                    seen_domains.add(domain)
+                        candidate_queue.extend(new_entries)
+                        total_found += len(new_entries)
+                        _apply_job_runtime_totals(
+                            job,
+                            total_found=total_found,
+                            total_processed=total_processed,
+                            total_saved=total_saved,
+                            total_failed=total_failed,
+                            total_skipped=total_skipped,
+                        )
                         await _append_job_log(
                             db,
                             job_id,
                             "INFO",
-                            "Discovery incremental registro exclusiones tempranas",
+                            "Discovery reabierto por captura insuficiente",
                             source_name="discovery",
                             context_json={
                                 "queries": used_queries,
-                                "excluded_results_count": len(excluded_results),
-                                "excluded_reason_counts": _summarize_excluded_reason_counts(excluded_results),
-                                "excluded_results_preview": excluded_results[:20],
+                                "new_candidates": len(new_entries),
+                                "total_found": total_found,
+                                "accepted_results_so_far": accepted_results,
+                                "iteration_budget": discovery_budget_override,
                             },
                         )
-
-                    if not new_entries:
                         await db.commit()
+                        discovery_opened = True
                         break
 
-                    for index, entry in enumerate(new_entries, start=total_found + 1):
-                        entry.position = index
-                    candidate_queue.extend(new_entries)
-                    total_found += len(new_entries)
-                    _apply_job_runtime_totals(
-                        job,
-                        total_found=total_found,
-                        total_processed=total_processed,
-                        total_saved=total_saved,
-                        total_failed=total_failed,
-                        total_skipped=total_skipped,
-                    )
-                    await _append_job_log(
-                        db,
-                        job_id,
-                        "INFO",
-                        "Discovery reabierto por captura insuficiente",
-                        source_name="discovery",
-                        context_json={
-                            "queries": used_queries,
-                            "new_candidates": len(new_entries),
-                            "total_found": total_found,
-                            "accepted_results_so_far": accepted_results,
-                        },
-                    )
-                    await db.commit()
+                    if not candidate_queue:
+                        await db.commit()
+                        break
+                    if discovery_opened:
+                        remaining_budget = max_candidates_to_process - total_found
 
                 current_batch = candidate_queue[:candidate_batch_size]
                 candidate_queue = candidate_queue[candidate_batch_size:]
@@ -1056,6 +1510,10 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                             total_saved += 1
                             if prospect_dict.get("acceptance_decision") == "accepted_target":
                                 accepted_results += 1
+                                accepted_since_last_refinement += 1
+                            prospect_domain = str(saved_prospect.domain or prospect_dict.get("domain") or "").strip().lower()
+                            if prospect_domain:
+                                seen_domains.add(prospect_domain)
                             _apply_job_runtime_totals(
                                 job,
                                 total_found=total_found,
@@ -1099,6 +1557,17 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 source_name="worker",
                                 context_json={"url": url, "rank_position": rank_position},
                             )
+                        processed_window.append(
+                            {
+                                "url": url,
+                                "domain": str(saved_prospect.domain if saved_prospect else prospect_dict.get("domain") or ""),
+                                "title": str(prospect_dict.get("company_name") or discovery_entry.get("title") or ""),
+                                "company_name": prospect_dict.get("company_name"),
+                                "query": discovery_entry.get("query"),
+                                "acceptance_decision": prospect_dict.get("acceptance_decision"),
+                                "rejection_reason": prospect_dict.get("rejection_reason"),
+                            }
+                        )
                         await db.commit()
 
                         if accepted_results >= target_accepted_results:
@@ -1168,6 +1637,16 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                             source_name="worker",
                             context_json=error_context,
                         )
+                        processed_window.append(
+                            {
+                                "url": url,
+                                "domain": _extract_domain_from_url(url),
+                                "title": str(discovery_entry.get("title") or ""),
+                                "query": discovery_entry.get("query"),
+                                "acceptance_decision": "rejected_low_confidence",
+                                "rejection_reason": "processing_failed",
+                            }
+                        )
                         await db.commit()
                         if isinstance(e, SQLAlchemyError):
                             raise
@@ -1189,6 +1668,96 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     },
                 )
                 await db.commit()
+
+                if adaptive_discovery and stopped_reason != "target_reached":
+                    window_stats = _summarize_processed_window(processed_window)
+                    should_refine, trigger_reason = _should_trigger_adaptive_refinement(
+                        window_stats=window_stats,
+                        candidate_queue_empty=not candidate_queue,
+                        refinement_window=adaptive_refinement_every_processed,
+                    )
+                    if should_refine and refinement_count < max_query_refinements:
+                        false_positive_samples = _build_false_positive_samples(processed_window)
+                        accepted_samples = _build_accepted_samples(processed_window)
+                        top_rejection_reasons = dict(
+                            sorted(
+                                (window_stats.get("rejection_reasons") or {}).items(),
+                                key=lambda item: (-int(item[1] or 0), str(item[0])),
+                            )[:5]
+                        )
+                        iteration_memory = {
+                            "trigger_reason": trigger_reason,
+                            "window_stats": window_stats,
+                            "top_rejection_reasons": top_rejection_reasons,
+                            "queries_already_executed": executed_queries_history[-25:],
+                            "seen_domains": sorted(seen_domains)[:40],
+                            "false_positive_samples": false_positive_samples,
+                            "accepted_samples": accepted_samples,
+                        }
+                        refined_plan = await refine_search_plan(job_context, iteration_memory)
+                        refined_batches = build_discovery_query_batches(
+                            search_query=job_context.get("search_query"),
+                            user_profession=job_context.get("user_profession"),
+                            user_technologies=job_context.get("user_technologies"),
+                            target_niche=job_context.get("target_niche"),
+                            target_location=job_context.get("target_location"),
+                            target_language=job_context.get("target_language"),
+                            user_service_offers=job_context.get("user_service_offers"),
+                            user_service_constraints=job_context.get("user_service_constraints"),
+                            user_target_offer_focus=job_context.get("user_target_offer_focus"),
+                            target_budget_signals=job_context.get("target_budget_signals"),
+                            ai_dork_queries=refined_plan.get("optimal_dork_queries"),
+                            ai_negative_terms=refined_plan.get("dynamic_negative_terms"),
+                        )
+                        refined_batches = _filter_new_queries(refined_batches, seen_queries=seen_queries)
+                        if refined_batches:
+                            appended_queries = _flatten_query_batches(refined_batches)
+                            query_batches, next_discovery_batch_index = _prepend_query_batches(
+                                existing_batches=query_batches,
+                                next_batch_index=next_discovery_batch_index,
+                                new_batches=refined_batches,
+                            )
+                            executed_queries_history.extend(appended_queries)
+                            refinement_count += 1
+                            last_refinement_reason = trigger_reason
+                            accepted_since_last_refinement = 0
+                            await _append_discovery_iteration(
+                                db,
+                                job_id=job_id,
+                                iteration_index=refinement_count,
+                                phase="refinement",
+                                trigger_reason=trigger_reason or "high_noise_window",
+                                input_context_json=iteration_memory,
+                                planner_output_json=refined_plan,
+                                executed_queries_json=appended_queries,
+                                batch_stats_json=window_stats,
+                                excluded_reason_counts_json=window_excluded_reason_counts or {},
+                                sample_results_json=false_positive_samples or accepted_samples,
+                            )
+                            await _append_job_log(
+                                db,
+                                job_id,
+                                "INFO",
+                                "Discovery refinado con DeepSeek",
+                                source_name="discovery",
+                                context_json={
+                                    "iteration_index": refinement_count,
+                                    "trigger_reason": trigger_reason,
+                                    "refinement_goal": refined_plan.get("refinement_goal"),
+                                    "queries": appended_queries,
+                                    "window_stats": window_stats,
+                                    "top_rejection_reasons": top_rejection_reasons,
+                                },
+                            )
+                            await db.commit()
+                            processed_window = []
+                            window_excluded_reason_counts = {}
+                        elif not candidate_queue and next_discovery_batch_index >= len(query_batches):
+                            stopped_reason = "refinement_limit_reached" if refinement_count >= max_query_refinements else "discovery_exhausted"
+                            break
+                    elif should_refine and refinement_count >= max_query_refinements and not candidate_queue:
+                        stopped_reason = "refinement_limit_reached"
+                        break
 
                 if stopped_reason == "target_reached":
                     break
@@ -1229,6 +1798,12 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     "accepted_results": accepted_results,
                     "max_candidates_to_process": max_candidates_to_process,
                     "stopped_reason": stopped_reason,
+                    "adaptive_enabled": adaptive_discovery,
+                    "refinement_count": refinement_count,
+                    "last_refinement_reason": last_refinement_reason,
+                    "accepted_since_last_refinement": accepted_since_last_refinement,
+                    "queries_executed_count": len(executed_queries_history),
+                    "unique_queries_generated_count": len({query.lower() for query in executed_queries_history}),
                     "ai_attempts": ai_attempts,
                     "ai_successes": ai_successes,
                     "ai_fallbacks": ai_fallbacks,
@@ -1302,7 +1877,19 @@ async def create_scraping_job(
         target_location=payload.target_location,
         target_niche=payload.target_niche,
     )
-    ai_search_plan = await generate_dynamic_search_plan(payload.model_dump())
+    adaptive_discovery = bool(payload.adaptive_discovery and payload.search_query and not payload.urls)
+    adaptive_refinement_every_processed = int(payload.adaptive_refinement_every_processed or DEFAULT_ADAPTIVE_REFINEMENT_WINDOW)
+    max_query_refinements = (
+        int(payload.max_query_refinements)
+        if payload.max_query_refinements is not None
+        else _compute_default_max_query_refinements(capture_targets["max_candidates_to_process"])
+    )
+    ai_search_plan = await initial_search_plan(
+        {
+            **payload.model_dump(),
+            "target_location": effective_target_location,
+        }
+    )
 
     discovery_query_batches = build_discovery_query_batches(
         search_query=payload.search_query,
@@ -1409,6 +1996,9 @@ async def create_scraping_job(
             "target_accepted_results": capture_targets["target_accepted_results"],
             "max_candidates_to_process": capture_targets["max_candidates_to_process"],
             "exhaustive_candidate_scan": exhaustive_candidate_scan,
+            "adaptive_discovery": adaptive_discovery,
+            "adaptive_refinement_every_processed": adaptive_refinement_every_processed,
+            "max_query_refinements": max_query_refinements,
             "discovery_profile": {
                 "user_service_offers": payload.user_service_offers,
                 "user_service_constraints": payload.user_service_constraints,
@@ -1421,6 +2011,30 @@ async def create_scraping_job(
     db.add(new_job)
     await db.commit()
     await db.refresh(new_job)
+    if adaptive_discovery and normalize_discovery_method(discovery_result.discovery_method) == "search_query":
+        await _append_discovery_iteration(
+            db,
+            job_id=new_job.id,
+            iteration_index=0,
+            phase="initial",
+            trigger_reason="initial_plan",
+            input_context_json={
+                "search_query": payload.search_query,
+                "target_niche": payload.target_niche,
+                "target_location": effective_target_location,
+                "target_language": payload.target_language,
+                "target_budget_signals": payload.target_budget_signals,
+            },
+            planner_output_json=ai_search_plan,
+            executed_queries_json=discovery_result.queries or canonical_queries[:10],
+            batch_stats_json={
+                "selected_candidates_count": len(final_urls),
+                "excluded_results_count": len(discovery_result.excluded_results),
+            },
+            excluded_reason_counts_json=_summarize_excluded_reason_counts(discovery_result.excluded_results),
+            sample_results_json=[_serialize_discovery_entry(entry) for entry in final_urls[:8]],
+        )
+        await db.commit()
     await _append_job_log(
         db,
         new_job.id,
@@ -1480,7 +2094,11 @@ async def create_scraping_job(
     job_context["next_discovery_batch_index"] = next_discovery_batch_index
     job_context["target_entity_hints"] = ai_search_plan.get("target_entity_hints", [])
     job_context["exclusion_entity_hints"] = ai_search_plan.get("exclusion_entity_hints", [])
+    job_context["refinement_goal"] = ai_search_plan.get("refinement_goal")
     job_context["exhaustive_candidate_scan"] = exhaustive_candidate_scan
+    job_context["adaptive_discovery"] = adaptive_discovery
+    job_context["adaptive_refinement_every_processed"] = adaptive_refinement_every_processed
+    job_context["max_query_refinements"] = max_query_refinements
     job_context["candidate_batch_size"] = resolve_candidate_batch_size(
         target_accepted_results=capture_targets["target_accepted_results"],
         candidate_cap=capture_targets["max_candidates_to_process"],
@@ -1564,6 +2182,7 @@ async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
     quality_summary = await _get_job_quality_summary(db, job_id)
     capture_summary = await _get_job_capture_summary(db, job)
     operational_summary = await _get_job_operational_summary(db, job, capture_summary)
+    adaptive_summary = await _get_job_adaptive_summary(db, job)
         
     return JobResponse(
         job_id=job.id,
@@ -1584,6 +2203,7 @@ async def get_job_status(job_id: int, db: AsyncSession = Depends(get_db)):
         quality_summary=quality_summary,
         capture_summary=capture_summary,
         operational_summary=operational_summary,
+        adaptive_summary=adaptive_summary,
         recent_errors=recent_errors,
     )
     
@@ -1610,6 +2230,11 @@ async def get_job_results(
         .offset(offset)
         .limit(limit)
     )
+    if allowed_quality_statuses == ["accepted"]:
+        query = query.where(
+            (JobProspect.acceptance_decision.is_(None))
+            | (~JobProspect.acceptance_decision.like("rejected_%"))
+        )
     result = await db.execute(query)
     rows = result.all()
 
@@ -1694,6 +2319,25 @@ async def get_job_results(
         )
         )
     return serialized_rows
+
+
+@router.get("/{job_id}/discovery-iterations", response_model=JobDiscoveryIterationsResponse, response_model_exclude_none=True)
+async def get_job_discovery_iterations(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = await db.get(ScrapingJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job no encontrado.")
+
+    result = await db.execute(
+        select(JobDiscoveryIteration)
+        .where(JobDiscoveryIteration.job_id == job_id)
+        .order_by(JobDiscoveryIteration.iteration_index.asc(), JobDiscoveryIteration.created_at.asc())
+    )
+    iterations = list(result.scalars().all())
+    return JobDiscoveryIterationsResponse(
+        job_id=job_id,
+        total=len(iterations),
+        items=[_serialize_discovery_iteration(item) for item in iterations],
+    )
 
 
 @router.get("/{job_id}/logs", response_model=JobLogsResponse, response_model_exclude_none=True)

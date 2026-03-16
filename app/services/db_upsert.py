@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime
 from typing import Dict, Any
 
@@ -10,6 +11,7 @@ from app.models import JobProspect, Prospect, ProspectContact, ProspectPage
 from app.services.source_metadata import normalize_discovery_method, normalize_source_type
 
 logger = logging.getLogger(__name__)
+UNSAFE_CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _confidence_label_to_score(value: str | None) -> float:
@@ -20,14 +22,38 @@ def _confidence_label_to_score(value: str | None) -> float:
     }
     return mapping.get(str(value or "").strip().lower(), 0.5)
 
+
+def _sanitize_string_for_db(value: str | None) -> str | None:
+    if value is None:
+        return None
+    sanitized = str(value).replace("\x00", "")
+    sanitized = UNSAFE_CONTROL_CHAR_PATTERN.sub(" ", sanitized)
+    return sanitized
+
+
+def _sanitize_value_for_db(value: Any) -> Any:
+    if isinstance(value, str):
+        return _sanitize_string_for_db(value)
+    if isinstance(value, list):
+        return [_sanitize_value_for_db(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_value_for_db(item) for item in value]
+    if isinstance(value, dict):
+        sanitized_dict: dict[str, Any] = {}
+        for key, nested_value in value.items():
+            sanitized_key = _sanitize_string_for_db(key) if isinstance(key, str) else str(key)
+            sanitized_dict[sanitized_key] = _sanitize_value_for_db(nested_value)
+        return sanitized_dict
+    return value
+
 def _extract_canonical_prospect_data(prospect_data: Dict[str, Any]) -> Dict[str, Any]:
     prospect_columns = {col.name for col in Prospect.__table__.columns}
     excluded_columns = {"id", "created_at", "job_id"}
-    return {
+    return _sanitize_value_for_db({
         key: value
         for key, value in prospect_data.items()
         if key in prospect_columns and key not in excluded_columns
-    }
+    })
 
 
 def _extract_signal_list(prospect_data: Dict[str, Any], key: str) -> list[str]:
@@ -51,7 +77,7 @@ def _extract_job_prospect_data(
     inferred_opportunities = _extract_signal_list(prospect_data, "inferred_opportunities")
     pain_points_detected = inferred_opportunities or _extract_signal_list(prospect_data, "pain_points_detected")
 
-    return {
+    return _sanitize_value_for_db({
         "job_id": job_context["job_id"],
         "prospect_id": prospect.id,
         "workspace_id": job_context.get("workspace_id") or prospect.workspace_id,
@@ -192,7 +218,7 @@ def _extract_job_prospect_data(
         },
         "created_at": now,
         "updated_at": now,
-    }
+    })
 
 
 def _build_contact_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> list[Dict[str, Any]]:
@@ -235,7 +261,7 @@ def _build_contact_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> li
             }
         )
 
-    return contacts
+    return _sanitize_value_for_db(contacts)
 
 
 def _build_page_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> list[Dict[str, Any]]:
@@ -296,7 +322,7 @@ def _build_page_rows(prospect: Prospect, prospect_data: Dict[str, Any]) -> list[
             },
         )
 
-    return list(pages.values())
+    return _sanitize_value_for_db(list(pages.values()))
 
 
 async def _upsert_contacts(db: AsyncSession, contacts: list[Dict[str, Any]]) -> None:
@@ -343,7 +369,8 @@ async def save_scraped_prospect(
         logger.error(f"No se puede guardar el prospecto sin identidad canónica válida: {prospect_data}")
         return None
 
-    prospect_data["canonical_identity"] = canonical_identity
+    prospect_data = _sanitize_value_for_db(dict(prospect_data))
+    prospect_data["canonical_identity"] = _sanitize_string_for_db(canonical_identity)
     canonical_prospect_data = _extract_canonical_prospect_data(prospect_data)
     stmt = insert(Prospect).values(**canonical_prospect_data)
 
