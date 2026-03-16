@@ -18,22 +18,26 @@ DEMO_FALLBACK_URLS = [
 ]
 DEFAULT_SEARCH_PROVIDER_ORDER = ("duckduckgo_html",)
 DISCOVERY_LANGUAGE_HINTS = {
-    "es": [" el ", " la ", " de ", " para ", " con ", " coach ", " marca personal ", " cursos "],
-    "en": [" the ", " and ", " for ", " with ", " official ", " schedule ", " shop "],
+    "es": [" el ", " la ", " de ", " para ", " con ", " coach ", " coaches ", " marca personal ", " cursos ", " programa ", " negocios "],
+    "en": [" the ", " and ", " for ", " with ", " official ", " schedule ", " shop ", " discover ", " article ", " causes "],
+    "pt": [" do ", " da ", " em ", " artigo ", " confira ", " historia ", " historia - ", " politica "],
     "zh": [" 知道 ", " 百度 ", " 问答 ", " 官方 ", " 全球领先 "],
 }
 DISCOVERY_TARGET_TOPIC_HINTS = {
     "personal_brand": ["marca personal", "marcas personales", "personal brand", "branding personal"],
-    "coaching": ["coach", "coaches", "coaching", "mentor", "mentoria", "mentoría", "mentoring"],
-    "education": ["curso", "cursos", "programa", "masterclass", "infoproducto", "infoproductos", "academia"],
+    "coaching": ["coach", "coaches", "coaching", "mentor", "mentora", "mentoria", "mentoría", "mentoring", "negocios", "emprendedores"],
+    "education": ["curso", "cursos", "programa", "masterclass", "infoproducto", "infoproductos", "academia", "formacion", "formación"],
     "social_short_form": ["instagram", "tiktok", "reels", "shorts", "youtube shorts", "linktree", "link in bio"],
 }
 DISCOVERY_OFF_TARGET_HINTS = {
     "sports": [" schedule ", " hockey ", " nhl ", " tickets ", " ticket ", " calendar ", " game "],
-    "media": [" broadcasting ", " newsroom ", " radio ", " latest news ", " trusted news ", " worldatlas ", " atlas "],
-    "reference": [" crimea ", " peninsula ", " geography ", " encyclopedia ", " enciclopedia "],
+    "media": [" broadcasting ", " newsroom ", " radio ", " latest news ", " trusted news ", " worldatlas ", " atlas ", " oscar ", " casual "],
+    "reference": [" crimea ", " peninsula ", " geography ", " encyclopedia ", " enciclopedia ", " historia ", " artigo ", " article "],
     "retail": [" polo ", " polos ", " shirt ", " shirts ", " collar ", " vitamins ", " supplements ", " collection "],
     "academic_editorial": [" que es el ecommerce ", " qué es el ecommerce ", " posgrado ", " instituto ", ".edu.", " universidad "],
+    "search_utility": [" bing ", " imagenes ", " imágenes ", " wallpaper ", " fondos de pantalla ", "/images/feed", "duckduckgo", "search.yahoo.com"],
+    "quiz_trivia": [" quiz ", " trivia ", " entertainment quiz ", " daily quiz ", " microsoft rewards "],
+    "health": [" kidney ", " creatinine ", " injury ", " disease ", " causes ", " health ", " medical "],
 }
 DISCOVERY_LOCATION_HINTS = {
     "espana": [" espana ", " madrid ", " barcelona ", ".es"],
@@ -107,6 +111,28 @@ def _normalize_discovery_blob(*parts: str | None) -> str:
     return f" {normalized} "
 
 
+def _extract_context_keywords(target_niche: str | None, target_budget_signals: list[str] | None) -> set[str]:
+    raw_keywords = re.findall(
+        r"[a-z0-9]{4,}",
+        _normalize_discovery_blob(target_niche, " ".join(target_budget_signals or [])),
+    )
+    stopwords = {
+        "para",
+        "with",
+        "from",
+        "this",
+        "that",
+        "target",
+        "activos",
+        "tienen",
+        "mas",
+        "seguidores",
+        "tienda",
+        "oficial",
+    }
+    return {keyword for keyword in raw_keywords if keyword not in stopwords}
+
+
 def _detect_discovery_language(title: str | None, snippet: str | None) -> str | None:
     raw_blob = " ".join(str(part or "") for part in [title, snippet])
     if re.search(r"[\u4e00-\u9fff]", raw_blob):
@@ -148,6 +174,7 @@ def _score_discovery_entry_context(
     blob = _normalize_discovery_blob(entry.title, entry.snippet, entry.url)
     target_lang = str(target_language or "").strip().lower()
     detected_language = _detect_discovery_language(entry.title, entry.snippet)
+    context_keywords = _extract_context_keywords(target_niche, target_budget_signals)
 
     if target_lang and detected_language and detected_language != target_lang:
         return -3.0, ["discovery_target_language_mismatch"], "excluded_discovery_language_mismatch"
@@ -171,6 +198,14 @@ def _score_discovery_entry_context(
             score += 1.0
             reasons.append("discovery_social_first_match")
 
+    direct_keyword_hits = sum(1 for keyword in context_keywords if f" {keyword} " in blob)
+    if direct_keyword_hits >= 2:
+        score += 1.0
+        reasons.append("discovery_context_keyword_overlap")
+    elif direct_keyword_hits == 1:
+        score += 0.4
+        reasons.append("discovery_context_keyword_partial")
+
     normalized_location = _normalize_discovery_blob(target_location)
     if normalized_location.strip():
         location_hints = DISCOVERY_LOCATION_HINTS.get(normalized_location.strip(), [normalized_location.strip()])
@@ -187,6 +222,10 @@ def _score_discovery_entry_context(
         score -= min(2.0, float(len(off_target_hits)))
         reasons.extend([f"discovery_off_target:{bucket}" for bucket in off_target_hits])
 
+    has_positive_alignment = bool(matched_topics) or direct_keyword_hits >= 2 or "discovery_social_first_match" in reasons
+    if target_niche and not has_positive_alignment:
+        reasons.append("discovery_no_target_alignment")
+        return score, reasons, "excluded_discovery_context_mismatch"
     if target_niche and not matched_topics and off_target_hits:
         return score, reasons, "excluded_discovery_context_mismatch"
     return score, reasons, None

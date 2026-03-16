@@ -91,6 +91,19 @@ def _extract_keywords(value: str) -> list[str]:
     return unique_tokens
 
 
+def _niche_matches_target(inferred_niche: str | None, target_niche: str | None) -> bool:
+    inferred_tokens = set(_extract_keywords(str(inferred_niche or "")))
+    target_tokens = set(_extract_keywords(str(target_niche or "")))
+    if not inferred_tokens or not target_tokens:
+        return False
+    if inferred_tokens & target_tokens:
+        return True
+
+    inferred_text = _normalize_text(str(inferred_niche or ""))
+    target_text = _normalize_text(str(target_niche or ""))
+    return inferred_text.strip() in target_text or target_text.strip() in inferred_text
+
+
 def _contains_phrase(normalized_text: str, phrase: str) -> bool:
     return _normalize_text(phrase).strip() in normalized_text
 
@@ -501,7 +514,7 @@ def _score_context_fit(
     pain_points = _normalize_context_list(context.get("target_pain_points"))
     detected_language = _detect_language_hint(text_content)
 
-    if inferred_niche:
+    if target_niche and _niche_matches_target(inferred_niche, target_niche):
         points += 5
         evidence.append("target_niche_match")
     elif target_niche:

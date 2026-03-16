@@ -171,13 +171,14 @@ URL_REGEX = re.compile(r"https?://\S+", re.IGNORECASE)
 DIRECTORY_ENTITY_TYPES = {"directory", "aggregator", "marketplace"}
 MEDIA_ENTITY_TYPES = {"media", "association"}
 ARTICLE_ENTITY_TYPES = {"blog_post"}
-NON_TARGET_TAXONOMY_TOP_LEVELS = {"media", "marketplace"}
+NON_TARGET_TAXONOMY_TOP_LEVELS = {"media", "marketplace", "association"}
 NON_TARGET_TAXONOMY_BUSINESS_TYPES = {
     "editorial_content",
     "media_publisher",
     "directory_listing",
     "aggregator_platform",
     "marketplace_platform",
+    "association_org",
 }
 GENERIC_EMAIL_DOMAINS = {
     "gmail.com",
@@ -1433,10 +1434,11 @@ def _derive_acceptance_decision(
     if quality_status == "accepted" and is_target_entity:
         if (
             has_target_niche
-            and normalized_confidence == "low"
-            and normalized_context_fit < 0.15
+            and normalized_context_fit < 0.25
             and normalized_business_model_fit in {"unknown", "mismatch"}
         ):
+            return "rejected_low_confidence", 0.45, 0.45
+        if has_target_niche and normalized_confidence == "low" and normalized_context_fit < 0.35:
             return "rejected_low_confidence", 0.45, 0.45
         if has_target_niche and normalized_business_model_fit == "mismatch":
             return "accepted_related", 0.5, 0.55
@@ -1445,11 +1447,15 @@ def _derive_acceptance_decision(
         return "accepted_target", 1.0, None
 
     if quality_status == "accepted" and normalized_entity_type == "unknown":
+        if has_target_niche and normalized_context_fit < 0.35:
+            return "rejected_low_confidence", 0.45, 0.45
         if heuristic_score >= 0.55 and normalized_confidence in {"medium", "high"}:
             return "accepted_related", 0.75, 0.7
         return "rejected_low_confidence", 0.45, 0.45
 
     if quality_status == "accepted":
+        if has_target_niche and normalized_context_fit < 0.25:
+            return "rejected_low_confidence", 0.45, 0.45
         return "accepted_related", 0.7, 0.65
 
     if rejection_reason == "low_contact_quality":

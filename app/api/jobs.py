@@ -724,6 +724,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
 
             target_accepted_results = int(job_context.get("target_accepted_results") or 1)
             max_candidates_to_process = int(job_context.get("max_candidates_to_process") or len(urls) or 1)
+            exhaustive_candidate_scan = bool(job_context.get("exhaustive_candidate_scan"))
             candidate_queue = list(urls)[:max_candidates_to_process]
             query_batches = [batch for batch in (job_context.get("discovery_query_batches") or []) if isinstance(batch, list)]
             next_discovery_batch_index = int(job_context.get("next_discovery_batch_index") or 0)
@@ -800,7 +801,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             batch_number = 0
 
             while total_processed < max_candidates_to_process:
-                if accepted_results >= target_accepted_results:
+                if not exhaustive_candidate_scan and accepted_results >= target_accepted_results:
                     stopped_reason = "target_reached"
                     break
 
@@ -1101,22 +1102,39 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         await db.commit()
 
                         if accepted_results >= target_accepted_results:
-                            stopped_reason = "target_reached"
-                            await _append_job_log(
-                                db,
-                                job_id,
-                                "INFO",
-                                "Objetivo de prospectos aceptados alcanzado",
-                                source_name="worker",
-                                context_json={
-                                    "target_accepted_results": target_accepted_results,
-                                    "accepted_results": accepted_results,
-                                    "processed_candidates": total_processed,
-                                    "batch_number": batch_number,
-                                },
-                            )
-                            await db.commit()
-                            break
+                            if exhaustive_candidate_scan:
+                                await _append_job_log(
+                                    db,
+                                    job_id,
+                                    "INFO",
+                                    "Objetivo aceptado alcanzado, pero se mantiene captura exhaustiva",
+                                    source_name="worker",
+                                    context_json={
+                                        "target_accepted_results": target_accepted_results,
+                                        "accepted_results": accepted_results,
+                                        "processed_candidates": total_processed,
+                                        "max_candidates_to_process": max_candidates_to_process,
+                                        "batch_number": batch_number,
+                                    },
+                                )
+                                await db.commit()
+                            else:
+                                stopped_reason = "target_reached"
+                                await _append_job_log(
+                                    db,
+                                    job_id,
+                                    "INFO",
+                                    "Objetivo de prospectos aceptados alcanzado",
+                                    source_name="worker",
+                                    context_json={
+                                        "target_accepted_results": target_accepted_results,
+                                        "accepted_results": accepted_results,
+                                        "processed_candidates": total_processed,
+                                        "batch_number": batch_number,
+                                    },
+                                )
+                                await db.commit()
+                                break
                     except Exception as e:
                         await db.rollback()
                         job = await db.get(ScrapingJob, job_id)
@@ -1182,6 +1200,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     processed_count=total_processed,
                     candidate_cap=max_candidates_to_process,
                     discovered_candidates=total_found,
+                    exhaustive_candidate_scan=exhaustive_candidate_scan,
                 )
 
             job.status = "completed"
@@ -1264,6 +1283,10 @@ async def create_scraping_job(
         target_accepted_results=payload.target_accepted_results,
         max_candidates_to_process=payload.max_candidates_to_process,
         seed_urls_count=len(payload.urls or []),
+    )
+    exhaustive_candidate_scan = bool(
+        payload.max_candidates_to_process is not None
+        and capture_targets["max_candidates_to_process"] > capture_targets["target_accepted_results"]
     )
     final_urls = [
         SearchDiscoveryEntry(url=str(u), position=index, discovery_confidence="high")
@@ -1385,6 +1408,7 @@ async def create_scraping_job(
             "max_results": payload.max_results,
             "target_accepted_results": capture_targets["target_accepted_results"],
             "max_candidates_to_process": capture_targets["max_candidates_to_process"],
+            "exhaustive_candidate_scan": exhaustive_candidate_scan,
             "discovery_profile": {
                 "user_service_offers": payload.user_service_offers,
                 "user_service_constraints": payload.user_service_constraints,
@@ -1456,6 +1480,7 @@ async def create_scraping_job(
     job_context["next_discovery_batch_index"] = next_discovery_batch_index
     job_context["target_entity_hints"] = ai_search_plan.get("target_entity_hints", [])
     job_context["exclusion_entity_hints"] = ai_search_plan.get("exclusion_entity_hints", [])
+    job_context["exhaustive_candidate_scan"] = exhaustive_candidate_scan
     job_context["candidate_batch_size"] = resolve_candidate_batch_size(
         target_accepted_results=capture_targets["target_accepted_results"],
         candidate_cap=capture_targets["max_candidates_to_process"],

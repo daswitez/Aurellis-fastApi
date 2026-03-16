@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 
 BLOCKED_DOMAIN_TOKENS = [
     "mercadolibre",
+    "bing.com",
+    "duckduckgo.com",
+    "search.yahoo.com",
     "youtube",
     "reddit.com",
     "redd.it",
@@ -35,6 +38,10 @@ REFERENCE_DOMAIN_TOKENS = [
     "rae.es",
     "britannica.com",
     "dictionary.com",
+    "infoescola.com",
+    "verywellhealth.com",
+    "verywellmind.com",
+    "verywellfit.com",
 ]
 MEDIA_NEWS_DOMAIN_TOKENS = [
     "marketwatch.com",
@@ -43,6 +50,7 @@ MEDIA_NEWS_DOMAIN_TOKENS = [
     "cnn.com",
     "elpais.com",
     "expansion.com",
+    "exame.com",
 ]
 FINANCE_DOMAIN_TOKENS = [
     "marketwatch.com",
@@ -94,6 +102,7 @@ DIRECTORY_CTA_HINTS = [
 EDITORIAL_PATH_TOKENS = [
     "/blog/",
     "/ideas/",
+    "/historia/",
     "/noticias/",
     "/news/",
     "/prensa/",
@@ -231,6 +240,27 @@ REFERENCE_TOKENS = (
     "meaning",
     "definition",
 )
+SEARCH_UTILITY_PATH_TOKENS = (
+    "/images/feed",
+    "/images/search",
+    "/images/",
+    "/search",
+)
+SEARCH_UTILITY_TOKENS = (
+    "bing images",
+    "imagenes de bing",
+    "imágenes de bing",
+    "image search",
+    "wallpaper",
+    "fondos de pantalla",
+)
+QUIZ_TRIVIA_TOKENS = (
+    " quiz ",
+    " trivia ",
+    "entertainment quiz",
+    "daily quiz",
+    "microsoft rewards",
+)
 LARGE_ENTERPRISE_TOKENS = (
     "fortune 500",
     "nasdaq",
@@ -322,6 +352,19 @@ def _looks_like_reference_page(url: str, title: str, snippet: str) -> bool:
         any(token in host for token in REFERENCE_DOMAIN_TOKENS)
         or any(token in lowered_blob for token in REFERENCE_TOKENS)
     )
+
+
+def _looks_like_search_utility(url: str, title: str, snippet: str) -> bool:
+    lowered_blob = f"{title} {snippet}".lower()
+    path = urlparse(url).path.lower()
+    return any(token in path for token in SEARCH_UTILITY_PATH_TOKENS) or any(
+        token in lowered_blob for token in SEARCH_UTILITY_TOKENS
+    )
+
+
+def _looks_like_quiz_or_trivia(title: str, snippet: str) -> bool:
+    lowered_blob = f" {title} {snippet} ".lower()
+    return any(token in lowered_blob for token in QUIZ_TRIVIA_TOKENS)
 
 
 def _looks_like_editorial_article(url: str, title: str, snippet: str) -> bool:
@@ -441,6 +484,26 @@ def classify_discovery_candidate(
             "social_profile_score": 0.0,
             "score": 0.0,
             "reasons": ["reference_or_article"],
+            "exclusion_reason": "excluded_reference_page",
+        }
+
+    if _looks_like_search_utility(url, title, snippet):
+        return {
+            "result_kind": "search_utility",
+            "website_result_score": 0.0,
+            "social_profile_score": 0.0,
+            "score": 0.0,
+            "reasons": ["search_utility_noise"],
+            "exclusion_reason": "excluded_reference_page",
+        }
+
+    if _looks_like_quiz_or_trivia(title, snippet):
+        return {
+            "result_kind": "article_or_reference",
+            "website_result_score": 0.0,
+            "social_profile_score": 0.0,
+            "score": 0.0,
+            "reasons": ["quiz_or_trivia_noise"],
             "exclusion_reason": "excluded_reference_page",
         }
 

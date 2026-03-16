@@ -463,8 +463,9 @@ def determine_capture_stop_reason(
     processed_count: int,
     candidate_cap: int,
     discovered_candidates: int,
+    exhaustive_candidate_scan: bool = False,
 ) -> str:
-    if target_accepted_results > 0 and accepted_count >= target_accepted_results:
+    if not exhaustive_candidate_scan and target_accepted_results > 0 and accepted_count >= target_accepted_results:
         return "target_reached"
     if processed_count >= candidate_cap and discovered_candidates >= candidate_cap:
         return "candidate_cap_reached"
@@ -531,8 +532,6 @@ def build_discovery_queries(
     _append_query(queries, niche_location_query)
     for localized_intent_seed in localized_intent_seeds[:3]:
         _append_query(queries, localized_intent_seed)
-    _append_query(queries, geo_base_query)
-    _append_query(queries, base_query)
 
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
     primary_intent_seed = niche_location_query or geo_base_query or base_query
@@ -586,6 +585,11 @@ def build_discovery_queries(
         _append_query(queries, _apply_negative_terms(f"{localized_seed} {language_hints['contact']}", negative_terms))
     for localized_intent_seed in localized_intent_seeds[3:]:
         _append_query(queries, localized_intent_seed)
+
+    if geo_base_query:
+        _append_query(queries, geo_base_query)
+    if base_query and len(intent_seeds) <= 1:
+        _append_query(queries, base_query)
 
     if niche and not _query_contains_token(base_query, niche):
         _append_query(queries, _apply_negative_terms(f"{base_query} {niche}", negative_terms))

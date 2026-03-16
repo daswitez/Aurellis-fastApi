@@ -2,6 +2,7 @@ import unittest
 
 from app.scraper.parser import parse_html_basic
 from app.services.entity_classifier import classify_entity_type
+from app.services.heuristic_extractor import _score_context_fit
 from app.services.identity_resolution import resolve_identity_surfaces
 from app.services.prospect_quality import build_ai_evidence_pack, evaluate_prospect_quality
 
@@ -717,8 +718,26 @@ class ParserAndQualityTestCase(unittest.TestCase):
         )
 
         self.assertEqual(quality["quality_status"], "accepted")
-        self.assertEqual(quality["acceptance_decision"], "accepted_related")
+        self.assertEqual(quality["acceptance_decision"], "rejected_low_confidence")
         self.assertEqual(quality["context_fit_score"], 0.1)
+
+    def test_context_fit_does_not_mark_unrelated_inferred_niche_as_target_match(self) -> None:
+        context_fit = _score_context_fit(
+            "Portal de salud con articulos informativos y contenido medico.",
+            {
+                "title": "Health portal",
+                "description": "Informacion medica general",
+            },
+            {
+                "target_niche": "Marcas Personales y Coaches",
+                "target_language": "es",
+            },
+            inferred_niche="Clinica",
+            content_profile={"offer_signals": [], "budget_signal_matches": []},
+        )
+
+        self.assertNotIn("target_niche_match", context_fit["evidence"])
+        self.assertLess(context_fit["normalized_score"], 0.5)
 
     def test_quality_rejects_low_confidence_low_context_target_when_niche_does_not_match(self) -> None:
         clean_text = "Portal general con telefono visible y formulario de contacto."

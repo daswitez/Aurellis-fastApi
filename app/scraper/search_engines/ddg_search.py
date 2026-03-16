@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -379,9 +380,16 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
     seen_urls: set[str] = set()
     failure_reason: str | None = None
     provider_status = "ok"
+    normalized_queries = [query for query in queries if str(query or "").strip()]
+    per_query_limit = max(3, min(10, math.ceil(max_results / max(len(normalized_queries), 1)) + 1))
+    query_groups: list[list[SearchDiscoveryEntry]] = []
 
-    for query in queries:
-        query_entries, query_excluded, warning_message, query_failure_reason = await _search_single_query_async(query, allow_social_profiles=allow_social_profiles)
+    for query in normalized_queries:
+        query_entries, query_excluded, warning_message, query_failure_reason = await _search_single_query_async(
+            query,
+            max_results=per_query_limit,
+            allow_social_profiles=allow_social_profiles,
+        )
         excluded_results.extend(query_excluded)
 
         if warning_message:
@@ -389,6 +397,7 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
         if query_failure_reason and failure_reason is None:
             failure_reason = query_failure_reason
 
+        expanded_query_entries: list[SearchDiscoveryEntry] = []
         for query_position, entry in enumerate(query_entries, start=1):
             expanded_entry, seed_excluded = await _expand_directory_seed_entry(entry, allow_social_profiles=allow_social_profiles)
             if seed_excluded:
@@ -396,13 +405,22 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
             if expanded_entry is None:
                 continue
             entry = expanded_entry
+            entry.position = query_position
+            expanded_query_entries.append(entry)
+        query_groups.append(expanded_query_entries)
 
+    max_group_size = max((len(group) for group in query_groups), default=0)
+    for rank_index in range(max_group_size):
+        for group in query_groups:
+            if rank_index >= len(group):
+                continue
+            entry = group[rank_index]
             if entry.url in seen_urls:
                 excluded_results.append(
                     {
                         "url": entry.url,
                         "reason": "duplicate_url",
-                        "query": query,
+                        "query": entry.query,
                         "title": entry.title,
                         "snippet": entry.snippet,
                         "business_likeness_score": entry.business_likeness_score,
@@ -414,7 +432,7 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
             seen_urls.add(entry.url)
             entry.position = len(entries) + 1
             entries.append(entry)
-            logger.debug("[DDG] Lead valido: %s | query=%s | rank=%s", entry.url, query, query_position)
+            logger.debug("[DDG] Lead valido: %s | query=%s | rank=%s", entry.url, entry.query, rank_index + 1)
             if len(entries) >= max_results:
                 warning_message = "; ".join(warning_messages) if warning_messages else None
                 return SearchDiscoveryResult(

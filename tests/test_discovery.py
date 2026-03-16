@@ -9,6 +9,7 @@ from app.scraper.search_engines.ddg_search import (
     _expand_directory_seed_entry,
     _extract_official_site_from_seed_html,
     _extract_search_results,
+    find_prospect_urls_by_queries as ddg_find_prospect_urls_by_queries,
 )
 from app.services.discovery import (
     build_discovery_query_batches,
@@ -106,6 +107,7 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertIn("Marcas Personales España", queries)
         self.assertFalse(any(query == "Personales España" for query in queries))
         self.assertFalse(any(query == "ecommerce España" for query in queries))
+        self.assertFalse(any(query == "marcas personales ecommerce y coaches de negocios España" for query in queries))
 
     def test_infers_location_from_search_query_and_prioritizes_niche_queries(self) -> None:
         queries = build_discovery_queries(
@@ -201,6 +203,17 @@ class DiscoveryQueryTestCase(unittest.TestCase):
                 discovered_candidates=12,
             ),
             "target_reached",
+        )
+        self.assertEqual(
+            determine_capture_stop_reason(
+                accepted_count=3,
+                target_accepted_results=3,
+                processed_count=7,
+                candidate_cap=12,
+                discovered_candidates=12,
+                exhaustive_candidate_scan=True,
+            ),
+            "discovery_exhausted",
         )
         self.assertEqual(
             determine_capture_stop_reason(
@@ -366,6 +379,25 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertEqual(encyclopedia_score, 0.0)
         self.assertEqual(qa_score, 0.0)
 
+    def test_business_likeness_rejects_search_utility_and_quiz_noise(self) -> None:
+        bing_score, bing_reasons, bing_exclusion = score_business_likeness(
+            "https://www.bing.com/images/feed?cc=es&setlang=es",
+            "Imágenes de Bing",
+            "Busca y explora fotos y fondos de pantalla gratuitos de alta calidad.",
+        )
+        quiz_score, quiz_reasons, quiz_exclusion = score_business_likeness(
+            "https://www.quizinside.com/bing-entertainment-quiz/",
+            "Bing Entertainment Quiz",
+            "Discover the Bing Entertainment Quiz and daily trivia rewards.",
+        )
+
+        self.assertEqual(bing_exclusion, "blocked_domain:bing.com")
+        self.assertIn("blocked_domain:bing.com", bing_reasons)
+        self.assertEqual(quiz_exclusion, "excluded_reference_page")
+        self.assertIn("quiz_or_trivia_noise", quiz_reasons)
+        self.assertLess(bing_score, 0.0)
+        self.assertEqual(quiz_score, 0.0)
+
 
 class DirectorySeedExpansionTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_directory_seed_resolves_to_official_site(self) -> None:
@@ -393,6 +425,40 @@ class DirectorySeedExpansionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(excluded)
         assert excluded is not None
         self.assertTrue(str(excluded["reason"]).startswith("excluded_as_directory_seed"))
+
+    async def test_ddg_provider_distributes_results_across_queries(self) -> None:
+        async def fake_search(query: str, max_results: int = 15, region: str = "es-es", allow_social_profiles: bool = False):
+            if query == "query-a":
+                return (
+                    [
+                        SearchDiscoveryEntry(url="https://a1.com", query=query, title="A1", snippet="Coach", business_likeness_score=0.6),
+                        SearchDiscoveryEntry(url="https://a2.com", query=query, title="A2", snippet="Coach", business_likeness_score=0.55),
+                        SearchDiscoveryEntry(url="https://a3.com", query=query, title="A3", snippet="Coach", business_likeness_score=0.5),
+                    ],
+                    [],
+                    None,
+                    None,
+                )
+            return (
+                [
+                    SearchDiscoveryEntry(url="https://b1.com", query=query, title="B1", snippet="Coach", business_likeness_score=0.58),
+                    SearchDiscoveryEntry(url="https://b2.com", query=query, title="B2", snippet="Coach", business_likeness_score=0.53),
+                ],
+                [],
+                None,
+                None,
+            )
+
+        async def passthrough_expand(entry: SearchDiscoveryEntry, allow_social_profiles: bool = False):
+            return entry, None
+
+        with patch("app.scraper.search_engines.ddg_search._search_single_query_async", new=fake_search), patch(
+            "app.scraper.search_engines.ddg_search._expand_directory_seed_entry",
+            new=passthrough_expand,
+        ):
+            result = await ddg_find_prospect_urls_by_queries(["query-a", "query-b"], max_results=4)
+
+        self.assertEqual([entry.url for entry in result.entries], ["https://a1.com", "https://b1.com", "https://a2.com", "https://b2.com"])
 
 
 class DiscoveryProviderOrchestrationTestCase(unittest.IsolatedAsyncioTestCase):
@@ -613,6 +679,67 @@ class DiscoveryProviderOrchestrationTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.entries), 1)
         self.assertEqual(result.entries[0].url, "https://joannaprieto.com/")
         self.assertTrue(any(item["reason"] == "excluded_discovery_language_mismatch" for item in result.excluded_results))
+
+    async def test_orchestrator_excludes_generic_noise_without_target_alignment(self) -> None:
+        class MixedNoiseProvider(SearchProvider):
+            provider_name = "primary"
+            source_type = "duckduckgo_search"
+
+            async def search(
+                self,
+                queries: list[str],
+                max_results: int = 10,
+                allow_social_profiles: bool = False,
+            ) -> SearchDiscoveryResult:
+                return SearchDiscoveryResult(
+                    entries=[
+                        SearchDiscoveryEntry(
+                            url="https://www.bing.com/images/feed?cc=es&setlang=es",
+                            query=queries[0],
+                            title="Imágenes de Bing",
+                            snippet="Busca y explora fotos y fondos de pantalla gratuitos de alta calidad.",
+                            discovery_confidence="medium",
+                            business_likeness_score=0.18,
+                        ),
+                        SearchDiscoveryEntry(
+                            url="https://coachjuan.es/",
+                            query=queries[0],
+                            title="Coach de negocios en España | Mentor de emprendedores",
+                            snippet="Programa, mentoría, instagram e infoproductos para marcas personales.",
+                            discovery_confidence="medium",
+                            business_likeness_score=0.48,
+                        ),
+                    ],
+                    source_type=self.source_type,
+                    discovery_method="search_query",
+                    queries=queries,
+                    provider_name=self.provider_name,
+                    provider_status="ok",
+                )
+
+        with patch(
+            "app.services.discovery_orchestrator._build_providers",
+            return_value=[MixedNoiseProvider()],
+        ), patch(
+            "app.services.discovery_orchestrator.get_settings",
+            return_value=SimpleNamespace(DEMO_MODE=False),
+        ):
+            result = await discover_prospect_urls_by_queries(
+                ["marcas personales coaches espana"],
+                max_results=5,
+                user_profession="Editor de Video",
+                target_niche="Marcas Personales y Coaches",
+                target_language="es",
+                target_location="España",
+                target_budget_signals=[
+                    "Venden cursos o infoproductos",
+                    "Activos en Instagram o TikTok con mas de 10k seguidores",
+                ],
+            )
+
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.entries[0].url, "https://coachjuan.es/")
+        self.assertTrue(any(item["reason"] == "excluded_discovery_context_mismatch" for item in result.excluded_results))
 
 
 if __name__ == "__main__":
