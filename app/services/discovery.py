@@ -6,7 +6,7 @@ from typing import Any
 DEFAULT_CANDIDATE_MULTIPLIER = 4
 DEFAULT_MIN_CANDIDATES = 5
 MAX_DISCOVERY_QUERIES = 24
-DEFAULT_QUERY_BATCH_SIZE = 2
+DEFAULT_QUERY_BATCH_SIZE = 3
 DEFAULT_CANDIDATE_BATCH_SIZE = 5
 NEGATIVE_DISCOVERY_TERMS = (
     "-blog",
@@ -109,6 +109,11 @@ PROFILE_RETRY_SOCIAL_HINTS = {
     "generic": ("link in bio",),
     "creator_coach": ("link in bio", "marca personal", "coach"),
     "ecommerce": ("shop now", "product video", "new drop", "shopify"),
+}
+PROFILE_BIO_HUB_DOMAINS = {
+    "generic": ("site:linktr.ee", "site:beacons.ai"),
+    "creator_coach": ("site:linktr.ee", "site:beacons.ai", "site:stan.store"),
+    "ecommerce": ("site:linktr.ee", "site:beacons.ai"),
 }
 QUERY_LOCALIZATION_MAP = {
     "en": (
@@ -873,6 +878,573 @@ def build_retry_discovery_queries(
     return deduped_queries
 
 
+def _infer_query_platform(query: str) -> str:
+    normalized_query = _normalize_space(query).lower()
+    if "site:instagram.com" in normalized_query:
+        return "instagram"
+    if "site:tiktok.com" in normalized_query:
+        return "tiktok"
+    if any(domain in normalized_query for domain in ("site:linktr.ee", "site:beacons.ai", "site:stan.store")):
+        return "bio_hub"
+    return "website"
+
+
+def _normalize_query_context(query: str, context: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "query": _normalize_space(query),
+        "segment_id": _normalize_space(str(context.get("segment_id") or "generic_segment")) or "generic_segment",
+        "family": _normalize_space(str(context.get("family") or "canonical_queries")) or "canonical_queries",
+        "platform": _normalize_space(str(context.get("platform") or _infer_query_platform(query))) or "website",
+        "iteration_index": int(context.get("iteration_index") or 0),
+        "priority_bucket": _normalize_space(str(context.get("priority_bucket") or "")) or None,
+        "segment_label": _normalize_space(str(context.get("segment_label") or "")) or None,
+    }
+
+
+def _append_query_item(query_items: list[dict[str, Any]], query: str | None, **context: Any) -> None:
+    normalized_query = _normalize_space(query)
+    if not normalized_query:
+        return
+    query_items.append(_normalize_query_context(normalized_query, context))
+
+
+def _dedupe_query_items(query_items: list[dict[str, Any]], max_queries: int) -> list[dict[str, Any]]:
+    deduped_items: list[dict[str, Any]] = []
+    seen_queries: set[str] = set()
+    for item in query_items:
+        query = _normalize_space(str(item.get("query") or ""))
+        lowered_query = query.lower()
+        if not query or lowered_query in seen_queries:
+            continue
+        deduped_items.append({**item, "query": query})
+        seen_queries.add(lowered_query)
+        if len(deduped_items) >= max_queries:
+            break
+    return deduped_items
+
+
+def _bucket_query_items(query_items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "social_profile_queries": [],
+        "social_commercial_queries": [],
+        "website_validation_queries": [],
+        "rescue_queries": [],
+    }
+    for item in query_items:
+        family = str(item.get("family") or "rescue_queries").strip()
+        if family not in buckets:
+            buckets["rescue_queries"].append(item)
+            continue
+        buckets[family].append(item)
+    return buckets
+
+
+def _take_bucket_items(
+    *,
+    buckets: dict[str, list[dict[str, Any]]],
+    family: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    items = buckets.get(family, [])
+    if limit <= 0:
+        return []
+    selected = items[:limit]
+    buckets[family] = items[limit:]
+    return selected
+
+
+def _build_structured_query_context_map(query_items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        item["query"]: {
+            "segment_id": item.get("segment_id"),
+            "family": item.get("family"),
+            "platform": item.get("platform"),
+            "iteration_index": int(item.get("iteration_index") or 0),
+            "priority_bucket": item.get("priority_bucket"),
+            "segment_label": item.get("segment_label"),
+        }
+        for item in query_items
+        if item.get("query")
+    }
+
+
+def _segment_query_seed_terms(segment: dict[str, Any]) -> list[str]:
+    return _normalize_context_list(segment.get("seed_terms") or [segment.get("label") or ""])
+
+
+def _segment_query_social_patterns(segment: dict[str, Any], dynamic_priority_signals: list[str]) -> list[str]:
+    hints = [*(_normalize_context_list(segment.get("social_patterns") or [])), *dynamic_priority_signals]
+    return _normalize_context_list(hints)
+
+
+def _segment_query_website_patterns(segment: dict[str, Any], commercial_validation_signals: list[str]) -> list[str]:
+    hints = [*(_normalize_context_list(segment.get("website_patterns") or [])), *commercial_validation_signals]
+    return _normalize_context_list(hints)
+
+
+def _segment_query_bio_hub_domains(discovery_profile: str) -> list[str]:
+    return list(PROFILE_BIO_HUB_DOMAINS.get(discovery_profile, PROFILE_BIO_HUB_DOMAINS["generic"]))
+
+
+def _soft_social_platform_hints(discovery_profile: str, language: str) -> list[str]:
+    hints = ["instagram", "tiktok", "linktree"]
+    if discovery_profile == "creator_coach":
+        hints.extend(["mentoria", "programa", "contacto"] if language != "en" else ["mentoring", "program", "contact"])
+    elif discovery_profile == "ecommerce":
+        hints.extend(["shop now", "product video", "online store"] if language == "en" else ["tienda online", "contenido de producto", "shopify"])
+    return _normalize_context_list(hints)
+
+
+def _legacy_query_family(query: str) -> tuple[str, str]:
+    normalized_query = _normalize_space(query).lower()
+    platform = _infer_query_platform(query)
+    if "site:" in normalized_query:
+        return "social_commercial_queries", platform
+    if any(token in normalized_query for token in ("contacto", "contact", "programa", "program", "oficial", "official", "mentoria", "mentoring")):
+        return "website_validation_queries", platform
+    return "rescue_queries", platform
+
+
+def _apply_plan_negative_terms(
+    query: str,
+    *,
+    ai_negative_terms: list[str] | None,
+    dynamic_negative_signals: list[str] | None,
+    base_negative_terms: tuple[str, ...],
+) -> str:
+    query_with_base = _apply_negative_terms(query, base_negative_terms)
+    extra_negative_terms: list[str] = []
+    seen_negative_terms: set[str] = set()
+    for raw_term in [*(ai_negative_terms or []), *(dynamic_negative_signals or [])]:
+        normalized_term = _normalize_space(raw_term)
+        if not normalized_term:
+            continue
+        negative_term = normalized_term if normalized_term.startswith("-") else f"-{normalized_term}"
+        lowered_term = negative_term.lower()
+        if lowered_term in seen_negative_terms:
+            continue
+        extra_negative_terms.append(negative_term)
+        seen_negative_terms.add(lowered_term)
+        if len(extra_negative_terms) >= 6:
+            break
+    return _apply_negative_terms(query_with_base, tuple(extra_negative_terms)) if extra_negative_terms else query_with_base
+
+
+def build_discovery_query_plan(
+    *,
+    search_query: str | None,
+    user_profession: str | None = None,
+    user_technologies: list[str] | None = None,
+    target_niche: str | None,
+    target_location: str | None,
+    target_language: str | None,
+    user_service_offers: list[str] | None = None,
+    user_service_constraints: list[str] | None = None,
+    user_target_offer_focus: str | None = None,
+    target_budget_signals: list[str] | None = None,
+    planner_output: dict[str, Any] | None = None,
+    ai_dork_queries: list[str] | None = None,
+    ai_negative_terms: list[str] | None = None,
+    query_batch_size: int = DEFAULT_QUERY_BATCH_SIZE,
+    max_queries: int = MAX_DISCOVERY_QUERIES,
+    iteration_index: int = 0,
+) -> dict[str, Any]:
+    if not planner_output:
+        canonical_queries = build_discovery_queries(
+            search_query=search_query,
+            user_profession=user_profession,
+            user_technologies=user_technologies,
+            target_niche=target_niche,
+            target_location=target_location,
+            target_language=target_language,
+            user_service_offers=user_service_offers,
+            user_service_constraints=user_service_constraints,
+            user_target_offer_focus=user_target_offer_focus,
+            target_budget_signals=target_budget_signals,
+            ai_dork_queries=ai_dork_queries,
+            ai_negative_terms=ai_negative_terms,
+            max_queries=max_queries,
+        )
+        retry_queries = build_retry_discovery_queries(
+            search_query=search_query,
+            user_profession=user_profession,
+            user_technologies=user_technologies,
+            target_niche=target_niche,
+            target_location=target_location,
+            target_language=target_language,
+            user_service_offers=user_service_offers,
+            user_service_constraints=user_service_constraints,
+            user_target_offer_focus=user_target_offer_focus,
+            target_budget_signals=target_budget_signals,
+        )
+        query_items: list[dict[str, Any]] = []
+        for query in canonical_queries:
+            _append_query_item(
+                query_items,
+                query,
+                segment_id="generic_segment",
+                family="canonical_queries",
+                platform=_infer_query_platform(query),
+                iteration_index=iteration_index,
+                priority_bucket="fallback",
+                segment_label=_normalize_space(target_niche or search_query or "generic"),
+            )
+        for query in retry_queries:
+            if query in canonical_queries:
+                continue
+            _append_query_item(
+                query_items,
+                query,
+                segment_id="generic_segment",
+                family="rescue_queries",
+                platform=_infer_query_platform(query),
+                iteration_index=iteration_index,
+                priority_bucket="fallback",
+                segment_label=_normalize_space(target_niche or search_query or "generic"),
+            )
+        deduped_items = _dedupe_query_items(query_items, max_queries)
+        return {
+            "queries": [item["query"] for item in deduped_items],
+            "batches": _chunk_queries([item["query"] for item in deduped_items], query_batch_size),
+            "query_items": deduped_items,
+            "query_context_map": _build_structured_query_context_map(deduped_items),
+            "family_distribution": {"fallback": len(deduped_items)},
+        }
+
+    raw_base_query = _normalize_space(search_query)
+    raw_niche = _normalize_space(target_niche)
+    location = resolve_discovery_target_location(
+        search_query=raw_base_query,
+        target_location=target_location,
+        target_niche=raw_niche,
+    )
+    language = _normalize_space(target_language).lower()
+    discovery_profile = _resolve_discovery_profile(
+        search_query=raw_base_query,
+        target_niche=raw_niche,
+        user_target_offer_focus=user_target_offer_focus,
+        target_budget_signals=target_budget_signals,
+    )
+    base_query = _localize_query_fragment(raw_base_query, language)
+    niche = _localize_query_fragment(raw_niche, language)
+    negative_terms = _derive_contextual_negative_terms(
+        target_niche=niche,
+        user_profession=user_profession,
+        user_target_offer_focus=user_target_offer_focus,
+        user_service_offers=user_service_offers,
+        user_service_constraints=user_service_constraints,
+        ai_negative_terms=ai_negative_terms,
+    )
+    language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
+    platform_priority = _normalize_context_list(planner_output.get("platform_priority") or ["instagram", "tiktok", "website"])
+    segment_hypotheses = [
+        segment
+        for segment in (planner_output.get("segment_hypotheses") or [])
+        if isinstance(segment, dict) and _normalize_space(str(segment.get("segment_id") or ""))
+    ]
+    dynamic_priority_signals = _normalize_context_list(planner_output.get("dynamic_priority_signals") or [])
+    dynamic_negative_signals = _normalize_context_list(planner_output.get("dynamic_negative_signals") or [])
+    commercial_validation_signals = _normalize_context_list(planner_output.get("commercial_validation_signals") or [])
+    initial_wave_items: list[dict[str, Any]] = []
+    query_items: list[dict[str, Any]] = []
+
+    for initial_wave_item in (planner_output.get("initial_wave") or [])[:6]:
+        if isinstance(initial_wave_item, dict):
+            initial_query = initial_wave_item.get("query")
+            initial_segment_id = initial_wave_item.get("segment_id")
+            initial_family = initial_wave_item.get("family")
+            initial_platform = initial_wave_item.get("platform")
+            initial_segment_label = initial_wave_item.get("segment_label")
+        else:
+            initial_query = initial_wave_item
+            initial_segment_id = "initial_wave"
+            initial_family = "rescue_queries"
+            initial_platform = _infer_query_platform(str(initial_wave_item or ""))
+            initial_segment_label = _normalize_space(target_niche or search_query or "initial wave")
+        _append_query_item(
+            initial_wave_items,
+            _apply_plan_negative_terms(
+                str(initial_query or ""),
+                ai_negative_terms=ai_negative_terms,
+                dynamic_negative_signals=dynamic_negative_signals,
+                base_negative_terms=negative_terms,
+            ),
+            segment_id=_normalize_space(str(initial_segment_id or "initial_wave")) or "initial_wave",
+            family=_normalize_space(str(initial_family or "rescue_queries")) or "rescue_queries",
+            platform=_normalize_space(str(initial_platform or _infer_query_platform(str(initial_query or "")))) or "website",
+            iteration_index=iteration_index,
+            priority_bucket="initial_wave",
+            segment_label=_normalize_space(str(initial_segment_label or target_niche or search_query or "initial wave")),
+        )
+
+    for segment in segment_hypotheses[:8]:
+        segment_id = _normalize_space(str(segment.get("segment_id") or "generic_segment"))
+        segment_label = _normalize_space(str(segment.get("label") or segment_id.replace("_", " ")))
+        seed_terms = _segment_query_seed_terms(segment)
+        social_patterns = _segment_query_social_patterns(segment, dynamic_priority_signals)
+        website_patterns = _segment_query_website_patterns(segment, commercial_validation_signals)
+        geo_seed = _normalize_space(f"{seed_terms[0]} {location}") if seed_terms and location else (seed_terms[0] if seed_terms else "")
+
+        for platform in platform_priority[:2]:
+            site_clause = "site:instagram.com" if platform == "instagram" else "site:tiktok.com"
+            for seed_term in seed_terms[:2]:
+                localized_seed = _normalize_space(f"{seed_term} {location}") if location else seed_term
+                _append_query_item(
+                    query_items,
+                    _apply_plan_negative_terms(
+                        f"{localized_seed} {site_clause}",
+                        ai_negative_terms=ai_negative_terms,
+                        dynamic_negative_signals=dynamic_negative_signals,
+                        base_negative_terms=negative_terms,
+                    ),
+                    segment_id=segment_id,
+                    family="social_profile_queries",
+                    platform=platform,
+                    iteration_index=iteration_index,
+                    priority_bucket="social",
+                    segment_label=segment_label,
+                )
+                for hint in social_patterns[:2]:
+                    _append_query_item(
+                        query_items,
+                        _apply_plan_negative_terms(
+                            f"{localized_seed} {hint} {site_clause}",
+                            ai_negative_terms=ai_negative_terms,
+                            dynamic_negative_signals=dynamic_negative_signals,
+                            base_negative_terms=negative_terms,
+                        ),
+                        segment_id=segment_id,
+                        family="social_commercial_queries",
+                        platform=platform,
+                        iteration_index=iteration_index,
+                        priority_bucket="social",
+                        segment_label=segment_label,
+                    )
+
+        for hint in _soft_social_platform_hints(discovery_profile, language)[:3]:
+            for seed_term in seed_terms[:2]:
+                localized_seed = _normalize_space(f"{seed_term} {location}") if location else seed_term
+                platform = "instagram" if hint == "instagram" else "tiktok" if hint == "tiktok" else "website"
+                family = "rescue_queries" if platform != "website" else "website_validation_queries"
+                _append_query_item(
+                    query_items,
+                    _apply_plan_negative_terms(
+                        f"{localized_seed} {hint}",
+                        ai_negative_terms=ai_negative_terms,
+                        dynamic_negative_signals=dynamic_negative_signals,
+                        base_negative_terms=negative_terms,
+                    ),
+                    segment_id=segment_id,
+                    family=family,
+                    platform=platform,
+                    iteration_index=iteration_index,
+                    priority_bucket="broad_social",
+                    segment_label=segment_label,
+                )
+
+        for hub_domain in _segment_query_bio_hub_domains(discovery_profile):
+            for seed_term in seed_terms[:2]:
+                localized_seed = _normalize_space(f"{seed_term} {location}") if location else seed_term
+                _append_query_item(
+                    query_items,
+                    _apply_plan_negative_terms(
+                        f"{localized_seed} {hub_domain}",
+                        ai_negative_terms=ai_negative_terms,
+                        dynamic_negative_signals=dynamic_negative_signals,
+                        base_negative_terms=negative_terms,
+                    ),
+                    segment_id=segment_id,
+                    family="social_profile_queries",
+                    platform="bio_hub",
+                    iteration_index=iteration_index,
+                    priority_bucket="social",
+                    segment_label=segment_label,
+                )
+                for hint in social_patterns[:2]:
+                    _append_query_item(
+                        query_items,
+                        _apply_plan_negative_terms(
+                            f"{localized_seed} {hint} {hub_domain}",
+                            ai_negative_terms=ai_negative_terms,
+                            dynamic_negative_signals=dynamic_negative_signals,
+                            base_negative_terms=negative_terms,
+                        ),
+                        segment_id=segment_id,
+                        family="social_commercial_queries",
+                        platform="bio_hub",
+                        iteration_index=iteration_index,
+                        priority_bucket="social",
+                        segment_label=segment_label,
+                    )
+
+        for website_hint in website_patterns[:2]:
+            _append_query_item(
+                query_items,
+                _apply_plan_negative_terms(
+                    f"{geo_seed or segment_label} {website_hint}",
+                    ai_negative_terms=ai_negative_terms,
+                    dynamic_negative_signals=dynamic_negative_signals,
+                    base_negative_terms=negative_terms,
+                ),
+                segment_id=segment_id,
+                family="website_validation_queries",
+                platform="website",
+                iteration_index=iteration_index,
+                priority_bucket="validation",
+                segment_label=segment_label,
+            )
+
+        if discovery_profile == "ecommerce":
+            for platform in platform_priority[:2]:
+                site_clause = "site:instagram.com" if platform == "instagram" else "site:tiktok.com"
+                ecommerce_hint = "shop now" if language == "en" else "tienda online"
+                _append_query_item(
+                    query_items,
+                    _apply_plan_negative_terms(
+                        f"{geo_seed or segment_label} {ecommerce_hint} {site_clause}",
+                        ai_negative_terms=ai_negative_terms,
+                        dynamic_negative_signals=dynamic_negative_signals,
+                        base_negative_terms=negative_terms,
+                    ),
+                    segment_id=segment_id,
+                    family="social_commercial_queries",
+                    platform=platform,
+                    iteration_index=iteration_index,
+                    priority_bucket="social",
+                    segment_label=segment_label,
+                )
+        if discovery_profile == "creator_coach":
+            for platform in platform_priority[:2]:
+                site_clause = "site:instagram.com" if platform == "instagram" else "site:tiktok.com"
+                coach_hint = "book call" if language == "en" else "agendar"
+                _append_query_item(
+                    query_items,
+                    _apply_plan_negative_terms(
+                        f"{geo_seed or segment_label} {coach_hint} {site_clause}",
+                        ai_negative_terms=ai_negative_terms,
+                        dynamic_negative_signals=dynamic_negative_signals,
+                        base_negative_terms=negative_terms,
+                    ),
+                    segment_id=segment_id,
+                    family="social_commercial_queries",
+                    platform=platform,
+                    iteration_index=iteration_index,
+                    priority_bucket="social",
+                    segment_label=segment_label,
+                )
+
+    rescue_queries: list[str] = []
+    rescue_queries.extend(ai_dork_queries or planner_output.get("optimal_dork_queries") or [])
+    rescue_queries.extend(
+        build_retry_discovery_queries(
+            search_query=search_query,
+            user_profession=user_profession,
+            user_technologies=user_technologies,
+            target_niche=target_niche,
+            target_location=target_location,
+            target_language=target_language,
+            user_service_offers=user_service_offers,
+            user_service_constraints=user_service_constraints,
+            user_target_offer_focus=user_target_offer_focus,
+            target_budget_signals=target_budget_signals,
+        )[:6]
+    )
+    legacy_canonical_queries = build_discovery_queries(
+        search_query=search_query,
+        user_profession=user_profession,
+        user_technologies=user_technologies,
+        target_niche=target_niche,
+        target_location=target_location,
+        target_language=target_language,
+        user_service_offers=user_service_offers,
+        user_service_constraints=user_service_constraints,
+        user_target_offer_focus=user_target_offer_focus,
+        target_budget_signals=target_budget_signals,
+        ai_dork_queries=None,
+        ai_negative_terms=ai_negative_terms,
+        max_queries=min(max_queries, 18),
+    )
+    for legacy_query in legacy_canonical_queries:
+        family, platform = _legacy_query_family(legacy_query)
+        _append_query_item(
+            query_items,
+            legacy_query,
+            segment_id="legacy_backfill",
+            family=family,
+            platform=platform,
+            iteration_index=iteration_index,
+            priority_bucket="legacy",
+            segment_label=_normalize_space(target_niche or search_query or "legacy"),
+        )
+    for rescue_query in rescue_queries:
+        _append_query_item(
+            query_items,
+            _apply_plan_negative_terms(
+                rescue_query,
+                ai_negative_terms=ai_negative_terms,
+                dynamic_negative_signals=dynamic_negative_signals,
+                base_negative_terms=negative_terms,
+            ),
+            segment_id="adaptive_rescue",
+            family="rescue_queries",
+            platform=_infer_query_platform(rescue_query),
+            iteration_index=iteration_index,
+            priority_bucket="rescue",
+            segment_label=_normalize_space(niche or base_query or "adaptive rescue"),
+        )
+
+    deduped_initial_wave = _dedupe_query_items(initial_wave_items, 6)
+    initial_wave_queries = {str(item.get("query") or "").lower() for item in deduped_initial_wave}
+    deduped_items = _dedupe_query_items(query_items, max_queries * 2)
+    buckets = _bucket_query_items(
+        [
+            item
+            for item in deduped_items
+            if str(item.get("query") or "").lower() not in initial_wave_queries
+        ]
+    )
+    selected_items = list(deduped_initial_wave)
+    remaining_capacity = max(max_queries - len(selected_items), 0)
+    if discovery_profile == "creator_coach":
+        social_limit = max(1, int(remaining_capacity * 0.25)) if remaining_capacity else 0
+        social_commercial_limit = max(1, int(remaining_capacity * 0.25)) if remaining_capacity else 0
+        validation_limit = max(1, int(remaining_capacity * 0.25)) if remaining_capacity else 0
+        rescue_limit = max(1, remaining_capacity - (social_limit + social_commercial_limit + validation_limit)) if remaining_capacity else 0
+    else:
+        social_limit = max(1, int(remaining_capacity * 0.35)) if remaining_capacity else 0
+        social_commercial_limit = max(1, int(remaining_capacity * 0.35)) if remaining_capacity else 0
+        validation_limit = max(1, int(remaining_capacity * 0.2)) if remaining_capacity else 0
+        rescue_limit = max(1, remaining_capacity - (social_limit + social_commercial_limit + validation_limit)) if remaining_capacity else 0
+    selected_items.extend(
+        [
+            *_take_bucket_items(buckets=buckets, family="social_profile_queries", limit=social_limit),
+            *_take_bucket_items(buckets=buckets, family="social_commercial_queries", limit=social_commercial_limit),
+            *_take_bucket_items(buckets=buckets, family="website_validation_queries", limit=validation_limit),
+            *_take_bucket_items(buckets=buckets, family="rescue_queries", limit=rescue_limit),
+        ]
+    )
+    if len(selected_items) < max_queries:
+        for family in ("social_profile_queries", "social_commercial_queries", "website_validation_queries", "rescue_queries"):
+            for item in buckets.get(family, []):
+                selected_items.append(item)
+                if len(selected_items) >= max_queries:
+                    break
+            if len(selected_items) >= max_queries:
+                break
+    selected_items = _dedupe_query_items(selected_items, max_queries)
+    return {
+        "queries": [item["query"] for item in selected_items],
+        "batches": _chunk_queries([item["query"] for item in selected_items], query_batch_size),
+        "query_items": selected_items,
+        "query_context_map": _build_structured_query_context_map(selected_items),
+        "family_distribution": {
+            family: len([item for item in selected_items if item.get("family") == family])
+            for family in ("social_profile_queries", "social_commercial_queries", "website_validation_queries", "rescue_queries")
+        },
+        "search_strategy": planner_output.get("search_strategy"),
+    }
+
+
 def build_discovery_query_batches(
     *,
     search_query: str | None,
@@ -885,11 +1457,12 @@ def build_discovery_query_batches(
     user_service_constraints: list[str] | None = None,
     user_target_offer_focus: str | None = None,
     target_budget_signals: list[str] | None = None,
+    planner_output: dict[str, Any] | None = None,
     ai_dork_queries: list[str] | None = None,
     ai_negative_terms: list[str] | None = None,
     query_batch_size: int = DEFAULT_QUERY_BATCH_SIZE,
 ) -> list[list[str]]:
-    canonical_queries = build_discovery_queries(
+    query_plan = build_discovery_query_plan(
         search_query=search_query,
         user_profession=user_profession,
         user_technologies=user_technologies,
@@ -900,28 +1473,17 @@ def build_discovery_query_batches(
         user_service_constraints=user_service_constraints,
         user_target_offer_focus=user_target_offer_focus,
         target_budget_signals=target_budget_signals,
+        planner_output=planner_output,
         ai_dork_queries=ai_dork_queries,
         ai_negative_terms=ai_negative_terms,
+        query_batch_size=query_batch_size,
     )
-    retry_queries = build_retry_discovery_queries(
-        search_query=search_query,
-        user_profession=user_profession,
-        user_technologies=user_technologies,
-        target_niche=target_niche,
-        target_location=target_location,
-        target_language=target_language,
-        user_service_offers=user_service_offers,
-        user_service_constraints=user_service_constraints,
-        user_target_offer_focus=user_target_offer_focus,
-        target_budget_signals=target_budget_signals,
-    )
-
-    deduped_retry_queries = [query for query in retry_queries if query not in canonical_queries]
-    return _chunk_queries(canonical_queries, query_batch_size) + _chunk_queries(deduped_retry_queries, query_batch_size)
+    return query_plan["batches"]
 
 
 def build_discovery_metadata(entry: dict[str, Any] | None, queries: list[str]) -> dict[str, Any]:
     entry = entry or {}
+    query_context = entry.get("query_context") if isinstance(entry.get("query_context"), dict) else {}
     return {
         "source_query": entry.get("query"),
         "serp_position": entry.get("position"),
@@ -935,5 +1497,10 @@ def build_discovery_metadata(entry: dict[str, Any] | None, queries: list[str]) -
         "discovery_reasons": entry.get("discovery_reasons"),
         "seed_source_url": entry.get("seed_source_url"),
         "seed_source_type": entry.get("seed_source_type"),
+        "query_context": query_context,
+        "segment_id": query_context.get("segment_id"),
+        "query_family": query_context.get("family"),
+        "query_platform": query_context.get("platform"),
+        "query_iteration_index": query_context.get("iteration_index"),
         "queries": queries,
     }

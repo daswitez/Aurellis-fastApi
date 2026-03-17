@@ -8,6 +8,7 @@ from typing import Any
 class SearchDiscoveryEntry:
     url: str
     query: str | None = None
+    query_context: dict[str, Any] = field(default_factory=dict)
     position: int | None = None
     title: str | None = None
     snippet: str | None = None
@@ -29,6 +30,7 @@ class SearchDiscoveryResult:
     warning_message: str | None = None
     queries: list[str] = field(default_factory=list)
     excluded_results: list[dict[str, Any]] = field(default_factory=list)
+    query_reports: list[dict[str, Any]] = field(default_factory=list)
     provider_name: str | None = None
     provider_status: str | None = None
     failure_reason: str | None = None

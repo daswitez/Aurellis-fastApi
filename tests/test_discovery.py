@@ -12,6 +12,7 @@ from app.scraper.search_engines.ddg_search import (
     find_prospect_urls_by_queries as ddg_find_prospect_urls_by_queries,
 )
 from app.services.discovery import (
+    build_discovery_query_plan,
     build_discovery_query_batches,
     build_discovery_queries,
     determine_capture_stop_reason,
@@ -187,6 +188,108 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertEqual(targets["target_accepted_results"], 3)
         self.assertEqual(targets["max_candidates_to_process"], 12)
 
+    def test_builds_social_first_segmented_query_plan_for_ecommerce(self) -> None:
+        query_plan = build_discovery_query_plan(
+            search_query="small ecommerce brands shopify dropshipping stores instagram tiktok active content",
+            user_profession="Editor de Video",
+            target_niche="Pequeñas marcas ecommerce, tiendas online, dropshipping y pymes digitales",
+            target_location="USA",
+            target_language="en",
+            user_target_offer_focus="Marcas pequeñas que venden productos y necesitan contenido constante.",
+            target_budget_signals=[
+                "Tienda online activa",
+                "Presencia en Instagram o TikTok",
+                "Publican contenido de producto con frecuencia",
+            ],
+            planner_output={
+                "search_strategy": "social_first",
+                "platform_priority": ["instagram", "tiktok", "website"],
+                "initial_wave": [
+                    {"query": "fashion boutique USA", "segment_id": "fashion_boutique", "platform": "website", "family": "website_validation_queries"},
+                    {"query": "pet brand USA", "segment_id": "pet_brand", "platform": "website", "family": "website_validation_queries"},
+                ],
+                "dynamic_priority_signals": ["shop now", "product video", "ugc"],
+                "dynamic_negative_signals": ["theme", "supplier", "marketplace"],
+                "commercial_validation_signals": ["shop", "products", "official site"],
+                "segment_hypotheses": [
+                    {
+                        "segment_id": "fashion_boutique",
+                        "label": "fashion boutique",
+                        "seed_terms": ["fashion boutique", "clothing brand"],
+                        "social_patterns": ["shop now", "new drop"],
+                        "website_patterns": ["shop", "collections"],
+                    },
+                    {
+                        "segment_id": "pet_brand",
+                        "label": "pet brand",
+                        "seed_terms": ["pet brand", "pet store"],
+                        "social_patterns": ["product video", "ugc"],
+                        "website_patterns": ["shop", "products"],
+                    },
+                ],
+            },
+        )
+
+        queries = query_plan["queries"]
+        queries_without_negative_coach = [
+            query.lower().replace("-coach", "").replace("-coaching", "")
+            for query in queries
+        ]
+        self.assertTrue(query_plan["query_context_map"])
+        self.assertEqual(queries[0], "fashion boutique USA")
+        self.assertEqual(queries[1], "pet brand USA")
+        self.assertGreaterEqual(query_plan["family_distribution"]["social_profile_queries"], 4)
+        self.assertTrue(any(context["segment_id"] == "fashion_boutique" for context in query_plan["query_context_map"].values()))
+        self.assertTrue(any(context["family"] == "social_commercial_queries" for context in query_plan["query_context_map"].values()))
+        self.assertTrue(any(context["platform"] == "instagram" for context in query_plan["query_context_map"].values()))
+        self.assertTrue(any(context["platform"] == "bio_hub" for context in query_plan["query_context_map"].values()))
+        self.assertTrue(any("site:instagram.com" in query for query in queries))
+        self.assertTrue(any("site:tiktok.com" in query for query in queries))
+        self.assertFalse(any(" coach " in f" {query} " for query in queries_without_negative_coach))
+        self.assertFalse(any("tienda online usa" in query.lower() for query in queries))
+        self.assertFalse(any(" marketplace " in f" {query.lower()} " for query in queries))
+        self.assertTrue(any("-marketplace" in query.lower() for query in queries))
+
+    def test_builds_creator_query_plan_with_broad_backfill_queries(self) -> None:
+        query_plan = build_discovery_query_plan(
+            search_query="marcas personales ecommerce y coaches de negocios España",
+            user_profession="Editor de Video",
+            target_niche="Marcas Personales y Coaches",
+            target_location="España",
+            target_language="es",
+            target_budget_signals=[
+                "Venden cursos o infoproductos",
+                "Activos en Instagram o TikTok con mas de 10k seguidores",
+                "Tienen linktree/tienda oficial",
+            ],
+            planner_output={
+                "search_strategy": "social_first",
+                "platform_priority": ["instagram", "tiktok", "website"],
+                "initial_wave": [
+                    {"query": "Marcas Personales y Coaches España", "segment_id": "broad_niche", "platform": "website", "family": "rescue_queries"}
+                ],
+                "dynamic_priority_signals": ["link in bio", "DM", "programa"],
+                "dynamic_negative_signals": ["escuela", "directorio"],
+                "commercial_validation_signals": ["contacto", "programa", "mentoria"],
+                "segment_hypotheses": [
+                    {
+                        "segment_id": "coach_negocios",
+                        "label": "coach de negocios",
+                        "seed_terms": ["coach de negocios", "coach para emprendedores"],
+                        "social_patterns": ["DM", "link in bio"],
+                        "website_patterns": ["contacto", "programa"],
+                    }
+                ],
+            },
+            max_queries=24,
+        )
+
+        queries = query_plan["queries"]
+        self.assertEqual(queries[0], "Marcas Personales y Coaches España")
+        self.assertTrue(any("site:instagram.com" in query and "coach de negocios" in query.lower() for query in queries))
+        self.assertTrue(any(context["segment_id"] == "legacy_backfill" for context in query_plan["query_context_map"].values()))
+        self.assertGreaterEqual(query_plan["family_distribution"]["rescue_queries"], 1)
+
     def test_resolves_minimum_candidate_ratio_for_single_target(self) -> None:
         targets = resolve_capture_targets(
             max_results_legacy=1,
@@ -225,7 +328,7 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(query_batches), 2)
-        self.assertLessEqual(len(query_batches[0]), 2)
+        self.assertLessEqual(len(query_batches[0]), 3)
         flattened = [query for batch in query_batches for query in batch]
         self.assertTrue(any("empresa" in query or "negocio" in query for query in flattened))
         self.assertTrue(any("ubicaciones" in query or "sedes" in query for query in flattened))
@@ -515,6 +618,8 @@ class DirectorySeedExpansionTestCase(unittest.IsolatedAsyncioTestCase):
             result = await ddg_find_prospect_urls_by_queries(["query-a", "query-b"], max_results=4)
 
         self.assertEqual([entry.url for entry in result.entries], ["https://a1.com", "https://b1.com", "https://a2.com", "https://b2.com"])
+        self.assertEqual(len(result.query_reports), 2)
+        self.assertTrue(any(report["query"] == "query-a" and report["returned_count"] == 3 for report in result.query_reports))
 
 
 class DiscoveryProviderOrchestrationTestCase(unittest.IsolatedAsyncioTestCase):

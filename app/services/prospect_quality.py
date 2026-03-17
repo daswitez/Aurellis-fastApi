@@ -1446,7 +1446,7 @@ def _classify_quality_status(
     if has_target_location and location_match_status == "unknown":
         flags.append("geo_unknown")
         if is_social_profile:
-            score_multiplier = 0.9
+            score_multiplier = 0.95 if social_business_evidence_count >= 3 else 0.9
         elif heuristic_score < 0.45:
             return "rejected", "geo_unknown_low_score", flags, 0.8
         else:
@@ -1537,6 +1537,15 @@ def _derive_acceptance_decision(
             if has_target_niche and normalized_business_model_fit == "mismatch":
                 return "accepted_related", 0.55, 0.6
             return "accepted_target", 1.0, None
+        if (
+            quality_status == "needs_review"
+            and is_target_entity
+            and social_business_evidence_count >= 3
+            and (normalized_context_fit >= 0.3 or not has_target_niche or heuristic_score >= 0.6)
+        ):
+            if has_target_niche and normalized_business_model_fit == "mismatch":
+                return "accepted_related", 0.6, 0.6
+            return "accepted_related", 0.72, 0.62
         if quality_status == "needs_review":
             return "rejected_low_confidence", 0.5, 0.5
 

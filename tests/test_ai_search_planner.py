@@ -40,6 +40,12 @@ class AISearchPlannerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["refinement_goal"], "Encontrar coaches finales con presencia comercial")
         self.assertEqual(plan["planner_profile"], "creator_coach")
         self.assertEqual(plan["geo_scope"], "España")
+        self.assertEqual(plan["search_strategy"], "social_first")
+        self.assertTrue(plan["subsegment_hypotheses"])
+        self.assertTrue(plan["initial_wave"])
+        self.assertTrue(plan["query_actions"])
+        self.assertTrue(any("coach" in segment["segment_id"] for segment in plan["segment_hypotheses"]))
+        self.assertTrue(any(family["family"] == "social_profile_queries" for family in plan["query_families"]))
 
     async def test_refinement_plan_dedupes_queries_and_keeps_spain_scope(self) -> None:
         with patch(
@@ -80,6 +86,9 @@ class AISearchPlannerTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(plan["dynamic_negative_terms"], ["-escuela", "-listado"])
         self.assertEqual(plan["planner_profile"], "creator_coach")
+        self.assertTrue(plan["segment_hypotheses"])
+        self.assertTrue(plan["segment_action_plan"])
+        self.assertIn("instagram", plan["platform_priority"])
 
     async def test_initial_plan_enforces_supported_country_geo_for_ecommerce_profile(self) -> None:
         with patch(
@@ -127,6 +136,11 @@ class AISearchPlannerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("theme", plan["exclusion_entity_hints"])
         self.assertEqual(plan["planner_profile"], "ecommerce_content")
         self.assertEqual(plan["geo_scope"], "USA")
+        self.assertEqual(plan["search_strategy"], "social_first")
+        self.assertTrue(plan["initial_wave"])
+        self.assertTrue(any(segment["segment_id"] == "small_skincare_brand" for segment in plan["segment_hypotheses"]))
+        self.assertTrue(any("shop now" in signal.lower() for signal in plan["dynamic_priority_signals"]))
+        self.assertTrue(any(family["family"] == "website_validation_queries" for family in plan["query_families"]))
 
     async def test_multi_location_option_string_does_not_force_invalid_geo_suffix(self) -> None:
         planner_mock = AsyncMock(
@@ -159,6 +173,32 @@ class AISearchPlannerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Perfil activo: ecommerce_content", awaited_kwargs["user_prompt"])
         self.assertIn("Flexible o multiple opciones", awaited_kwargs["user_prompt"])
         self.assertIn("paginas de producto o coleccion", awaited_kwargs["system_prompt"])
+
+    async def test_refinement_fallback_builds_segment_rotation_from_memory(self) -> None:
+        with patch(
+            "app.services.ai_search_planner._call_planner",
+            new=AsyncMock(return_value={"optimal_dork_queries": ['site:instagram.com "small brand"']}),  # intentionally sparse
+        ):
+            plan = await refine_search_plan(
+                {
+                    "search_query": "small ecommerce brands shopify dropshipping stores instagram tiktok active content",
+                    "user_profession": "Editor de Video",
+                    "target_niche": "Pequeñas marcas ecommerce, tiendas online, dropshipping y pymes digitales",
+                    "target_location": "USA",
+                    "target_language": "en",
+                },
+                {
+                    "segment_performance": {
+                        "fashion_boutique": {"processed": 4, "accepted": 0, "rejected": 3},
+                        "pet_brand": {"processed": 3, "accepted": 1, "rejected": 1},
+                    }
+                },
+            )
+
+        self.assertIn("pet_brand", plan["next_segments_to_try"])
+        self.assertIn("fashion_boutique", plan["segments_to_pause"])
+        self.assertTrue(plan["refinement_hypotheses"])
+        self.assertTrue(plan["query_actions"])
 
 
 if __name__ == "__main__":

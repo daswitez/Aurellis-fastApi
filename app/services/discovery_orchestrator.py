@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import urlparse
 
 from app.config import get_settings
 from app.scraper.search_engines.ddg_search import DuckDuckGoHtmlSearchProvider
@@ -296,6 +297,85 @@ def _filter_entries_by_context(
     return filtered_entries, excluded_results
 
 
+def _merge_reason_counts(*reason_maps: dict[str, int]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for reason_map in reason_maps:
+        for reason, count in (reason_map or {}).items():
+            merged[reason] = merged.get(reason, 0) + int(count or 0)
+    return merged
+
+
+def _summarize_excluded_reason_counts(excluded_results: list[dict]) -> dict[str, int]:
+    reason_counts: dict[str, int] = {}
+    for item in excluded_results:
+        reason = item.get("reason") if isinstance(item, dict) else None
+        if isinstance(reason, str) and reason:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    return reason_counts
+
+
+def _build_query_reports(
+    *,
+    queries: list[str],
+    base_reports: list[dict[str, Any]],
+    filtered_entries: list[SearchDiscoveryEntry],
+    excluded_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    report_index = {
+        str(report.get("query") or "").strip(): dict(report)
+        for report in (base_reports or [])
+        if str(report.get("query") or "").strip()
+    }
+    filtered_by_query: dict[str, list[SearchDiscoveryEntry]] = {}
+    excluded_by_query: dict[str, list[dict[str, Any]]] = {}
+
+    for entry in filtered_entries:
+        query = str(entry.query or "").strip()
+        if not query:
+            continue
+        filtered_by_query.setdefault(query, []).append(entry)
+
+    for excluded in excluded_results:
+        query = str(excluded.get("query") or "").strip() if isinstance(excluded, dict) else ""
+        if not query:
+            continue
+        excluded_by_query.setdefault(query, []).append(excluded)
+
+    normalized_queries = [str(query or "").strip() for query in queries if str(query or "").strip()]
+    ordered_queries = normalized_queries or list(report_index.keys())
+    query_reports: list[dict[str, Any]] = []
+    for query in ordered_queries:
+        base_report = report_index.get(query, {"query": query})
+        query_entries = filtered_by_query.get(query, [])
+        query_excluded = excluded_by_query.get(query, [])
+        query_reports.append(
+            {
+                **base_report,
+                "query": query,
+                "kept_count": len(query_entries),
+                "zero_results": bool(base_report.get("zero_results")) or int(base_report.get("returned_count") or 0) == 0,
+                "excluded_reason_counts": _merge_reason_counts(
+                    base_report.get("excluded_reason_counts") or {},
+                    _summarize_excluded_reason_counts(query_excluded),
+                ),
+                "sample_titles_snippets": [
+                    {"title": entry.title, "snippet": entry.snippet, "url": entry.url}
+                    for entry in query_entries[:3]
+                ]
+                or list(base_report.get("sample_titles_snippets") or []),
+                "top_domains": sorted(
+                    {
+                        re.sub(r"^www\.", "", urlparse(entry.url).hostname or "")
+                        for entry in query_entries
+                        if entry.url
+                    }
+                )[:4]
+                or list(base_report.get("top_domains") or []),
+            }
+        )
+    return query_reports
+
+
 async def discover_prospect_urls_by_queries(
     queries: list[str],
     max_results: int = 10,
@@ -368,6 +448,12 @@ async def discover_prospect_urls_by_queries(
         if filtered_entries:
             result.entries = filtered_entries[:max_results]
             result.excluded_results = excluded_results
+            result.query_reports = _build_query_reports(
+                queries=queries,
+                base_reports=result.query_reports,
+                filtered_entries=result.entries,
+                excluded_results=excluded_results,
+            )
             result.warning_message = "; ".join(warning_messages) if warning_messages else None
             return result
 
@@ -389,5 +475,11 @@ async def discover_prospect_urls_by_queries(
         )
 
     last_result.excluded_results = excluded_results
+    last_result.query_reports = _build_query_reports(
+        queries=queries,
+        base_reports=last_result.query_reports,
+        filtered_entries=last_result.entries,
+        excluded_results=excluded_results,
+    )
     last_result.warning_message = combined_warning or last_result.warning_message
     return last_result

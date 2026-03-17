@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 # Thread pool for running synchronous duckduckgo-search in async context
 _ddg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ddg")
+DDG_QUERY_CONCURRENCY = 3
+DDG_SEED_EXPANSION_CONCURRENCY = 4
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +366,131 @@ async def _expand_directory_seed_entry(entry: SearchDiscoveryEntry, allow_social
 # Public search provider
 # ---------------------------------------------------------------------------
 
+
+def _extract_top_domains(entries: list[SearchDiscoveryEntry], limit: int = 4) -> list[str]:
+    seen_domains: list[str] = []
+    seen_values: set[str] = set()
+    for entry in entries:
+        hostname = (urlparse(entry.url).hostname or "").strip().lower()
+        if not hostname or hostname in seen_values:
+            continue
+        seen_values.add(hostname)
+        seen_domains.append(hostname)
+        if len(seen_domains) >= limit:
+            break
+    return seen_domains
+
+
+def _sample_titles_snippets(entries: list[SearchDiscoveryEntry], limit: int = 3) -> list[dict[str, str | None]]:
+    return [
+        {
+            "title": entry.title,
+            "snippet": entry.snippet,
+            "url": entry.url,
+        }
+        for entry in entries[:limit]
+    ]
+
+
+def _summarize_excluded_reason_counts(excluded_results: list[dict[str, Any]]) -> dict[str, int]:
+    reason_counts: dict[str, int] = {}
+    for item in excluded_results:
+        reason = str(item.get("reason") or "").strip()
+        if not reason:
+            continue
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    return reason_counts
+
+
+def _build_query_report(
+    *,
+    query: str,
+    entries: list[SearchDiscoveryEntry],
+    excluded_results: list[dict[str, Any]],
+    raw_returned_count: int,
+    warning_message: str | None,
+    failure_reason: str | None,
+) -> dict[str, Any]:
+    return {
+        "query": query,
+        "returned_count": raw_returned_count,
+        "kept_count": len(entries),
+        "excluded_reason_counts": _summarize_excluded_reason_counts(excluded_results),
+        "zero_results": raw_returned_count == 0,
+        "sample_titles_snippets": _sample_titles_snippets(entries),
+        "top_domains": _extract_top_domains(entries),
+        "warning_message": warning_message,
+        "failure_reason": failure_reason,
+    }
+
+
+async def _expand_query_entries(
+    *,
+    entries: list[SearchDiscoveryEntry],
+    allow_social_profiles: bool,
+    expansion_semaphore: asyncio.Semaphore,
+) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]]]:
+    async def _expand_single(
+        entry: SearchDiscoveryEntry,
+        query_position: int,
+    ) -> tuple[SearchDiscoveryEntry | None, dict[str, Any] | None]:
+        async with expansion_semaphore:
+            expanded_entry, seed_excluded = await _expand_directory_seed_entry(
+                entry,
+                allow_social_profiles=allow_social_profiles,
+            )
+        if expanded_entry is not None:
+            expanded_entry.position = query_position
+        return expanded_entry, seed_excluded
+
+    expansion_results = await asyncio.gather(
+        *[
+            _expand_single(entry, query_position)
+            for query_position, entry in enumerate(entries, start=1)
+        ]
+    )
+    expanded_entries: list[SearchDiscoveryEntry] = []
+    excluded_results: list[dict[str, Any]] = []
+    for expanded_entry, seed_excluded in expansion_results:
+        if seed_excluded:
+            excluded_results.append(seed_excluded)
+        if expanded_entry is None:
+            continue
+        expanded_entries.append(expanded_entry)
+    return expanded_entries, excluded_results
+
+
+async def _run_query_pipeline(
+    *,
+    query: str,
+    per_query_limit: int,
+    allow_social_profiles: bool,
+    query_semaphore: asyncio.Semaphore,
+    expansion_semaphore: asyncio.Semaphore,
+) -> tuple[list[SearchDiscoveryEntry], list[dict[str, Any]], str | None, str | None, dict[str, Any]]:
+    async with query_semaphore:
+        query_entries, query_excluded, warning_message, query_failure_reason = await _search_single_query_async(
+            query,
+            max_results=per_query_limit,
+            allow_social_profiles=allow_social_profiles,
+        )
+    raw_returned_count = len(query_entries)
+    expanded_entries, seed_excluded_results = await _expand_query_entries(
+        entries=query_entries,
+        allow_social_profiles=allow_social_profiles,
+        expansion_semaphore=expansion_semaphore,
+    )
+    combined_excluded_results = [*query_excluded, *seed_excluded_results]
+    query_report = _build_query_report(
+        query=query,
+        entries=expanded_entries,
+        excluded_results=combined_excluded_results,
+        raw_returned_count=raw_returned_count,
+        warning_message=warning_message,
+        failure_reason=query_failure_reason,
+    )
+    return expanded_entries, combined_excluded_results, warning_message, query_failure_reason, query_report
+
 class DuckDuckGoHtmlSearchProvider(SearchProvider):
     provider_name = "duckduckgo_html"
     source_type = "duckduckgo_search"
@@ -376,6 +503,7 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
     logger.info("Buscador DDG: ejecutando %s queries canonicas", len(queries))
     entries: list[SearchDiscoveryEntry] = []
     excluded_results: list[dict[str, Any]] = []
+    query_reports: list[dict[str, Any]] = []
     warning_messages: list[str] = []
     seen_urls: set[str] = set()
     failure_reason: str | None = None
@@ -383,30 +511,28 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
     normalized_queries = [query for query in queries if str(query or "").strip()]
     per_query_limit = max(3, min(10, math.ceil(max_results / max(len(normalized_queries), 1)) + 1))
     query_groups: list[list[SearchDiscoveryEntry]] = []
+    query_semaphore = asyncio.Semaphore(DDG_QUERY_CONCURRENCY)
+    expansion_semaphore = asyncio.Semaphore(DDG_SEED_EXPANSION_CONCURRENCY)
+    query_results = await asyncio.gather(
+        *[
+            _run_query_pipeline(
+                query=query,
+                per_query_limit=per_query_limit,
+                allow_social_profiles=allow_social_profiles,
+                query_semaphore=query_semaphore,
+                expansion_semaphore=expansion_semaphore,
+            )
+            for query in normalized_queries
+        ]
+    )
 
-    for query in normalized_queries:
-        query_entries, query_excluded, warning_message, query_failure_reason = await _search_single_query_async(
-            query,
-            max_results=per_query_limit,
-            allow_social_profiles=allow_social_profiles,
-        )
+    for expanded_query_entries, query_excluded, warning_message, query_failure_reason, query_report in query_results:
         excluded_results.extend(query_excluded)
-
+        query_reports.append(query_report)
         if warning_message:
             warning_messages.append(warning_message)
         if query_failure_reason and failure_reason is None:
             failure_reason = query_failure_reason
-
-        expanded_query_entries: list[SearchDiscoveryEntry] = []
-        for query_position, entry in enumerate(query_entries, start=1):
-            expanded_entry, seed_excluded = await _expand_directory_seed_entry(entry, allow_social_profiles=allow_social_profiles)
-            if seed_excluded:
-                excluded_results.append(seed_excluded)
-            if expanded_entry is None:
-                continue
-            entry = expanded_entry
-            entry.position = query_position
-            expanded_query_entries.append(entry)
         query_groups.append(expanded_query_entries)
 
     max_group_size = max((len(group) for group in query_groups), default=0)
@@ -442,6 +568,7 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
                     warning_message=warning_message,
                     queries=queries,
                     excluded_results=excluded_results,
+                    query_reports=query_reports,
                     provider_name="duckduckgo_html",
                     provider_status=provider_status,
                     failure_reason=failure_reason,
@@ -456,6 +583,7 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
             warning_message="; ".join(warning_messages) if warning_messages else None,
             queries=queries,
             excluded_results=excluded_results,
+            query_reports=query_reports,
             provider_name="duckduckgo_html",
             provider_status=provider_status,
             failure_reason=failure_reason,
@@ -476,6 +604,7 @@ async def find_prospect_urls_by_queries(queries: list[str], max_results: int = 1
         warning_message=no_results_message,
         queries=queries,
         excluded_results=excluded_results,
+        query_reports=query_reports,
         provider_name="duckduckgo_html",
         provider_status=provider_status,
         failure_reason=failure_reason,

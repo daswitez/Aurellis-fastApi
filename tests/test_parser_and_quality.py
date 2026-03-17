@@ -661,6 +661,67 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertEqual(quality["quality_status"], "needs_review")
         self.assertEqual(quality["rejection_reason"], "rejected_social_low_evidence")
 
+    def test_quality_keeps_strong_social_profile_as_related_when_review_is_due(self) -> None:
+        html = """
+        <html lang="es">
+          <head>
+            <title>GlowPet (@glowpet) • Instagram photos and videos</title>
+            <meta property="og:description" content="Marca para mascotas con tienda online. DM o link in bio para comprar." />
+          </head>
+          <body>
+            <a href="https://glowpetshop.com">Shop now</a>
+            <a href="https://linktr.ee/glowpet">Link in bio</a>
+            <p>UGC, product videos, drops y contenido constante para nuestra tienda.</p>
+            <p>Escribenos por DM para colaboraciones.</p>
+          </body>
+        </html>
+        """
+
+        clean_text, metadata = parse_html_basic(html, "https://www.instagram.com/glowpet/")
+        heuristic_data = {
+            "score": 0.76,
+            "confidence_level": "high",
+            "inferred_niche": "Ecommerce",
+            "inferred_tech_stack": [],
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.72},
+                "content_profile": {
+                    "offer_signals": ["commercial_offer_detected"],
+                    "audience_signals": ["buyer_audience_visible"],
+                    "platform_ctas": ["profile_cta_visible", "external_link_present", "public_contact_present"],
+                    "external_links": ["https://linktr.ee/glowpet", "https://glowpetshop.com"],
+                    "social_activity_signals": ["content_format_visible"],
+                    "budget_signal_matches": ["Presencia en Instagram o TikTok", "Publican contenido de producto con frecuencia"],
+                },
+            },
+            "heuristic_trace": {"component_scores": {"context_fit": 0.72}},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={
+                "target_location": "USA",
+                "target_language": "en",
+                "target_niche": "Pequeñas marcas ecommerce y tiendas online",
+            },
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "pet brand shop now site:instagram.com", "title": metadata["title"]},
+            entity_data=classify_entity_type(
+                target_url="https://www.instagram.com/glowpet/",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "pet brand shop now site:instagram.com", "title": metadata["title"]},
+            ),
+        )
+
+        self.assertEqual(quality["primary_identity_type"], "social_profile")
+        self.assertEqual(quality["quality_status"], "needs_review")
+        self.assertEqual(quality["acceptance_decision"], "accepted_related")
+        self.assertGreaterEqual(quality["social_business_evidence_count"], 3)
+
     def test_quality_demotes_direct_business_when_target_niche_fit_is_low(self) -> None:
         clean_text = "Portal educativo con recursos, contacto y publicaciones para docentes."
         metadata = {
