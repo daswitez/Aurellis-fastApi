@@ -98,6 +98,8 @@ class BraveSearchProvider(SearchProvider):
                                 "snippet": snippet,
                                 "business_likeness_score": business_score,
                                 "discovery_reasons": business_reasons,
+                                "candidate_screening_stage": classified.get("candidate_screening_stage"),
+                                "candidate_screening_reason": classified.get("candidate_screening_reason"),
                             }
                         )
                         continue
@@ -122,7 +124,12 @@ class BraveSearchProvider(SearchProvider):
                             snippet=snippet or None,
                             discovery_confidence=discovery_confidence,
                             business_likeness_score=business_score,
+                            website_result_score=classified["website_result_score"],
+                            social_profile_score=classified["social_profile_score"],
+                            result_kind=classified["result_kind"],
                             discovery_reasons=business_reasons,
+                            candidate_screening_stage=classified.get("candidate_screening_stage"),
+                            candidate_screening_reason=classified.get("candidate_screening_reason"),
                         )
                     )
                     if len(entries) >= max_results:

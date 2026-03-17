@@ -212,7 +212,21 @@ def _extract_domain_from_url(url: str | None) -> str | None:
 
 def _compute_default_max_query_refinements(max_candidates_to_process: int) -> int:
     candidate_target = max(int(max_candidates_to_process or 0), 1)
-    return max(3, min(10, math.ceil(candidate_target / 5)))
+    return max(6, min(16, math.ceil(candidate_target / 3)))
+
+
+def _compute_max_fallback_backfill_attempts(max_candidates_to_process: int) -> int:
+    candidate_target = max(int(max_candidates_to_process or 0), 1)
+    return max(6, min(20, math.ceil(candidate_target / 2)))
+
+
+def _remaining_candidates_to_process_target(
+    *,
+    total_processed: int,
+    buffered_candidates: int,
+    target_processed_count: int,
+) -> int:
+    return max(int(target_processed_count or 0) - (int(total_processed or 0) + int(buffered_candidates or 0)), 0)
 
 
 def _resolve_adaptive_refinement_window(max_candidates_to_process: int) -> int:
@@ -270,8 +284,16 @@ def _serialize_discovery_entry(entry: SearchDiscoveryEntry | dict[str, Any]) -> 
             "position": entry.position,
             "discovery_confidence": entry.discovery_confidence,
             "business_likeness_score": entry.business_likeness_score,
+            "website_result_score": entry.website_result_score,
+            "social_profile_score": entry.social_profile_score,
             "result_kind": entry.result_kind,
             "discovery_reasons": entry.discovery_reasons,
+            "candidate_screening_stage": entry.candidate_screening_stage,
+            "candidate_screening_reason": entry.candidate_screening_reason,
+            "quick_ai_verdict": entry.quick_ai_verdict,
+            "quick_ai_confidence": entry.quick_ai_confidence,
+            "quick_ai_reason_code": entry.quick_ai_reason_code,
+            "rescued_by_quick_ai": entry.rescued_by_quick_ai,
         }
     entry_dict = dict(entry)
     return {
@@ -283,8 +305,16 @@ def _serialize_discovery_entry(entry: SearchDiscoveryEntry | dict[str, Any]) -> 
         "position": entry_dict.get("position"),
         "discovery_confidence": entry_dict.get("discovery_confidence"),
         "business_likeness_score": entry_dict.get("business_likeness_score"),
+        "website_result_score": entry_dict.get("website_result_score"),
+        "social_profile_score": entry_dict.get("social_profile_score"),
         "result_kind": entry_dict.get("result_kind"),
         "discovery_reasons": entry_dict.get("discovery_reasons"),
+        "candidate_screening_stage": entry_dict.get("candidate_screening_stage"),
+        "candidate_screening_reason": entry_dict.get("candidate_screening_reason"),
+        "quick_ai_verdict": entry_dict.get("quick_ai_verdict"),
+        "quick_ai_confidence": entry_dict.get("quick_ai_confidence"),
+        "quick_ai_reason_code": entry_dict.get("quick_ai_reason_code"),
+        "rescued_by_quick_ai": bool(entry_dict.get("rescued_by_quick_ai")),
     }
 
 
@@ -411,6 +441,46 @@ def _select_query_context_map(
         for query, context in (query_context_map or {}).items()
         if query in selected_queries
     }
+
+
+def _build_fallback_backfill_batches(
+    *,
+    job_context: dict[str, Any],
+    seen_queries: set[str],
+    max_candidates_to_process: int,
+    target_accepted_results: int,
+    iteration_index: int,
+) -> tuple[list[list[str]], dict[str, dict[str, Any]], list[str]]:
+    fallback_query_plan = build_discovery_query_plan(
+        search_query=job_context.get("search_query"),
+        user_profession=job_context.get("user_profession"),
+        user_technologies=job_context.get("user_technologies"),
+        target_niche=job_context.get("target_niche"),
+        target_location=job_context.get("target_location"),
+        target_language=job_context.get("target_language"),
+        user_service_offers=job_context.get("user_service_offers"),
+        user_service_constraints=job_context.get("user_service_constraints"),
+        user_target_offer_focus=job_context.get("user_target_offer_focus"),
+        target_budget_signals=job_context.get("target_budget_signals"),
+        planner_output=None,
+        ai_dork_queries=None,
+        ai_negative_terms=job_context.get("dynamic_negative_terms"),
+        max_queries=min(
+            48,
+            _resolve_query_plan_limit(
+                max_candidates_to_process=max_candidates_to_process,
+                target_accepted_results=target_accepted_results,
+            ),
+        ),
+        iteration_index=iteration_index,
+    )
+    fallback_batches = _filter_new_queries(fallback_query_plan["batches"], seen_queries=seen_queries)
+    fallback_query_context_map = _select_query_context_map(
+        fallback_batches,
+        query_context_map=fallback_query_plan["query_context_map"],
+    )
+    fallback_queries = _flatten_query_batches(fallback_batches)
+    return fallback_batches, fallback_query_context_map, fallback_queries
 
 
 def _filter_new_queries(
@@ -1371,6 +1441,8 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
             )
             max_query_refinements = int(job_context.get("max_query_refinements") or 0)
             refinement_count = 0
+            fallback_backfill_attempts = 0
+            max_fallback_backfill_attempts = _compute_max_fallback_backfill_attempts(max_candidates_to_process)
             last_refinement_reason: str | None = None
             accepted_since_last_refinement = 0
             processed_window: list[dict[str, Any]] = []
@@ -1431,6 +1503,7 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                 job_context["target_entity_hints"] = ai_search_plan.get("target_entity_hints", [])
                 job_context["exclusion_entity_hints"] = ai_search_plan.get("exclusion_entity_hints", [])
                 job_context["refinement_goal"] = ai_search_plan.get("refinement_goal")
+                job_context["candidate_evaluation_policy"] = ai_search_plan.get("candidate_evaluation_policy") or {}
                 await _append_discovery_iteration(
                     db,
                     job_id=job_id,
@@ -1524,7 +1597,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                     break
 
                 if not candidate_queue:
-                    remaining_budget = max_candidates_to_process - total_found
+                    remaining_budget = _remaining_candidates_to_process_target(
+                        total_processed=total_processed,
+                        buffered_candidates=len(candidate_queue),
+                        target_processed_count=max_candidates_to_process,
+                    )
                     if remaining_budget <= 0:
                         break
 
@@ -1599,6 +1676,37 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 query_context_map=refined_query_plan["query_context_map"],
                             )
                             if not refined_batches:
+                                fallback_batches, fallback_query_context_map, fallback_queries = _build_fallback_backfill_batches(
+                                    job_context=job_context,
+                                    seen_queries=seen_queries,
+                                    max_candidates_to_process=max_candidates_to_process,
+                                    target_accepted_results=target_accepted_results,
+                                    iteration_index=refinement_count + fallback_backfill_attempts + 1,
+                                )
+                                if fallback_batches and fallback_backfill_attempts < max_fallback_backfill_attempts:
+                                    query_batches, next_discovery_batch_index = _prepend_query_batches(
+                                        existing_batches=query_batches,
+                                        next_batch_index=next_discovery_batch_index,
+                                        new_batches=fallback_batches,
+                                    )
+                                    query_context_map.update(fallback_query_context_map)
+                                    fallback_backfill_attempts += 1
+                                    await _append_job_log(
+                                        db,
+                                        job_id,
+                                        "INFO",
+                                        "Refinement sin queries nuevas; se abre fallback backfill",
+                                        source_name="discovery",
+                                        context_json={
+                                            "fallback_backfill_attempt": fallback_backfill_attempts,
+                                            "queries": fallback_queries,
+                                            "planned_query_count": len(fallback_queries),
+                                            "processed_candidates_so_far": total_processed,
+                                            "max_candidates_to_process": max_candidates_to_process,
+                                        },
+                                    )
+                                    await db.commit()
+                                    continue
                                 stopped_reason = "refinement_limit_reached" if refinement_count >= max_query_refinements else "discovery_exhausted"
                                 break
 
@@ -1609,6 +1717,10 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 new_batches=refined_batches,
                             )
                             query_context_map.update(refined_query_context_map)
+                            job_context["target_entity_hints"] = refined_plan.get("target_entity_hints", [])
+                            job_context["exclusion_entity_hints"] = refined_plan.get("exclusion_entity_hints", [])
+                            job_context["refinement_goal"] = refined_plan.get("refinement_goal")
+                            job_context["candidate_evaluation_policy"] = refined_plan.get("candidate_evaluation_policy") or {}
                             refinement_count += 1
                             last_refinement_reason = trigger_reason
                             accepted_since_last_refinement = 0
@@ -1648,7 +1760,11 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                             processed_window = []
                             query_reports_window = []
                             window_excluded_reason_counts = {}
-                            remaining_budget = max_candidates_to_process - total_found
+                            remaining_budget = _remaining_candidates_to_process_target(
+                                total_processed=total_processed,
+                                buffered_candidates=len(candidate_queue),
+                                target_processed_count=max_candidates_to_process,
+                            )
                             continue
 
                         discovery_budget_override = None
@@ -1766,11 +1882,48 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                         discovery_opened = True
                         break
 
+                    if not candidate_queue and fallback_backfill_attempts < max_fallback_backfill_attempts:
+                        fallback_batches, fallback_query_context_map, fallback_queries = _build_fallback_backfill_batches(
+                            job_context=job_context,
+                            seen_queries=seen_queries,
+                            max_candidates_to_process=max_candidates_to_process,
+                            target_accepted_results=target_accepted_results,
+                            iteration_index=refinement_count + fallback_backfill_attempts + 1,
+                        )
+                        if fallback_batches:
+                            query_batches, next_discovery_batch_index = _prepend_query_batches(
+                                existing_batches=query_batches,
+                                next_batch_index=next_discovery_batch_index,
+                                new_batches=fallback_batches,
+                            )
+                            query_context_map.update(fallback_query_context_map)
+                            fallback_backfill_attempts += 1
+                            stopped_reason = None
+                            await _append_job_log(
+                                db,
+                                job_id,
+                                "INFO",
+                                "Discovery reabierto con fallback backfill",
+                                source_name="discovery",
+                                context_json={
+                                    "fallback_backfill_attempt": fallback_backfill_attempts,
+                                    "queries": fallback_queries,
+                                    "planned_query_count": len(fallback_queries),
+                                    "processed_candidates_so_far": total_processed,
+                                    "max_candidates_to_process": max_candidates_to_process,
+                                },
+                            )
+                            await db.commit()
+                            continue
                     if not candidate_queue:
                         await db.commit()
                         break
                     if discovery_opened:
-                        remaining_budget = max_candidates_to_process - total_found
+                        remaining_budget = _remaining_candidates_to_process_target(
+                            total_processed=total_processed,
+                            buffered_candidates=len(candidate_queue),
+                            target_processed_count=max_candidates_to_process,
+                        )
 
                 current_batch = candidate_queue[:candidate_batch_size]
                 candidate_queue = candidate_queue[candidate_batch_size:]
@@ -2182,6 +2335,10 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                                 new_batches=refined_batches,
                             )
                             query_context_map.update(refined_query_context_map)
+                            job_context["target_entity_hints"] = refined_plan.get("target_entity_hints", [])
+                            job_context["exclusion_entity_hints"] = refined_plan.get("exclusion_entity_hints", [])
+                            job_context["refinement_goal"] = refined_plan.get("refinement_goal")
+                            job_context["candidate_evaluation_policy"] = refined_plan.get("candidate_evaluation_policy") or {}
                             refinement_count += 1
                             last_refinement_reason = trigger_reason
                             accepted_since_last_refinement = 0
@@ -2222,8 +2379,39 @@ async def background_scraping_worker(job_id: int, urls: list, job_context: dict)
                             query_reports_window = []
                             window_excluded_reason_counts = {}
                         elif not candidate_queue and next_discovery_batch_index >= len(query_batches):
-                            stopped_reason = "refinement_limit_reached" if refinement_count >= max_query_refinements else "discovery_exhausted"
-                            break
+                            fallback_batches, fallback_query_context_map, fallback_queries = _build_fallback_backfill_batches(
+                                job_context=job_context,
+                                seen_queries=seen_queries,
+                                max_candidates_to_process=max_candidates_to_process,
+                                target_accepted_results=target_accepted_results,
+                                iteration_index=refinement_count + fallback_backfill_attempts + 1,
+                            )
+                            if fallback_batches and fallback_backfill_attempts < max_fallback_backfill_attempts:
+                                query_batches, next_discovery_batch_index = _prepend_query_batches(
+                                    existing_batches=query_batches,
+                                    next_batch_index=next_discovery_batch_index,
+                                    new_batches=fallback_batches,
+                                )
+                                query_context_map.update(fallback_query_context_map)
+                                fallback_backfill_attempts += 1
+                                await _append_job_log(
+                                    db,
+                                    job_id,
+                                    "INFO",
+                                    "Discovery refinado agotado; se abre fallback backfill",
+                                    source_name="discovery",
+                                    context_json={
+                                        "fallback_backfill_attempt": fallback_backfill_attempts,
+                                        "queries": fallback_queries,
+                                        "planned_query_count": len(fallback_queries),
+                                        "processed_candidates_so_far": total_processed,
+                                        "max_candidates_to_process": max_candidates_to_process,
+                                    },
+                                )
+                                await db.commit()
+                            else:
+                                stopped_reason = "refinement_limit_reached" if refinement_count >= max_query_refinements else "discovery_exhausted"
+                                break
                     elif should_refine and refinement_count >= max_query_refinements and not candidate_queue:
                         stopped_reason = "refinement_limit_reached"
                         break
@@ -2519,6 +2707,7 @@ async def create_scraping_job(
     job_context["target_entity_hints"] = ai_search_plan.get("target_entity_hints", [])
     job_context["exclusion_entity_hints"] = ai_search_plan.get("exclusion_entity_hints", [])
     job_context["refinement_goal"] = ai_search_plan.get("refinement_goal")
+    job_context["candidate_evaluation_policy"] = ai_search_plan.get("candidate_evaluation_policy") or {}
     job_context["exhaustive_candidate_scan"] = exhaustive_candidate_scan
     job_context["adaptive_discovery"] = adaptive_discovery
     job_context["adaptive_refinement_every_processed"] = adaptive_refinement_every_processed

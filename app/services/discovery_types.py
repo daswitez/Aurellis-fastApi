@@ -18,6 +18,12 @@ class SearchDiscoveryEntry:
     social_profile_score: float | None = None
     result_kind: str | None = None
     discovery_reasons: list[str] = field(default_factory=list)
+    candidate_screening_stage: str | None = None
+    candidate_screening_reason: str | None = None
+    quick_ai_verdict: str | None = None
+    quick_ai_confidence: str | None = None
+    quick_ai_reason_code: str | None = None
+    rescued_by_quick_ai: bool = False
     seed_source_url: str | None = None
     seed_source_type: str | None = None
 

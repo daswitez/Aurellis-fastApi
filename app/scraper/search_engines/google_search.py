@@ -147,7 +147,12 @@ def _extract_google_results(html: str, query: str, allow_social_profiles: bool =
                 "title": title,
                 "snippet": snippet,
                 "business_likeness_score": business_score,
+                "website_result_score": classified["website_result_score"],
+                "social_profile_score": classified["social_profile_score"],
+                "result_kind": classified["result_kind"],
                 "discovery_reasons": business_reasons,
+                "candidate_screening_stage": classified.get("candidate_screening_stage"),
+                "candidate_screening_reason": classified.get("candidate_screening_reason"),
             })
             continue
 
@@ -166,7 +171,12 @@ def _extract_google_results(html: str, query: str, allow_social_profiles: bool =
                 snippet=snippet or None,
                 discovery_confidence=discovery_confidence,
                 business_likeness_score=business_score,
+                website_result_score=classified["website_result_score"],
+                social_profile_score=classified["social_profile_score"],
+                result_kind=classified["result_kind"],
                 discovery_reasons=business_reasons,
+                candidate_screening_stage=classified.get("candidate_screening_stage"),
+                candidate_screening_reason=classified.get("candidate_screening_reason"),
             )
         )
 

@@ -267,6 +267,10 @@ def _filter_entries_by_context(
             user_profession=user_profession,
         )
         entry.discovery_reasons = [*(entry.discovery_reasons or []), *context_reasons]
+        is_borderline_rescue = str(entry.candidate_screening_stage or "").strip().lower() == "borderline_rescue_pool"
+        if exclusion_reason and is_borderline_rescue and exclusion_reason == "excluded_discovery_context_mismatch":
+            entry.discovery_reasons = [*(entry.discovery_reasons or []), "discovery_context_borderline_rescue"]
+            exclusion_reason = None
         if exclusion_reason:
             excluded_results.append(
                 {
@@ -280,6 +284,8 @@ def _filter_entries_by_context(
                     "social_profile_score": entry.social_profile_score,
                     "result_kind": entry.result_kind,
                     "discovery_reasons": entry.discovery_reasons,
+                    "candidate_screening_stage": entry.candidate_screening_stage,
+                    "candidate_screening_reason": entry.candidate_screening_reason,
                 }
             )
             continue

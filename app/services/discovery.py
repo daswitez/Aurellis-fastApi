@@ -995,6 +995,186 @@ def _soft_social_platform_hints(discovery_profile: str, language: str) -> list[s
     return _normalize_context_list(hints)
 
 
+def _fallback_access_hints(discovery_profile: str, language: str) -> list[str]:
+    if language == "en":
+        hints = ["contact", "services", "about", "whatsapp", "book call", "book now", "apply"]
+    elif language == "pt":
+        hints = ["contato", "servicos", "sobre", "whatsapp", "agendar", "aplicar"]
+    else:
+        hints = ["contacto", "servicios", "sobre mi", "whatsapp", "agendar", "reservar", "aplicar"]
+
+    if discovery_profile == "creator_coach":
+        hints.extend(["programa", "mentoria", "dm", "link in bio"] if language != "en" else ["program", "mentoring", "dm", "link in bio"])
+    elif discovery_profile == "ecommerce":
+        hints.extend(["shop", "products", "collections", "shopify"] if language == "en" else ["tienda", "productos", "colecciones", "shopify"])
+
+    return _normalize_context_list(hints)
+
+
+def _build_iterative_fallback_query_items(
+    *,
+    base_query: str,
+    niche: str,
+    location: str,
+    language: str,
+    discovery_profile: str,
+    user_profession: str | None,
+    target_budget_signals: list[str] | None,
+    negative_terms: tuple[str, ...],
+    max_queries: int,
+    iteration_index: int,
+) -> list[dict[str, Any]]:
+    language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
+    intent_seeds = _derive_intent_seeds(search_query=base_query, target_niche=niche, location=location)
+    budget_signal_keywords = _filter_budget_signal_keywords_for_niche(
+        _build_budget_signal_keywords(
+            target_budget_signals,
+            target_language=language,
+            discovery_profile=discovery_profile,
+        ),
+        niche,
+    )
+    access_hints = _fallback_access_hints(discovery_profile, language)
+    social_hints = _normalize_context_list(
+        [
+            *_soft_social_platform_hints(discovery_profile, language),
+            *PROFILE_RETRY_SOCIAL_HINTS.get(discovery_profile, PROFILE_RETRY_SOCIAL_HINTS["generic"]),
+            *budget_signal_keywords[:4],
+        ]
+    )
+    bio_hub_domains = _segment_query_bio_hub_domains(discovery_profile)
+    base_seed = _normalize_space(f"{niche} {location}") or niche or _normalize_space(f"{base_query} {location}") or base_query
+    locationless_seeds = _normalize_context_list([niche, base_query, *intent_seeds[:4]])
+    localized_seeds = _normalize_context_list(
+        [
+            base_seed,
+            *[_normalize_space(f"{seed} {location}") if location else seed for seed in intent_seeds[:4]],
+        ]
+    )
+
+    family_builders: list[tuple[str, list[dict[str, Any]]]] = []
+
+    website_access_items: list[dict[str, Any]] = []
+    for seed in localized_seeds[:4]:
+        for hint in access_hints[:5]:
+            _append_query_item(
+                website_access_items,
+                _apply_negative_terms(f"{seed} {hint}", negative_terms),
+                segment_id="fallback_iterative",
+                family="website_validation_queries",
+                platform="website",
+                iteration_index=iteration_index,
+                priority_bucket="fallback_iterative",
+                segment_label=_normalize_space(niche or base_query or "fallback"),
+            )
+        for hint in language_hints.get("commercial", [])[:3]:
+            _append_query_item(
+                website_access_items,
+                _apply_negative_terms(f"{seed} {hint}", negative_terms),
+                segment_id="fallback_iterative",
+                family="rescue_queries",
+                platform="website",
+                iteration_index=iteration_index,
+                priority_bucket="fallback_iterative",
+                segment_label=_normalize_space(niche or base_query or "fallback"),
+            )
+    family_builders.append(("website_access", website_access_items))
+
+    social_profile_items: list[dict[str, Any]] = []
+    profession = _normalize_space(user_profession).lower()
+    needs_social_profiles = any(
+        role in profession
+        for role in ["video", "editor", "community", "social", "creador", "diseño", "designer", "marketing"]
+    )
+    if needs_social_profiles or discovery_profile in {"creator_coach", "ecommerce"}:
+        for seed in localized_seeds[:3]:
+            for site_clause, platform in (("site:instagram.com", "instagram"), ("site:tiktok.com", "tiktok")):
+                _append_query_item(
+                    social_profile_items,
+                    _apply_negative_terms(f"{seed} {site_clause}", negative_terms),
+                    segment_id="fallback_iterative",
+                    family="social_profile_queries",
+                    platform=platform,
+                    iteration_index=iteration_index,
+                    priority_bucket="fallback_iterative",
+                    segment_label=_normalize_space(niche or base_query or "fallback"),
+                )
+                for hint in social_hints[:4]:
+                    _append_query_item(
+                        social_profile_items,
+                        _apply_negative_terms(f"{seed} {hint} {site_clause}", negative_terms),
+                        segment_id="fallback_iterative",
+                        family="social_commercial_queries",
+                        platform=platform,
+                        iteration_index=iteration_index,
+                        priority_bucket="fallback_iterative",
+                        segment_label=_normalize_space(niche or base_query or "fallback"),
+                    )
+    family_builders.append(("social_profiles", social_profile_items))
+
+    bio_hub_items: list[dict[str, Any]] = []
+    for seed in localized_seeds[:3]:
+        for hub_domain in bio_hub_domains:
+            _append_query_item(
+                bio_hub_items,
+                _apply_negative_terms(f"{seed} {hub_domain}", negative_terms),
+                segment_id="fallback_iterative",
+                family="social_profile_queries",
+                platform="bio_hub",
+                iteration_index=iteration_index,
+                priority_bucket="fallback_iterative",
+                segment_label=_normalize_space(niche or base_query or "fallback"),
+            )
+            for hint in social_hints[:3]:
+                _append_query_item(
+                    bio_hub_items,
+                    _apply_negative_terms(f"{seed} {hint} {hub_domain}", negative_terms),
+                    segment_id="fallback_iterative",
+                    family="social_commercial_queries",
+                    platform="bio_hub",
+                    iteration_index=iteration_index,
+                    priority_bucket="fallback_iterative",
+                    segment_label=_normalize_space(niche or base_query or "fallback"),
+                )
+    family_builders.append(("bio_hubs", bio_hub_items))
+
+    broad_match_items: list[dict[str, Any]] = []
+    for seed in locationless_seeds[:4]:
+        if not seed:
+            continue
+        for hint in access_hints[:3]:
+            _append_query_item(
+                broad_match_items,
+                _apply_negative_terms(f"{seed} {hint}", negative_terms),
+                segment_id="fallback_iterative",
+                family="rescue_queries",
+                platform="website",
+                iteration_index=iteration_index,
+                priority_bucket="fallback_iterative",
+                segment_label=_normalize_space(niche or base_query or "fallback"),
+            )
+        if location:
+            _append_query_item(
+                broad_match_items,
+                _apply_negative_terms(f"{seed} {location}", negative_terms),
+                segment_id="fallback_iterative",
+                family="rescue_queries",
+                platform="website",
+                iteration_index=iteration_index,
+                priority_bucket="fallback_iterative",
+                segment_label=_normalize_space(niche or base_query or "fallback"),
+            )
+    family_builders.append(("broad_match", broad_match_items))
+
+    rotation_offset = int(iteration_index or 0) % max(len(family_builders), 1)
+    rotated_families = family_builders[rotation_offset:] + family_builders[:rotation_offset]
+    query_items: list[dict[str, Any]] = []
+    per_family_limit = max(6, max_queries * 2)
+    for _, items in rotated_families:
+        query_items.extend(items[:per_family_limit])
+    return _dedupe_query_items(query_items, max(max_queries * 6, 36))
+
+
 def _legacy_query_family(query: str) -> tuple[str, str]:
     normalized_query = _normalize_space(query).lower()
     platform = _infer_query_platform(query)
@@ -1050,6 +1230,31 @@ def build_discovery_query_plan(
     iteration_index: int = 0,
 ) -> dict[str, Any]:
     if not planner_output:
+        raw_base_query = _normalize_space(search_query)
+        raw_niche = _normalize_space(target_niche)
+        location = resolve_discovery_target_location(
+            search_query=raw_base_query,
+            target_location=target_location,
+            target_niche=raw_niche,
+        )
+        language = _normalize_space(target_language).lower()
+        discovery_profile = _resolve_discovery_profile(
+            search_query=raw_base_query,
+            target_niche=raw_niche,
+            user_target_offer_focus=user_target_offer_focus,
+            target_budget_signals=target_budget_signals,
+        )
+        base_query = _localize_query_fragment(raw_base_query, language)
+        niche = _localize_query_fragment(raw_niche, language)
+        negative_terms = _derive_contextual_negative_terms(
+            target_niche=niche,
+            user_profession=user_profession,
+            user_target_offer_focus=user_target_offer_focus,
+            user_service_offers=user_service_offers,
+            user_service_constraints=user_service_constraints,
+            ai_negative_terms=ai_negative_terms,
+        )
+        fallback_pool_limit = max(48, min(96, max_queries * max(int(iteration_index or 0) + 4, 6)))
         canonical_queries = build_discovery_queries(
             search_query=search_query,
             user_profession=user_profession,
@@ -1063,7 +1268,7 @@ def build_discovery_query_plan(
             target_budget_signals=target_budget_signals,
             ai_dork_queries=ai_dork_queries,
             ai_negative_terms=ai_negative_terms,
-            max_queries=max_queries,
+            max_queries=fallback_pool_limit,
         )
         retry_queries = build_retry_discovery_queries(
             search_query=search_query,
@@ -1102,13 +1307,44 @@ def build_discovery_query_plan(
                 priority_bucket="fallback",
                 segment_label=_normalize_space(target_niche or search_query or "generic"),
             )
-        deduped_items = _dedupe_query_items(query_items, max_queries)
+        query_items.extend(
+            _build_iterative_fallback_query_items(
+                base_query=base_query,
+                niche=niche,
+                location=location,
+                language=language,
+                discovery_profile=discovery_profile,
+                user_profession=user_profession,
+                target_budget_signals=target_budget_signals,
+                negative_terms=negative_terms,
+                max_queries=max_queries,
+                iteration_index=iteration_index,
+            )
+        )
+        deduped_items = _dedupe_query_items(query_items, max(max_queries * 6, 36))
+        if int(iteration_index or 0) <= 0:
+            selected_items = deduped_items[:max_queries]
+        else:
+            slice_offset = max_queries * int(iteration_index or 0)
+            selected_items = deduped_items[slice_offset : slice_offset + max_queries]
+            if len(selected_items) < max_queries:
+                selected_queries = {str(item.get("query") or "").lower() for item in selected_items}
+                rotation_offset = int(iteration_index or 0) % max(len(deduped_items), 1)
+                rotated_items = deduped_items[rotation_offset:] + deduped_items[:rotation_offset]
+                for item in rotated_items:
+                    query = str(item.get("query") or "").lower()
+                    if not query or query in selected_queries:
+                        continue
+                    selected_items.append(item)
+                    selected_queries.add(query)
+                    if len(selected_items) >= max_queries:
+                        break
         return {
-            "queries": [item["query"] for item in deduped_items],
-            "batches": _chunk_queries([item["query"] for item in deduped_items], query_batch_size),
-            "query_items": deduped_items,
-            "query_context_map": _build_structured_query_context_map(deduped_items),
-            "family_distribution": {"fallback": len(deduped_items)},
+            "queries": [item["query"] for item in selected_items],
+            "batches": _chunk_queries([item["query"] for item in selected_items], query_batch_size),
+            "query_items": selected_items,
+            "query_context_map": _build_structured_query_context_map(selected_items),
+            "family_distribution": {"fallback": len(selected_items)},
         }
 
     raw_base_query = _normalize_space(search_query)
@@ -1163,12 +1399,7 @@ def build_discovery_query_plan(
             initial_segment_label = _normalize_space(target_niche or search_query or "initial wave")
         _append_query_item(
             initial_wave_items,
-            _apply_plan_negative_terms(
-                str(initial_query or ""),
-                ai_negative_terms=ai_negative_terms,
-                dynamic_negative_signals=dynamic_negative_signals,
-                base_negative_terms=negative_terms,
-            ),
+            str(initial_query or ""),
             segment_id=_normalize_space(str(initial_segment_id or "initial_wave")) or "initial_wave",
             family=_normalize_space(str(initial_family or "rescue_queries")) or "rescue_queries",
             platform=_normalize_space(str(initial_platform or _infer_query_platform(str(initial_query or "")))) or "website",
@@ -1495,6 +1726,12 @@ def build_discovery_metadata(entry: dict[str, Any] | None, queries: list[str]) -
         "social_profile_score": entry.get("social_profile_score"),
         "result_kind": entry.get("result_kind"),
         "discovery_reasons": entry.get("discovery_reasons"),
+        "candidate_screening_stage": entry.get("candidate_screening_stage"),
+        "candidate_screening_reason": entry.get("candidate_screening_reason"),
+        "quick_ai_verdict": entry.get("quick_ai_verdict"),
+        "quick_ai_confidence": entry.get("quick_ai_confidence"),
+        "quick_ai_reason_code": entry.get("quick_ai_reason_code"),
+        "rescued_by_quick_ai": bool(entry.get("rescued_by_quick_ai")),
         "seed_source_url": entry.get("seed_source_url"),
         "seed_source_type": entry.get("seed_source_type"),
         "query_context": query_context,

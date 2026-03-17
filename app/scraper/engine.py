@@ -3,17 +3,28 @@ from typing import Any, Dict, Optional
 
 from app.scraper.http_client import FetchHtmlError, fetch_html
 from app.scraper.parser import parse_html_basic
-from app.services.ai_extractor import AIExtractionFallbackError, PROMPT_VERSION, extract_business_entity_ai
+from app.services.ai_extractor import (
+    AIExtractionFallbackError,
+    PROMPT_VERSION,
+    extract_business_entity_ai,
+    screen_candidate_quick_ai,
+    validate_target_candidate_ai,
+)
 from app.services.business_taxonomy import resolve_business_taxonomy
 from app.services.discovery import build_discovery_metadata
 from app.services.entity_classifier import classify_entity_type
 from app.services.heuristic_extractor import extract_business_entity_heuristic
 from app.services.identity_resolution import extract_domain, normalize_social_profile_url, resolve_identity_surfaces
 from app.services.prospect_quality import (
+    apply_quick_ai_screening,
+    apply_ai_target_validation,
     build_ai_cache_signature,
     build_ai_evidence_pack,
+    build_quick_screen_evidence_pack,
     evaluate_prospect_quality,
     should_call_ai,
+    should_call_quick_screen_ai,
+    should_call_ai_target_validator,
 )
 from app.services.scoring import build_final_score
 
@@ -202,6 +213,22 @@ def _pick_signal_list(*containers: Any, key: str) -> list[str]:
     return []
 
 
+def _apply_quick_ai_to_discovery_metadata(
+    discovery_metadata: dict[str, Any],
+    screening_result: dict[str, Any] | None,
+    *,
+    rescued: bool = False,
+) -> dict[str, Any]:
+    if not screening_result:
+        return discovery_metadata
+    updated = dict(discovery_metadata)
+    updated["quick_ai_verdict"] = screening_result.get("verdict")
+    updated["quick_ai_confidence"] = screening_result.get("confidence_level")
+    updated["quick_ai_reason_code"] = screening_result.get("reason_code")
+    updated["rescued_by_quick_ai"] = bool(rescued or updated.get("rescued_by_quick_ai"))
+    return updated
+
+
 def _mark_primary_social_profile(
     social_profiles: list[dict[str, Any]] | None,
     *,
@@ -318,6 +345,46 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         job_context.get("discovery_entry"),
         job_context.get("discovery_queries", []),
     )
+    quick_screen_result: dict[str, Any] | None = None
+    use_quick_screen_discovery, quick_screen_discovery_reason = should_call_quick_screen_ai(
+        context=job_context,
+        heuristic_data=heuristic_baseline,
+        discovery_metadata=discovery_metadata,
+        stage="discovery",
+    )
+    if use_quick_screen_discovery:
+        try:
+            quick_screen_evidence = build_quick_screen_evidence_pack(
+                domain=identity_key,
+                metadata=merged_metadata,
+                discovery_metadata=discovery_metadata,
+                heuristic_data=heuristic_baseline,
+                context=job_context,
+                stage="discovery",
+            )
+            quick_screen_result = await screen_candidate_quick_ai(
+                identity_key,
+                job_context,
+                evidence_pack=quick_screen_evidence,
+                cache_key=build_ai_cache_signature(
+                    identity_key,
+                    str(quick_screen_evidence),
+                    "deepseek_quick_screen_v1:discovery",
+                ),
+            )
+            discovery_metadata = _apply_quick_ai_to_discovery_metadata(discovery_metadata, quick_screen_result)
+        except AIExtractionFallbackError as quick_screen_error:
+            logger.warning(
+                "Fallback en quick screen discovery para %s por %s [%s]",
+                target_url,
+                quick_screen_error.reason,
+                quick_screen_error.error_type,
+            )
+        except Exception as quick_screen_error:
+            logger.error("Error inesperado en quick screen discovery para %s: %s", target_url, quick_screen_error)
+    else:
+        discovery_metadata["quick_ai_skip_reason"] = quick_screen_discovery_reason
+
     entity_data = classify_entity_type(
         target_url=target_url,
         clean_text=combined_text,
@@ -332,6 +399,111 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         discovery_metadata=discovery_metadata,
         entity_data=entity_data,
     )
+    if quick_screen_result:
+        quality_data = apply_quick_ai_screening(
+            quality_data,
+            quick_screen_result,
+            stage="discovery",
+        )
+        discovery_metadata = _apply_quick_ai_to_discovery_metadata(
+            discovery_metadata,
+            quick_screen_result,
+            rescued=bool(quality_data.get("rescued_by_quick_ai")),
+        )
+
+    use_quick_screen_post_fetch, quick_screen_post_fetch_reason = should_call_quick_screen_ai(
+        context=job_context,
+        heuristic_data=heuristic_baseline,
+        discovery_metadata=discovery_metadata,
+        quality_data=quality_data,
+        stage="post_fetch",
+    )
+    if use_quick_screen_post_fetch:
+        try:
+            quick_screen_post_fetch_evidence = build_quick_screen_evidence_pack(
+                domain=identity_key,
+                metadata=merged_metadata,
+                discovery_metadata=discovery_metadata,
+                heuristic_data=heuristic_baseline,
+                context=job_context,
+                stage="post_fetch",
+            )
+            quick_screen_result = await screen_candidate_quick_ai(
+                identity_key,
+                job_context,
+                evidence_pack=quick_screen_post_fetch_evidence,
+                cache_key=build_ai_cache_signature(
+                    identity_key,
+                    str(quick_screen_post_fetch_evidence),
+                    "deepseek_quick_screen_v1:post_fetch",
+                ),
+            )
+            quality_data = apply_quick_ai_screening(
+                quality_data,
+                quick_screen_result,
+                stage="post_fetch",
+            )
+            discovery_metadata = _apply_quick_ai_to_discovery_metadata(
+                discovery_metadata,
+                quick_screen_result,
+                rescued=bool(quality_data.get("rescued_by_quick_ai")),
+            )
+        except AIExtractionFallbackError as quick_screen_error:
+            logger.warning(
+                "Fallback en quick screen post-fetch para %s por %s [%s]",
+                target_url,
+                quick_screen_error.reason,
+                quick_screen_error.error_type,
+            )
+        except Exception as quick_screen_error:
+            logger.error("Error inesperado en quick screen post-fetch para %s: %s", target_url, quick_screen_error)
+    else:
+        quality_flags = list(quality_data.get("quality_flags") or [])
+        quality_flags.append(f"quick_ai_post_fetch_skipped:{quick_screen_post_fetch_reason}")
+        quality_data["quality_flags"] = quality_flags
+
+    validation_evidence_pack = build_ai_evidence_pack(
+        domain=identity_key,
+        clean_text=combined_text,
+        metadata=merged_metadata,
+        heuristic_data=heuristic_baseline,
+        quality_data=quality_data,
+        discovery_metadata=discovery_metadata,
+    )
+
+    use_ai_target_validation, validation_gate_reason = should_call_ai_target_validator(
+        context=job_context,
+        heuristic_data=heuristic_baseline,
+        quality_data=quality_data,
+    )
+    if use_ai_target_validation:
+        try:
+            validation_result = await validate_target_candidate_ai(
+                identity_key,
+                job_context,
+                evidence_pack=validation_evidence_pack,
+                cache_key=build_ai_cache_signature(identity_key, combined_text[:1600], "deepseek_target_validator_v1"),
+            )
+            quality_data = apply_ai_target_validation(quality_data, validation_result)
+        except AIExtractionFallbackError as validation_error:
+            logger.warning(
+                "Fallback en target validation para %s por %s [%s]",
+                target_url,
+                validation_error.reason,
+                validation_error.error_type,
+            )
+            quality_flags = list(quality_data.get("quality_flags") or [])
+            quality_flags.append(f"ai_target_validation_fallback:{validation_error.reason}")
+            quality_data["quality_flags"] = quality_flags
+        except Exception as validation_error:
+            logger.error("Error inesperado en target validation para %s: %s", target_url, validation_error)
+            quality_flags = list(quality_data.get("quality_flags") or [])
+            quality_flags.append("ai_target_validation_fallback:unexpected_exception")
+            quality_data["quality_flags"] = quality_flags
+    else:
+        quality_flags = list(quality_data.get("quality_flags") or [])
+        quality_flags.append(f"ai_target_validation_skipped:{validation_gate_reason}")
+        quality_data["quality_flags"] = quality_flags
 
     use_ai, gate_reason = should_call_ai(heuristic_baseline, quality_data)
     ai_trace: Dict[str, Any]
@@ -352,19 +524,11 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         )
     else:
         try:
-            evidence_pack = build_ai_evidence_pack(
-                domain=identity_key,
-                clean_text=combined_text,
-                metadata=merged_metadata,
-                heuristic_data=heuristic_baseline,
-                quality_data=quality_data,
-                discovery_metadata=discovery_metadata,
-            )
             extracted_data = await extract_business_entity_ai(
                 identity_key,
                 combined_text,
                 job_context,
-                evidence_pack=evidence_pack,
+                evidence_pack=validation_evidence_pack,
                 cache_key=build_ai_cache_signature(identity_key, combined_text[:2500], PROMPT_VERSION),
             )
             ai_metrics = extracted_data.pop("_ai_metrics", {})
@@ -468,6 +632,10 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
             "pain_points_detected",
             generic_attributes.get("inferred_opportunities"),
         )
+        if quality_data.get("ai_target_validation"):
+            generic_attributes["ai_target_validation"] = quality_data.get("ai_target_validation")
+        if quality_data.get("quick_ai_screening"):
+            generic_attributes["quick_ai_screening"] = quality_data.get("quick_ai_screening")
 
     observed_signals = _pick_signal_list(extracted_data, heuristic_baseline, key="observed_signals")
     inferred_opportunities = _pick_signal_list(extracted_data, heuristic_baseline, key="inferred_opportunities")
@@ -540,6 +708,8 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "whatsapp_url": quality_data.get("whatsapp_url"),
         "contact_channels_json": quality_data.get("contact_channels_json"),
         "contact_quality_score": quality_data.get("contact_quality_score"),
+        "direct_contact_score": quality_data.get("direct_contact_score"),
+        "commercial_access_score": quality_data.get("commercial_access_score"),
         "contact_consistency_status": quality_data.get("contact_consistency_status"),
         "primary_email_confidence": quality_data.get("primary_email_confidence"),
         "primary_phone_confidence": quality_data.get("primary_phone_confidence"),
@@ -569,6 +739,12 @@ async def scrape_single_prospect(target_url: str, job_context: Dict[str, Any]) -
         "quality_status": quality_data.get("quality_status"),
         "quality_flags": quality_data.get("quality_flags"),
         "rejection_reason": quality_data.get("rejection_reason"),
+        "candidate_screening_stage": discovery_metadata.get("candidate_screening_stage"),
+        "candidate_screening_reason": discovery_metadata.get("candidate_screening_reason"),
+        "quick_ai_verdict": quality_data.get("quick_ai_verdict") or discovery_metadata.get("quick_ai_verdict"),
+        "quick_ai_confidence": quality_data.get("quick_ai_confidence") or discovery_metadata.get("quick_ai_confidence"),
+        "quick_ai_reason_code": quality_data.get("quick_ai_reason_code") or discovery_metadata.get("quick_ai_reason_code"),
+        "rescued_by_quick_ai": bool(quality_data.get("rescued_by_quick_ai") or discovery_metadata.get("rescued_by_quick_ai")),
         "discovery_confidence": quality_data.get("discovery_confidence"),
         "source": "HTTPX_Scraper",
         "source_url": target_url,

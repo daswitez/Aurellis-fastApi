@@ -96,6 +96,8 @@ def _extract_search_results(html: str, query: str, allow_social_profiles: bool =
                     "social_profile_score": classified["social_profile_score"],
                     "result_kind": classified["result_kind"],
                     "discovery_reasons": business_reasons,
+                    "candidate_screening_stage": classified.get("candidate_screening_stage"),
+                    "candidate_screening_reason": classified.get("candidate_screening_reason"),
                 }
             )
             continue
@@ -124,6 +126,8 @@ def _extract_search_results(html: str, query: str, allow_social_profiles: bool =
                 social_profile_score=classified["social_profile_score"],
                 result_kind=classified["result_kind"],
                 discovery_reasons=business_reasons,
+                candidate_screening_stage=classified.get("candidate_screening_stage"),
+                candidate_screening_reason=classified.get("candidate_screening_reason"),
             )
         )
 
@@ -181,6 +185,8 @@ def _process_ddg_results(
                     "social_profile_score": classified["social_profile_score"],
                     "result_kind": classified["result_kind"],
                     "discovery_reasons": business_reasons,
+                    "candidate_screening_stage": classified.get("candidate_screening_stage"),
+                    "candidate_screening_reason": classified.get("candidate_screening_reason"),
                 }
             )
             continue
@@ -209,6 +215,8 @@ def _process_ddg_results(
                 social_profile_score=classified["social_profile_score"],
                 result_kind=classified["result_kind"],
                 discovery_reasons=business_reasons,
+                candidate_screening_stage=classified.get("candidate_screening_stage"),
+                candidate_screening_reason=classified.get("candidate_screening_reason"),
             )
         )
 
@@ -355,6 +363,8 @@ async def _expand_directory_seed_entry(entry: SearchDiscoveryEntry, allow_social
             discovery_confidence="high" if official_score >= 0.3 else entry.discovery_confidence,
             business_likeness_score=round(official_score + 0.15, 4),
             discovery_reasons=(entry.discovery_reasons or []) + official_business_reasons + official_reasons + ["official_site_from_directory_seed"],
+            candidate_screening_stage="fast_track",
+            candidate_screening_reason="official_site_from_directory_seed",
             seed_source_url=entry.url,
             seed_source_type="directory_seed",
         ),

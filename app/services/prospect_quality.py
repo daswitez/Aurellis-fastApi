@@ -207,6 +207,11 @@ CONTACT_CONFIDENCE_TO_SCORE = {
     "medium": 0.65,
     "high": 0.9,
 }
+DEFAULT_CANDIDATE_EVALUATION_POLICY = {
+    "identity_priority": "hybrid",
+    "contact_requirement": "soft",
+    "quick_ai_stage": "hybrid",
+}
 QUALITY_LABEL_THRESHOLDS = (
     (0.75, "high"),
     (0.4, "medium"),
@@ -312,6 +317,33 @@ PRODUCT_PAGE_HINTS = (
     "catalogo",
     "catálogo",
 )
+
+
+def _normalize_candidate_policy(context: dict[str, Any] | None) -> dict[str, Any]:
+    raw_policy = (context or {}).get("candidate_evaluation_policy")
+    if not isinstance(raw_policy, dict):
+        return dict(DEFAULT_CANDIDATE_EVALUATION_POLICY)
+
+    identity_priority = str(raw_policy.get("identity_priority") or "").strip().lower()
+    if identity_priority not in {"social_first", "hybrid"}:
+        identity_priority = DEFAULT_CANDIDATE_EVALUATION_POLICY["identity_priority"]
+
+    contact_requirement = str(raw_policy.get("contact_requirement") or "").strip().lower()
+    if contact_requirement not in {"soft"}:
+        contact_requirement = DEFAULT_CANDIDATE_EVALUATION_POLICY["contact_requirement"]
+
+    quick_ai_stage = str(raw_policy.get("quick_ai_stage") or "").strip().lower()
+    if quick_ai_stage not in {"hybrid"}:
+        quick_ai_stage = DEFAULT_CANDIDATE_EVALUATION_POLICY["quick_ai_stage"]
+
+    return {
+        "identity_priority": identity_priority,
+        "contact_requirement": contact_requirement,
+        "quick_ai_stage": quick_ai_stage,
+        "quick_ai_inputs": raw_policy.get("quick_ai_inputs") if isinstance(raw_policy.get("quick_ai_inputs"), list) else [],
+        "hard_reject_reasons": raw_policy.get("hard_reject_reasons") if isinstance(raw_policy.get("hard_reject_reasons"), list) else [],
+        "borderline_rescue_rules": raw_policy.get("borderline_rescue_rules") if isinstance(raw_policy.get("borderline_rescue_rules"), list) else [],
+    }
 
 
 def _build_country_alias_lookup() -> dict[str, str]:
@@ -1055,7 +1087,8 @@ def _build_contact_quality(metadata: dict[str, Any]) -> dict[str, Any]:
     primary_phone_confidence = "low"
     contact_consistency_status = "unknown"
     primary_contact_source: str | None = None
-    score = 0.0
+    direct_contact_score = 0.0
+    commercial_access_score = 0.0
 
     best_email_rank = -1
     for channel in channels:
@@ -1142,21 +1175,27 @@ def _build_contact_quality(metadata: dict[str, Any]) -> dict[str, Any]:
             channel["is_primary"] = True
 
     if primary_email:
-        score += 0.35 * CONTACT_CONFIDENCE_TO_SCORE.get(primary_email_confidence, 0.35)
+        direct_contact_score += 0.30 * CONTACT_CONFIDENCE_TO_SCORE.get(primary_email_confidence, 0.35)
     if primary_phone:
-        score += 0.25 * CONTACT_CONFIDENCE_TO_SCORE.get(primary_phone_confidence, 0.35)
+        direct_contact_score += 0.15 * CONTACT_CONFIDENCE_TO_SCORE.get(primary_phone_confidence, 0.35)
     if metadata.get("form_detected"):
-        score += 0.15
+        commercial_access_score += 0.18
     if metadata.get("whatsapp_url"):
-        score += 0.10
+        commercial_access_score += 0.12
     if metadata.get("booking_url"):
-        score += 0.10
+        commercial_access_score += 0.12
+    if metadata.get("primary_cta") and str(metadata.get("primary_cta")).strip().lower() not in {"none", ""}:
+        commercial_access_score += 0.08
     social_profile = metadata.get("social_profile") or {}
     if isinstance(social_profile, dict) and social_profile.get("external_links"):
-        score += 0.10
+        commercial_access_score += 0.10
+
+    total_score = min(direct_contact_score + commercial_access_score, 1.0)
 
     return {
-        "contact_quality_score": round(min(score, 1.0), 4),
+        "contact_quality_score": round(total_score, 4),
+        "direct_contact_score": round(min(direct_contact_score, 1.0), 4),
+        "commercial_access_score": round(min(commercial_access_score, 1.0), 4),
         "contact_channels": enriched_channels,
         "primary_email": primary_email,
         "primary_phone": primary_phone,
@@ -1164,6 +1203,13 @@ def _build_contact_quality(metadata: dict[str, Any]) -> dict[str, Any]:
         "primary_email_confidence": primary_email_confidence if primary_email else "low",
         "primary_phone_confidence": primary_phone_confidence if primary_phone else "low",
         "primary_contact_source": primary_contact_source,
+        "has_soft_contact_path": bool(
+            metadata.get("form_detected")
+            or metadata.get("whatsapp_url")
+            or metadata.get("booking_url")
+            or (isinstance(social_profile, dict) and social_profile.get("external_links"))
+            or metadata.get("primary_cta")
+        ),
     }
 
 
@@ -1200,12 +1246,15 @@ def _count_social_business_evidence(
 ) -> tuple[int, list[str]]:
     content_profile = ((heuristic_data.get("generic_attributes") or {}).get("content_profile") or {})
     evidence: list[str] = []
+    social_profile = metadata.get("social_profile") if isinstance(metadata.get("social_profile"), dict) else {}
+    if social_profile and (social_profile.get("handle") or social_profile.get("display_name")):
+        evidence.append("identity_visible")
     if content_profile.get("offer_signals"):
         evidence.append("offer_signals")
     if content_profile.get("platform_ctas") or content_profile.get("external_links"):
         evidence.append("cta_or_link")
-    if metadata.get("whatsapp_url") or metadata.get("emails") or metadata.get("phones"):
-        evidence.append("public_contact")
+    if social_profile and social_profile.get("external_links"):
+        evidence.append("conversion_link_visible")
     if location_match_status == "match" or language_match_status == "match":
         evidence.append("geo_language_fit")
     if content_profile.get("audience_signals") or content_profile.get("social_activity_signals"):
@@ -1430,15 +1479,23 @@ def _classify_quality_status(
     location_match_status: str,
     language_match_status: str,
     contact_quality_score: float,
+    direct_contact_score: float,
+    commercial_access_score: float,
     contact_consistency_status: str,
     primary_email_confidence: str,
     primary_phone_confidence: str,
     primary_identity_type: str | None,
     social_business_evidence_count: int,
+    social_quality_score: float,
+    candidate_policy: dict[str, Any],
 ) -> tuple[str, str | None, list[str], float]:
     flags: list[str] = []
     score_multiplier = 1.0
     is_social_profile = str(primary_identity_type or "").strip().lower() == "social_profile"
+    supports_soft_contact = str(candidate_policy.get("contact_requirement") or "").strip().lower() == "soft"
+    social_priority = is_social_profile or str(candidate_policy.get("identity_priority") or "").strip().lower() == "social_first"
+    strong_soft_access = commercial_access_score >= 0.2 or social_quality_score >= 0.5 or social_business_evidence_count >= 4
+    acceptable_soft_access = commercial_access_score >= 0.12 or social_quality_score >= 0.45 or social_business_evidence_count >= 3
 
     if has_target_location and location_match_status == "mismatch":
         flags.append("geo_mismatch")
@@ -1461,7 +1518,7 @@ def _classify_quality_status(
 
     if contact_consistency_status == "inconsistent":
         flags.append("contact_inconsistent")
-        if primary_phone_confidence == "low" and contact_quality_score < 0.15:
+        if primary_phone_confidence == "low" and contact_quality_score < 0.15 and not strong_soft_access:
             return "rejected", "contact_inconsistent", flags, 0.55
         return "needs_review", "contact_inconsistent", flags, 0.75
 
@@ -1470,13 +1527,19 @@ def _classify_quality_status(
         return "needs_review", "rejected_social_low_evidence", flags, 0.75
 
     if primary_email_confidence == "low" and primary_phone_confidence == "low" and contact_quality_score < 0.3:
-        if is_social_profile and social_business_evidence_count >= 2:
+        if supports_soft_contact and social_priority and acceptable_soft_access:
             flags.append("social_first_low_direct_contact")
             return "accepted", None, flags, 0.9
+        if is_social_profile and social_business_evidence_count >= 2:
+            flags.append("social_first_low_direct_contact")
+            return "needs_review", "rejected_social_low_evidence", flags, 0.8
         flags.append("weak_primary_contact")
         return "rejected", "low_contact_quality", flags, 0.7
 
     if contact_quality_score < 0.25 and heuristic_confidence == "low":
+        if supports_soft_contact and (acceptable_soft_access or direct_contact_score > 0.0):
+            flags.append("soft_contact_override")
+            return "needs_review", None, flags, 0.85
         flags.append("weak_contactability")
         return "rejected", "low_contact_quality", flags, 0.75
 
@@ -1587,6 +1650,167 @@ def build_ai_cache_signature(domain: str, clean_text: str, prompt_version: str) 
     return signature
 
 
+def build_quick_screen_evidence_pack(
+    *,
+    domain: str,
+    metadata: dict[str, Any],
+    discovery_metadata: dict[str, Any],
+    heuristic_data: dict[str, Any],
+    context: dict[str, Any],
+    stage: str,
+) -> dict[str, Any]:
+    social_profile = metadata.get("social_profile") if isinstance(metadata.get("social_profile"), dict) else {}
+    cta_tokens = list(metadata.get("cta_candidates") or [])[:6]
+    policy = _normalize_candidate_policy(context)
+    pack = {
+        "domain": domain,
+        "title": discovery_metadata.get("title"),
+        "snippet": discovery_metadata.get("snippet"),
+        "meta_title": metadata.get("title") if stage == "post_fetch" else None,
+        "meta_description": metadata.get("description") if stage == "post_fetch" else None,
+        "primary_identity_type": metadata.get("primary_identity_type") or ("social_profile" if social_profile else "website"),
+        "primary_identity_url": metadata.get("primary_identity_url") or metadata.get("website_url"),
+        "result_kind": discovery_metadata.get("result_kind"),
+        "candidate_screening_stage": discovery_metadata.get("candidate_screening_stage"),
+        "candidate_screening_reason": discovery_metadata.get("candidate_screening_reason"),
+        "website_result_score": discovery_metadata.get("website_result_score"),
+        "social_profile_score": discovery_metadata.get("social_profile_score"),
+        "discovery_confidence": discovery_metadata.get("discovery_confidence"),
+        "discovery_reasons": discovery_metadata.get("discovery_reasons"),
+        "platform": social_profile.get("platform"),
+        "handle": social_profile.get("handle"),
+        "social_bio": social_profile.get("bio") if stage == "post_fetch" else None,
+        "link_in_bio_present": bool(social_profile.get("external_links")) if stage == "post_fetch" else False,
+        "cta_tokens": cta_tokens or list(policy.get("cta_tokens") or [])[:6],
+        "heuristic_score": heuristic_data.get("score"),
+        "heuristic_confidence": heuristic_data.get("confidence_level"),
+    }
+    return pack
+
+
+def should_call_quick_screen_ai(
+    *,
+    context: dict[str, Any],
+    heuristic_data: dict[str, Any],
+    discovery_metadata: dict[str, Any],
+    quality_data: dict[str, Any] | None = None,
+    stage: str,
+) -> tuple[bool, str]:
+    policy = _normalize_candidate_policy(context)
+    if str(policy.get("quick_ai_stage") or "").strip().lower() != "hybrid":
+        return False, "quick_ai_disabled"
+
+    screening_stage = str(discovery_metadata.get("candidate_screening_stage") or "").strip().lower()
+    if screening_stage != "borderline_rescue_pool":
+        return False, "not_borderline_rescue_pool"
+
+    if stage == "discovery":
+        return True, "borderline_serp_candidate"
+
+    if not isinstance(quality_data, dict):
+        return False, "missing_quality_data"
+
+    quality_status = str(quality_data.get("quality_status") or "").strip().lower()
+    acceptance_decision = str(quality_data.get("acceptance_decision") or "").strip().lower()
+    quick_screen = quality_data.get("quick_ai_screening") if isinstance(quality_data.get("quick_ai_screening"), dict) else {}
+    quick_verdict = str(quick_screen.get("verdict") or "").strip().lower()
+
+    if quick_verdict == "reject_noise":
+        return False, "already_quick_rejected"
+    if quality_status in {"rejected", "needs_review"} or acceptance_decision in {"rejected_low_confidence", "accepted_related"}:
+        return True, "borderline_post_fetch_review"
+    return False, "quality_already_strong"
+
+
+def apply_quick_ai_screening(
+    quality_data: dict[str, Any],
+    screening_result: dict[str, Any] | None,
+    *,
+    stage: str,
+) -> dict[str, Any]:
+    if not screening_result:
+        return quality_data
+
+    updated_quality = dict(quality_data)
+    quality_flags = list(updated_quality.get("quality_flags") or [])
+    verdict = str(screening_result.get("verdict") or "").strip().lower()
+    confidence_level = str(screening_result.get("confidence_level") or "low").strip().lower()
+    reason_code = str(screening_result.get("reason_code") or "unknown").strip().lower()
+    reasoning = list(screening_result.get("reasoning") or [])
+    quick_ai_payload = {
+        "stage": stage,
+        "verdict": verdict,
+        "confidence_level": confidence_level,
+        "reason_code": reason_code,
+        "reasoning": reasoning,
+    }
+    updated_quality["quick_ai_screening"] = quick_ai_payload
+    updated_quality["quick_ai_verdict"] = verdict
+    updated_quality["quick_ai_confidence"] = confidence_level
+    updated_quality["quick_ai_reason_code"] = reason_code
+
+    current_acceptance = str(updated_quality.get("acceptance_decision") or "").strip().lower()
+    current_rejection = str(updated_quality.get("rejection_reason") or "").strip().lower()
+    current_quality_status = str(updated_quality.get("quality_status") or "").strip().lower()
+
+    if verdict == "keep_target":
+        if current_acceptance in {"rejected_low_confidence", "accepted_related"} or current_rejection in {"low_contact_quality", "rejected_social_low_evidence"}:
+            updated_quality["acceptance_decision"] = "accepted_target"
+            updated_quality["quality_status"] = "accepted"
+            updated_quality["rejection_reason"] = None
+            updated_quality["commercial_score_multiplier"] = max(float(updated_quality.get("commercial_score_multiplier") or 0.0), 0.85)
+            updated_quality["score_cap"] = updated_quality.get("score_cap") if updated_quality.get("score_cap") is None else max(float(updated_quality.get("score_cap") or 0.0), 0.72)
+            updated_quality["score_multiplier"] = round(
+                float(updated_quality.get("technical_score_multiplier") or 1.0)
+                * float(updated_quality.get("commercial_score_multiplier") or 0.85),
+                4,
+            )
+            updated_quality["rescued_by_quick_ai"] = True
+            quality_flags.append("quick_ai_rescued_target")
+        else:
+            quality_flags.append("quick_ai_confirmed_target")
+
+    elif verdict == "keep_related":
+        if current_acceptance.startswith("rejected_") or current_quality_status == "rejected":
+            updated_quality["acceptance_decision"] = "accepted_related"
+            updated_quality["quality_status"] = "needs_review"
+            updated_quality["rejection_reason"] = None
+            updated_quality["commercial_score_multiplier"] = max(float(updated_quality.get("commercial_score_multiplier") or 0.0), 0.65)
+            updated_quality["score_cap"] = updated_quality.get("score_cap") if updated_quality.get("score_cap") is None else max(float(updated_quality.get("score_cap") or 0.0), 0.62)
+            updated_quality["score_multiplier"] = round(
+                float(updated_quality.get("technical_score_multiplier") or 1.0)
+                * float(updated_quality.get("commercial_score_multiplier") or 0.65),
+                4,
+            )
+            updated_quality["rescued_by_quick_ai"] = True
+            quality_flags.append("quick_ai_rescued_related")
+        else:
+            quality_flags.append("quick_ai_confirmed_related")
+
+    elif current_acceptance != "accepted_target":
+        rejection_reason = "rejected_low_confidence"
+        if reason_code in {"directory", "listing", "marketplace", "aggregator"}:
+            rejection_reason = "rejected_directory"
+        elif reason_code in {"article", "editorial", "content_page", "blog_post"}:
+            rejection_reason = "rejected_article"
+        elif reason_code in {"media", "publisher", "enterprise", "institutional"}:
+            rejection_reason = "rejected_media"
+        updated_quality["acceptance_decision"] = rejection_reason
+        updated_quality["quality_status"] = "rejected"
+        updated_quality["rejection_reason"] = rejection_reason
+        updated_quality["commercial_score_multiplier"] = 0.25 if rejection_reason in {"rejected_directory", "rejected_media"} else 0.15
+        updated_quality["score_cap"] = 0.3 if rejection_reason in {"rejected_directory", "rejected_media"} else 0.2
+        updated_quality["score_multiplier"] = round(
+            float(updated_quality.get("technical_score_multiplier") or 1.0)
+            * float(updated_quality.get("commercial_score_multiplier") or 0.2),
+            4,
+        )
+        quality_flags.append("quick_ai_rejected")
+
+    updated_quality["quality_flags"] = list(dict.fromkeys(quality_flags))
+    return updated_quality
+
+
 def build_ai_evidence_pack(
     *,
     domain: str,
@@ -1623,6 +1847,8 @@ def build_ai_evidence_pack(
         "social_quality": quality_data.get("social_quality"),
         "contact_channels": quality_data.get("contact_channels_json"),
         "contact_consistency_status": quality_data.get("contact_consistency_status"),
+        "direct_contact_score": quality_data.get("direct_contact_score"),
+        "commercial_access_score": quality_data.get("commercial_access_score"),
         "primary_email_confidence": quality_data.get("primary_email_confidence"),
         "primary_phone_confidence": quality_data.get("primary_phone_confidence"),
         "primary_contact_source": quality_data.get("primary_contact_source"),
@@ -1645,6 +1871,8 @@ def build_ai_evidence_pack(
         "acceptance_decision": quality_data.get("acceptance_decision"),
         "observed_business_model": quality_data.get("observed_business_model"),
         "business_model_fit_status": quality_data.get("business_model_fit_status"),
+        "candidate_evaluation_policy": quality_data.get("candidate_evaluation_policy"),
+        "quick_ai_screening": quality_data.get("quick_ai_screening"),
         "discovery": discovery_metadata,
         "service_keywords": quality_data.get("service_keywords"),
     }
@@ -1669,6 +1897,102 @@ def should_call_ai(heuristic_data: dict[str, Any], quality_data: dict[str, Any])
     return True, "ai_required"
 
 
+def should_call_ai_target_validator(
+    *,
+    context: dict[str, Any],
+    heuristic_data: dict[str, Any],
+    quality_data: dict[str, Any],
+) -> tuple[bool, str]:
+    target_niche = str(context.get("target_niche") or "").strip()
+    acceptance_decision = str(quality_data.get("acceptance_decision") or "").strip().lower()
+    quality_status = str(quality_data.get("quality_status") or "").strip().lower()
+    heuristic_score = float(heuristic_data.get("score") or 0.0)
+
+    if not target_niche:
+        return False, "missing_target_niche"
+    if quality_status == "rejected" or acceptance_decision.startswith("rejected_"):
+        return False, "already_rejected"
+    if acceptance_decision not in {"accepted_target", "accepted_related"}:
+        return False, "not_commercial_keep"
+    if heuristic_score < 0.35:
+        return False, "very_low_heuristic_score"
+    return True, "validate_commercial_fit"
+
+
+def apply_ai_target_validation(
+    quality_data: dict[str, Any],
+    validation_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not validation_result:
+        return quality_data
+
+    updated_quality = dict(quality_data)
+    quality_flags = list(updated_quality.get("quality_flags") or [])
+    reasoning = validation_result.get("reasoning") or []
+    confidence_level = str(validation_result.get("confidence_level") or "low").strip().lower()
+    verdict = str(validation_result.get("verdict") or "").strip().lower()
+    reason_code = str(validation_result.get("reason_code") or "unknown").strip().lower()
+
+    updated_quality["ai_target_validation"] = {
+        "verdict": verdict,
+        "confidence_level": confidence_level,
+        "reason_code": reason_code,
+        "reasoning": reasoning,
+        "niche_match": bool(validation_result.get("niche_match")),
+        "direct_client": bool(validation_result.get("direct_client")),
+    }
+
+    if verdict == "target":
+        if "ai_target_validation_confirmed" not in quality_flags:
+            quality_flags.append("ai_target_validation_confirmed")
+        updated_quality["quality_flags"] = quality_flags
+        return updated_quality
+
+    if verdict == "related":
+        updated_quality["acceptance_decision"] = "accepted_related"
+        updated_quality["score_cap"] = min(float(updated_quality.get("score_cap") or 0.65), 0.65)
+        updated_quality["commercial_score_multiplier"] = min(
+            float(updated_quality.get("commercial_score_multiplier") or 0.7),
+            0.7,
+        )
+        updated_quality["score_multiplier"] = round(
+            float(updated_quality.get("technical_score_multiplier") or 1.0)
+            * float(updated_quality.get("commercial_score_multiplier") or 0.7),
+            4,
+        )
+        if updated_quality.get("quality_status") == "accepted":
+            updated_quality["quality_status"] = "needs_review"
+        if "ai_target_validation_related" not in quality_flags:
+            quality_flags.append("ai_target_validation_related")
+        updated_quality["quality_flags"] = quality_flags
+        return updated_quality
+
+    rejection_reason = "rejected_low_confidence"
+    if reason_code in {"editorial_article", "blog_post", "article_page", "content_page", "listing_article"}:
+        rejection_reason = "rejected_article"
+    elif reason_code in {"directory", "listing", "aggregator", "marketplace", "directory_or_listing"}:
+        rejection_reason = "rejected_directory"
+    elif reason_code in {"media", "publisher", "newsroom", "enterprise", "institutional", "bank", "media_or_enterprise"}:
+        rejection_reason = "rejected_media"
+    elif not bool(validation_result.get("direct_client")) and bool(validation_result.get("niche_match")):
+        rejection_reason = "rejected_low_confidence"
+
+    updated_quality["acceptance_decision"] = rejection_reason
+    updated_quality["rejection_reason"] = rejection_reason
+    updated_quality["quality_status"] = "rejected"
+    updated_quality["commercial_score_multiplier"] = 0.25 if rejection_reason in {"rejected_directory", "rejected_media"} else 0.15
+    updated_quality["score_cap"] = 0.3 if rejection_reason in {"rejected_directory", "rejected_media"} else 0.2
+    updated_quality["score_multiplier"] = round(
+        float(updated_quality.get("technical_score_multiplier") or 1.0)
+        * float(updated_quality.get("commercial_score_multiplier") or 0.2),
+        4,
+    )
+    if "ai_target_validation_rejected" not in quality_flags:
+        quality_flags.append("ai_target_validation_rejected")
+    updated_quality["quality_flags"] = quality_flags
+    return updated_quality
+
+
 def evaluate_prospect_quality(
     *,
     clean_text: str,
@@ -1678,12 +2002,15 @@ def evaluate_prospect_quality(
     discovery_metadata: dict[str, Any],
     entity_data: dict[str, Any],
 ) -> dict[str, Any]:
+    candidate_policy = _normalize_candidate_policy(context)
     detected_language = _detect_language(clean_text, metadata)
     language_data = _assess_language(context.get("target_language"), detected_language)
     geo_evidence = _extract_geo_evidence(metadata, discovery_metadata, context.get("target_location"))
     location_data = _assess_location(context.get("target_location"), geo_evidence, metadata)
     contact_data = _build_contact_quality(metadata)
     contact_quality_score = float(contact_data["contact_quality_score"])
+    direct_contact_score = float(contact_data["direct_contact_score"])
+    commercial_access_score = float(contact_data["commercial_access_score"])
     company_size_signal = _infer_company_size_signal(metadata, heuristic_data)
     service_keywords = _extract_service_keywords(clean_text)
     business_model_data = _assess_business_model_fit(
@@ -1729,11 +2056,15 @@ def evaluate_prospect_quality(
         location_match_status=location_data["location_match_status"],
         language_match_status=language_data["language_match_status"],
         contact_quality_score=contact_quality_score,
+        direct_contact_score=direct_contact_score,
+        commercial_access_score=commercial_access_score,
         contact_consistency_status=str(contact_data["contact_consistency_status"]),
         primary_email_confidence=str(contact_data["primary_email_confidence"]),
         primary_phone_confidence=str(contact_data["primary_phone_confidence"]),
         primary_identity_type=primary_identity_type,
         social_business_evidence_count=social_business_evidence_count,
+        social_quality_score=float((social_quality or {}).get("social_quality_score") or 0.0),
+        candidate_policy=candidate_policy,
     )
     target_policy_violation = _detect_target_policy_violation(
         clean_text=clean_text,
@@ -1803,6 +2134,9 @@ def evaluate_prospect_quality(
         "social_quality": social_quality,
         "contact_channels_json": contact_data["contact_channels"],
         "contact_quality_score": contact_quality_score,
+        "direct_contact_score": direct_contact_score,
+        "commercial_access_score": commercial_access_score,
+        "has_soft_contact_path": bool(contact_data.get("has_soft_contact_path")),
         "email": contact_data["primary_email"],
         "phone": contact_data["primary_phone"],
         "contact_consistency_status": contact_data["contact_consistency_status"],
@@ -1825,6 +2159,7 @@ def evaluate_prospect_quality(
         "rejection_reason": rejection_reason,
         "social_business_evidence_count": social_business_evidence_count,
         "social_business_evidence": social_business_evidence,
+        "candidate_evaluation_policy": candidate_policy,
         "discovery_confidence": discovery_metadata.get("discovery_confidence"),
         "discovery_evidence": discovery_metadata,
         "cta_evidence": metadata.get("cta_candidates", []),

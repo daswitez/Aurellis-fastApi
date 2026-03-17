@@ -2,8 +2,10 @@ import unittest
 
 from app.api.jobs import (
     _compute_default_max_query_refinements,
+    _compute_max_fallback_backfill_attempts,
     _filter_new_queries,
     _prepend_query_batches,
+    _remaining_candidates_to_process_target,
     _resolve_iteration_query_limit,
     _should_trigger_adaptive_refinement,
     _summarize_segment_window,
@@ -13,8 +15,30 @@ from app.api.jobs import (
 
 class AdaptiveJobsHelpersTestCase(unittest.TestCase):
     def test_default_max_query_refinements_scales_with_candidate_cap(self) -> None:
-        self.assertEqual(_compute_default_max_query_refinements(25), 5)
-        self.assertEqual(_compute_default_max_query_refinements(100), 10)
+        self.assertEqual(_compute_default_max_query_refinements(25), 9)
+        self.assertEqual(_compute_default_max_query_refinements(100), 16)
+
+    def test_max_fallback_backfill_attempts_scales_with_processed_target(self) -> None:
+        self.assertEqual(_compute_max_fallback_backfill_attempts(25), 13)
+        self.assertEqual(_compute_max_fallback_backfill_attempts(100), 20)
+
+    def test_remaining_candidates_target_uses_processed_plus_buffered(self) -> None:
+        self.assertEqual(
+            _remaining_candidates_to_process_target(
+                total_processed=10,
+                buffered_candidates=3,
+                target_processed_count=25,
+            ),
+            12,
+        )
+        self.assertEqual(
+            _remaining_candidates_to_process_target(
+                total_processed=24,
+                buffered_candidates=2,
+                target_processed_count=25,
+            ),
+            0,
+        )
 
     def test_iteration_query_limit_uses_small_waves(self) -> None:
         self.assertEqual(

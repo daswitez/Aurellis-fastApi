@@ -23,8 +23,12 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 PROMPT_VERSION = "deepseek_prospect_v3"
 MAX_INPUT_CHARS = 10000
 MAX_EVIDENCE_PACK_CHARS = 4000
+MAX_TARGET_VALIDATION_CHARS = 2600
+MAX_QUICK_SCREEN_CHARS = 2200
 RevenueSignal = Literal["low", "medium", "high"]
 ConfidenceLevel = Literal["low", "medium", "high"]
+TargetValidationVerdict = Literal["target", "related", "reject"]
+QuickScreenVerdict = Literal["keep_target", "keep_related", "reject_noise"]
 _AI_CACHE: dict[str, Dict[str, Any]] = {}
 
 
@@ -241,6 +245,88 @@ class _AIResponsePayload(BaseModel):
         return _parse_confidence_level(raw_value)
 
 
+class _AITargetValidationPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    verdict: TargetValidationVerdict
+    confidence_level: ConfidenceLevel
+    reason_code: str
+    reasoning: list[str] = []
+    niche_match: bool
+    direct_client: bool
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def _validate_verdict(cls, raw_value: Any) -> TargetValidationVerdict:
+        normalized = str(raw_value or "").strip().lower()
+        if normalized not in {"target", "related", "reject"}:
+            raise ValueError("verdict inválido")
+        return normalized
+
+    @field_validator("confidence_level", mode="before")
+    @classmethod
+    def _validate_target_confidence_level(cls, raw_value: Any) -> ConfidenceLevel:
+        return _parse_confidence_level(raw_value)
+
+    @field_validator("reason_code", mode="before")
+    @classmethod
+    def _validate_reason_code(cls, raw_value: Any) -> str:
+        normalized = str(raw_value or "").strip().lower().replace(" ", "_")
+        if not normalized:
+            raise ValueError("reason_code es requerido")
+        return normalized[:80]
+
+    @field_validator("reasoning", mode="before")
+    @classmethod
+    def _validate_reasoning(cls, raw_value: Any) -> list[str]:
+        return _normalize_string_list(raw_value, max_items=4)
+
+    @field_validator("niche_match", mode="before")
+    @classmethod
+    def _validate_niche_match(cls, raw_value: Any) -> bool:
+        return _coerce_bool(raw_value)
+
+    @field_validator("direct_client", mode="before")
+    @classmethod
+    def _validate_direct_client(cls, raw_value: Any) -> bool:
+        return _coerce_bool(raw_value)
+
+
+class _AIQuickScreenPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    verdict: QuickScreenVerdict
+    confidence_level: ConfidenceLevel
+    reason_code: str
+    reasoning: list[str] = []
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def _validate_quick_screen_verdict(cls, raw_value: Any) -> QuickScreenVerdict:
+        normalized = str(raw_value or "").strip().lower()
+        if normalized not in {"keep_target", "keep_related", "reject_noise"}:
+            raise ValueError("quick screen verdict inválido")
+        return normalized
+
+    @field_validator("confidence_level", mode="before")
+    @classmethod
+    def _validate_quick_screen_confidence_level(cls, raw_value: Any) -> ConfidenceLevel:
+        return _parse_confidence_level(raw_value)
+
+    @field_validator("reason_code", mode="before")
+    @classmethod
+    def _validate_quick_screen_reason_code(cls, raw_value: Any) -> str:
+        normalized = str(raw_value or "").strip().lower().replace(" ", "_")
+        if not normalized:
+            raise ValueError("quick screen reason_code es requerido")
+        return normalized[:80]
+
+    @field_validator("reasoning", mode="before")
+    @classmethod
+    def _validate_quick_screen_reasoning(cls, raw_value: Any) -> list[str]:
+        return _normalize_string_list(raw_value, max_items=4)
+
+
 def _format_context_value(value: Any, *, empty: str = "No especificado") -> str:
     if value is None:
         return empty
@@ -288,6 +374,34 @@ def _build_expected_output_schema() -> str:
         "estimated_revenue_signal": "low",
         "score": 0.0,
         "confidence_level": "low",
+    }
+    return json.dumps(schema, ensure_ascii=False, indent=2)
+
+
+def _build_target_validation_schema() -> str:
+    schema = {
+        "verdict": "reject",
+        "confidence_level": "high",
+        "reason_code": "editorial_article",
+        "reasoning": [
+            "La URL y el titulo describen un articulo/listado y no un negocio que contrata este servicio",
+            "No hay evidencia suficiente de ser cliente directo del nicho buscado",
+        ],
+        "niche_match": False,
+        "direct_client": False,
+    }
+    return json.dumps(schema, ensure_ascii=False, indent=2)
+
+
+def _build_quick_screen_schema() -> str:
+    schema = {
+        "verdict": "reject_noise",
+        "confidence_level": "medium",
+        "reason_code": "editorial_or_noise",
+        "reasoning": [
+            "La evidencia corta no muestra un cliente final suficientemente claro",
+            "El resultado parece mas ruido, contenido o entidad tangencial que prospecto directo",
+        ],
     }
     return json.dumps(schema, ensure_ascii=False, indent=2)
 
@@ -365,6 +479,77 @@ La estructura esperada es:
 """
 
 
+def _build_target_validation_prompt(domain: str, job_context: Dict[str, Any]) -> str:
+    buyer_persona = _build_buyer_persona(job_context)
+    expected_schema = _build_target_validation_schema()
+
+    return f"""Eres un calificador rapido de prospectos B2B.
+Tu tarea es decidir si '{domain}' es un prospecto directo, uno solo relacionado, o uno que debe rechazarse.
+
+Version de prompt: deepseek_target_validator_v1
+
+CONTEXTO DEL VENDEDOR
+{buyer_persona}
+
+OBJETIVO
+- `target`: cliente directo y razonablemente vendible para el servicio del vendedor.
+- `related`: relacionado con el nicho, pero no ideal o no suficientemente directo.
+- `reject`: articulo, listado, medio, banco/enterprise institucional, agregador, o negocio sin fit directo real.
+
+REGLAS DURAS
+- Prioriza el fit comercial real, no solo que exista una empresa o un email.
+- Rechaza articulos, rankings, perfiles editoriales, paginas de noticias, landing falsas o contenido institucional.
+- Rechaza empresas demasiado grandes o institucionales cuando claramente no representan el tipo de cliente objetivo pedido.
+- Si la evidencia muestra una marca/persona/coach vendiendo directamente y con encaje razonable, usa `target`.
+- Si el encaje es parcial o tangencial, usa `related`.
+- `direct_client` solo es true si la entidad parece el comprador directo del servicio.
+- `niche_match` solo es true si el nicho/subsegmento realmente coincide con lo que pidio la busqueda.
+- `reasoning` debe ser una lista corta, concreta y defendible.
+- No inventes.
+
+SALIDA
+Responde EXCLUSIVAMENTE con un JSON valido.
+No uses markdown.
+No agregues texto antes ni despues.
+La estructura esperada es:
+{expected_schema}
+"""
+
+
+def _build_quick_screen_prompt(domain: str, job_context: Dict[str, Any]) -> str:
+    buyer_persona = _build_buyer_persona(job_context)
+    expected_schema = _build_quick_screen_schema()
+
+    return f"""Eres un filtro AI rapido para prospectos B2B.
+Tu tarea es decidir si '{domain}' merece seguir en el pipeline usando solo metadata corta y señales compactas.
+
+Version de prompt: deepseek_quick_screen_v1
+
+CONTEXTO DEL VENDEDOR
+{buyer_persona}
+
+OBJETIVO
+- `keep_target`: parece cliente final suficientemente prometedor para seguir.
+- `keep_related`: parece relacionado y vale rescatarlo para revisar mejor.
+- `reject_noise`: parece ruido, contenido, listado, entidad tangencial o resultado poco defendible.
+
+REGLAS
+- Usa solo la evidencia recibida. No inventes.
+- No exijas telefono publico para mantener un candidato.
+- Prioriza identidad comercial, oferta, CTA, social-first fit y señales de conversion por encima de contacto directo.
+- Si el resultado es marca personal, coach, asesor o negocio con CTA/link-in-bio/oferta clara, mantenlo aunque no tenga telefono.
+- Rechaza articulos, listados, medios, marketplaces, posts, utilidades de busqueda y ruido institucional.
+- `reasoning` debe ser corta y concreta.
+
+SALIDA
+Responde EXCLUSIVAMENTE con un JSON valido.
+No uses markdown.
+No agregues texto antes ni despues.
+La estructura esperada es:
+{expected_schema}
+"""
+
+
 def _validate_ai_response_payload(parsed_data: Any) -> Dict[str, Any]:
     payload = _AIResponsePayload.model_validate(parsed_data)
     taxonomy_data = resolve_business_taxonomy(
@@ -392,6 +577,28 @@ def _validate_ai_response_payload(parsed_data: Any) -> Dict[str, Any]:
         "estimated_revenue_signal": payload.estimated_revenue_signal,
         "score": payload.score,
         "confidence_level": payload.confidence_level,
+    }
+
+
+def _validate_target_validation_payload(parsed_data: Any) -> Dict[str, Any]:
+    payload = _AITargetValidationPayload.model_validate(parsed_data)
+    return {
+        "verdict": payload.verdict,
+        "confidence_level": payload.confidence_level,
+        "reason_code": payload.reason_code,
+        "reasoning": payload.reasoning,
+        "niche_match": payload.niche_match,
+        "direct_client": payload.direct_client,
+    }
+
+
+def _validate_quick_screen_payload(parsed_data: Any) -> Dict[str, Any]:
+    payload = _AIQuickScreenPayload.model_validate(parsed_data)
+    return {
+        "verdict": payload.verdict,
+        "confidence_level": payload.confidence_level,
+        "reason_code": payload.reason_code,
+        "reasoning": payload.reasoning,
     }
 
 
@@ -520,3 +727,280 @@ async def extract_business_entity_ai(
                 latency_ms=int((perf_counter() - request_started_at) * 1000),
             ),
         ) from e
+
+
+def _build_target_validation_evidence(
+    *,
+    domain: str,
+    evidence_pack: Dict[str, Any] | None,
+    job_context: Dict[str, Any],
+) -> str:
+    compact_evidence = {
+        "domain": domain,
+        "search_query": job_context.get("search_query"),
+        "target_niche": job_context.get("target_niche"),
+        "target_location": job_context.get("target_location"),
+        "target_language": job_context.get("target_language"),
+        "user_value_proposition": job_context.get("user_value_proposition"),
+        "target_pain_points": job_context.get("target_pain_points"),
+        "target_budget_signals": job_context.get("target_budget_signals"),
+        "candidate": {
+            "title": (evidence_pack or {}).get("title"),
+            "description": (evidence_pack or {}).get("description"),
+            "summary_text": (evidence_pack or {}).get("summary_text"),
+            "primary_identity_type": (evidence_pack or {}).get("primary_identity_type"),
+            "primary_identity_url": (evidence_pack or {}).get("primary_identity_url"),
+            "entity_type_detected": (evidence_pack or {}).get("entity_type_detected"),
+            "entity_type_confidence": (evidence_pack or {}).get("entity_type_confidence"),
+            "acceptance_decision": (evidence_pack or {}).get("acceptance_decision"),
+            "business_model_fit_status": (evidence_pack or {}).get("business_model_fit_status"),
+            "heuristic_score": (evidence_pack or {}).get("heuristic_score"),
+            "heuristic_confidence": (evidence_pack or {}).get("heuristic_confidence"),
+            "social_quality": (evidence_pack or {}).get("social_quality"),
+            "observed_signals": (evidence_pack or {}).get("observed_signals"),
+            "inferred_niche": (evidence_pack or {}).get("inferred_niche"),
+            "discovery": (evidence_pack or {}).get("discovery"),
+        },
+    }
+    return json.dumps(compact_evidence, ensure_ascii=False)[:MAX_TARGET_VALIDATION_CHARS]
+
+
+def _build_quick_screen_evidence(
+    *,
+    domain: str,
+    evidence_pack: Dict[str, Any] | None,
+    job_context: Dict[str, Any],
+) -> str:
+    compact_evidence = {
+        "domain": domain,
+        "search_query": job_context.get("search_query"),
+        "target_niche": job_context.get("target_niche"),
+        "target_location": job_context.get("target_location"),
+        "target_language": job_context.get("target_language"),
+        "candidate_evaluation_policy": job_context.get("candidate_evaluation_policy"),
+        "candidate": {
+            "title": (evidence_pack or {}).get("title"),
+            "snippet": (evidence_pack or {}).get("snippet"),
+            "meta_title": (evidence_pack or {}).get("meta_title"),
+            "meta_description": (evidence_pack or {}).get("meta_description"),
+            "primary_identity_type": (evidence_pack or {}).get("primary_identity_type"),
+            "primary_identity_url": (evidence_pack or {}).get("primary_identity_url"),
+            "result_kind": (evidence_pack or {}).get("result_kind"),
+            "screening_stage": (evidence_pack or {}).get("candidate_screening_stage"),
+            "screening_reason": (evidence_pack or {}).get("candidate_screening_reason"),
+            "website_result_score": (evidence_pack or {}).get("website_result_score"),
+            "social_profile_score": (evidence_pack or {}).get("social_profile_score"),
+            "discovery_confidence": (evidence_pack or {}).get("discovery_confidence"),
+            "discovery_reasons": (evidence_pack or {}).get("discovery_reasons"),
+            "platform": (evidence_pack or {}).get("platform"),
+            "handle": (evidence_pack or {}).get("handle"),
+            "social_bio": (evidence_pack or {}).get("social_bio"),
+            "link_in_bio_present": (evidence_pack or {}).get("link_in_bio_present"),
+            "cta_tokens": (evidence_pack or {}).get("cta_tokens"),
+        },
+    }
+    return json.dumps(compact_evidence, ensure_ascii=False)[:MAX_QUICK_SCREEN_CHARS]
+
+
+async def validate_target_candidate_ai(
+    domain: str,
+    job_context: Dict[str, Any],
+    *,
+    evidence_pack: Dict[str, Any] | None = None,
+    cache_key: str | None = None,
+) -> Dict[str, Any]:
+    serialized_evidence = _build_target_validation_evidence(
+        domain=domain,
+        evidence_pack=evidence_pack,
+        job_context=job_context,
+    )
+
+    if not serialized_evidence or len(serialized_evidence) < 80:
+        raise AIExtractionFallbackError(
+            "insufficient_validation_evidence",
+            f"Evidencia insuficiente para validar target en {domain}",
+            error_type="input_validation",
+            retryable=False,
+        )
+
+    if cache_key and cache_key in _AI_CACHE:
+        cached_payload = deepcopy(_AI_CACHE[cache_key])
+        cached_payload["_ai_metrics"] = _build_ai_usage(
+            latency_ms=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cache_hit=True,
+        )
+        return cached_payload
+
+    deepseek_api_key = _get_deepseek_api_key()
+    if not deepseek_api_key:
+        raise AIExtractionFallbackError(
+            "missing_api_key",
+            "DEEPSEEK_API_KEY no encontrada",
+            error_type="configuration",
+            retryable=False,
+        )
+
+    client = _build_deepseek_client(deepseek_api_key)
+    sys_prompt = _build_target_validation_prompt(domain, job_context)
+    response = None
+    request_started_at = perf_counter()
+
+    try:
+        response = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"VALIDA ESTE CANDIDATO:\n\n{serialized_evidence}"},
+            ],
+            temperature=0.0,
+            max_tokens=220,
+            response_format={"type": "json_object"},
+        )
+        usage_metrics = _extract_usage_metrics(
+            response,
+            latency_ms=int((perf_counter() - request_started_at) * 1000),
+        )
+        raw_output = response.choices[0].message.content
+        parsed_data = json.loads(raw_output)
+        validated_payload = _validate_target_validation_payload(parsed_data)
+        if cache_key:
+            _AI_CACHE[cache_key] = deepcopy(validated_payload)
+        validated_payload["_ai_metrics"] = usage_metrics
+        return validated_payload
+    except json.JSONDecodeError as je:
+        raise AIExtractionFallbackError(
+            "validation_json_parse_error",
+            f"DeepSeek no devolvió JSON válido en target validation para {domain}",
+            error_type="invalid_response",
+            retryable=False,
+            usage=_extract_usage_metrics(
+                response,
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
+        ) from je
+    except ValidationError as ve:
+        raise AIExtractionFallbackError(
+            "validation_invalid_schema",
+            f"DeepSeek devolvió schema inválido en target validation para {domain}",
+            error_type="invalid_response",
+            retryable=False,
+            usage=_extract_usage_metrics(
+                response,
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
+        ) from ve
+    except Exception as exc:
+        raise AIExtractionFallbackError(
+            "validation_provider_error",
+            f"Fallo en API de DeepSeek durante target validation para {domain}: {str(exc)}",
+            error_type="provider_error",
+            retryable=True,
+            usage=_build_ai_usage(
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
+        ) from exc
+
+
+async def screen_candidate_quick_ai(
+    domain: str,
+    job_context: Dict[str, Any],
+    *,
+    evidence_pack: Dict[str, Any] | None = None,
+    cache_key: str | None = None,
+) -> Dict[str, Any]:
+    serialized_evidence = _build_quick_screen_evidence(
+        domain=domain,
+        evidence_pack=evidence_pack,
+        job_context=job_context,
+    )
+
+    if not serialized_evidence or len(serialized_evidence) < 60:
+        raise AIExtractionFallbackError(
+            "insufficient_quick_screen_evidence",
+            f"Evidencia insuficiente para quick screen en {domain}",
+            error_type="input_validation",
+            retryable=False,
+        )
+
+    if cache_key and cache_key in _AI_CACHE:
+        cached_payload = deepcopy(_AI_CACHE[cache_key])
+        cached_payload["_ai_metrics"] = _build_ai_usage(
+            latency_ms=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cache_hit=True,
+        )
+        return cached_payload
+
+    deepseek_api_key = _get_deepseek_api_key()
+    if not deepseek_api_key:
+        raise AIExtractionFallbackError(
+            "missing_api_key",
+            "DEEPSEEK_API_KEY no encontrada",
+            error_type="configuration",
+            retryable=False,
+        )
+
+    client = _build_deepseek_client(deepseek_api_key)
+    sys_prompt = _build_quick_screen_prompt(domain, job_context)
+    response = None
+    request_started_at = perf_counter()
+
+    try:
+        response = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"CALIFICA ESTE CANDIDATO RAPIDAMENTE:\n\n{serialized_evidence}"},
+            ],
+            temperature=0.0,
+            max_tokens=180,
+            response_format={"type": "json_object"},
+        )
+        usage_metrics = _extract_usage_metrics(
+            response,
+            latency_ms=int((perf_counter() - request_started_at) * 1000),
+        )
+        raw_output = response.choices[0].message.content
+        parsed_data = json.loads(raw_output)
+        validated_payload = _validate_quick_screen_payload(parsed_data)
+        if cache_key:
+            _AI_CACHE[cache_key] = deepcopy(validated_payload)
+        validated_payload["_ai_metrics"] = usage_metrics
+        return validated_payload
+    except json.JSONDecodeError as je:
+        raise AIExtractionFallbackError(
+            "quick_screen_json_parse_error",
+            f"DeepSeek no devolvió JSON válido en quick screen para {domain}",
+            error_type="invalid_response",
+            retryable=False,
+            usage=_extract_usage_metrics(
+                response,
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
+        ) from je
+    except ValidationError as ve:
+        raise AIExtractionFallbackError(
+            "quick_screen_invalid_schema",
+            f"DeepSeek devolvió schema inválido en quick screen para {domain}",
+            error_type="invalid_response",
+            retryable=False,
+            usage=_extract_usage_metrics(
+                response,
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
+        ) from ve
+    except Exception as exc:
+        raise AIExtractionFallbackError(
+            "quick_screen_provider_error",
+            f"Fallo en API de DeepSeek durante quick screen para {domain}: {str(exc)}",
+            error_type="provider_error",
+            retryable=True,
+            usage=_build_ai_usage(
+                latency_ms=int((perf_counter() - request_started_at) * 1000),
+            ),
+        ) from exc

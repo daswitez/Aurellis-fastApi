@@ -351,6 +351,18 @@ def domain_brand_tokens(url: str) -> set[str]:
     return extract_brand_tokens(primary)
 
 
+def _extract_query_context_seed_terms(query_context: dict[str, Any] | None) -> set[str]:
+    if not isinstance(query_context, dict):
+        return set()
+    seed_terms = query_context.get("seed_terms")
+    if not isinstance(seed_terms, list):
+        return set()
+    extracted: set[str] = set()
+    for term in seed_terms:
+        extracted.update(extract_brand_tokens(str(term or "")))
+    return extracted
+
+
 def is_same_root_domain(left_url: str, right_url: str) -> bool:
     left_parts = urlparse(left_url).netloc.lower().removeprefix("www.").split(".")
     right_parts = urlparse(right_url).netloc.lower().removeprefix("www.").split(".")
@@ -446,6 +458,46 @@ def _looks_like_large_enterprise_noise(url: str, title: str, snippet: str) -> bo
     )
 
 
+def _resolve_candidate_screening(
+    *,
+    url: str,
+    title: str,
+    snippet: str,
+    result_kind: str,
+    website_score: float,
+    reasons: list[str],
+    title_tokens: set[str],
+    url_tokens: set[str],
+    query_context: dict[str, Any] | None,
+    handle: str | None = None,
+) -> tuple[str, str | None, list[str]]:
+    lowered_blob = f"{title} {snippet}".lower()
+    rescue_reasons: list[str] = []
+    query_seed_terms = _extract_query_context_seed_terms(query_context)
+    overlap_terms = (title_tokens | url_tokens) & query_seed_terms
+
+    if result_kind == "social_profile":
+        rescue_reasons.append("canonical_social_profile")
+    if handle:
+        rescue_reasons.append("canonical_handle_detected")
+    if overlap_terms:
+        rescue_reasons.append("brand_title_overlap")
+    if title and len(title.split()) <= 8 and (title_tokens or url_tokens):
+        rescue_reasons.append("short_branded_title")
+    if url_tokens and title_tokens and url_tokens & title_tokens:
+        rescue_reasons.append("brandable_domain_match")
+    if any(token in lowered_blob for token in [*SOCIAL_PROFILE_HINTS, *COMMERCIAL_HINTS]):
+        rescue_reasons.append("commercial_snippet_hint")
+
+    if any(reason.startswith("blocked_") for reason in reasons):
+        return "hard_reject", reasons[0], []
+    if website_score >= 0.35 or result_kind == "social_profile":
+        return "fast_track", "strong_serp_signal", rescue_reasons
+    if rescue_reasons:
+        return "borderline_rescue_pool", rescue_reasons[0], rescue_reasons
+    return "fast_track", "weak_serp_signal", []
+
+
 def looks_like_social_or_marketplace(url: str, allow_social_profiles: bool = False) -> bool:
     lowered_url = url.lower()
     tokens_to_check = SOCIAL_DOMAIN_TOKENS + BLOCKED_DOMAIN_TOKENS
@@ -516,6 +568,7 @@ def classify_discovery_candidate(
     snippet: str,
     *,
     allow_social_profiles: bool = False,
+    query_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lowered_blob = f"{title} {snippet}".lower()
     path = urlparse(url).path.lower()
@@ -532,6 +585,8 @@ def classify_discovery_candidate(
             "score": -0.5,
             "reasons": [blocked_reason],
             "exclusion_reason": blocked_reason,
+            "candidate_screening_stage": "hard_reject",
+            "candidate_screening_reason": blocked_reason,
         }
 
     if _looks_like_reference_page(url, title, snippet):
@@ -542,6 +597,8 @@ def classify_discovery_candidate(
             "score": 0.0,
             "reasons": ["reference_or_article"],
             "exclusion_reason": "excluded_reference_page",
+            "candidate_screening_stage": "hard_reject",
+            "candidate_screening_reason": "excluded_reference_page",
         }
 
     if _looks_like_search_utility(url, title, snippet):
@@ -552,6 +609,8 @@ def classify_discovery_candidate(
             "score": 0.0,
             "reasons": ["search_utility_noise"],
             "exclusion_reason": "excluded_reference_page",
+            "candidate_screening_stage": "hard_reject",
+            "candidate_screening_reason": "excluded_reference_page",
         }
 
     if _looks_like_auth_or_help_page(url, title, snippet):
@@ -562,6 +621,8 @@ def classify_discovery_candidate(
             "score": 0.0,
             "reasons": ["auth_or_help_page"],
             "exclusion_reason": "excluded_auth_or_help_page",
+            "candidate_screening_stage": "hard_reject",
+            "candidate_screening_reason": "excluded_auth_or_help_page",
         }
 
     if _looks_like_quiz_or_trivia(title, snippet):
@@ -572,6 +633,8 @@ def classify_discovery_candidate(
             "score": 0.0,
             "reasons": ["quiz_or_trivia_noise"],
             "exclusion_reason": "excluded_reference_page",
+            "candidate_screening_stage": "hard_reject",
+            "candidate_screening_reason": "excluded_reference_page",
         }
 
     if _looks_like_editorial_article(url, title, snippet):
@@ -582,6 +645,8 @@ def classify_discovery_candidate(
             "score": 0.0,
             "reasons": ["editorial_path" if any(token in path for token in EDITORIAL_PATH_TOKENS) else "editorial_title"],
             "exclusion_reason": "excluded_as_article",
+            "candidate_screening_stage": "hard_reject",
+            "candidate_screening_reason": "excluded_as_article",
         }
 
     if _looks_like_media_or_finance(url, title, snippet):
@@ -592,6 +657,8 @@ def classify_discovery_candidate(
             "score": 0.0,
             "reasons": ["media_or_finance"],
             "exclusion_reason": "excluded_reference_page",
+            "candidate_screening_stage": "hard_reject",
+            "candidate_screening_reason": "excluded_reference_page",
         }
 
     if _looks_like_large_enterprise_noise(url, title, snippet):
@@ -602,6 +669,8 @@ def classify_discovery_candidate(
             "score": 0.0,
             "reasons": ["large_enterprise_noise"],
             "exclusion_reason": "excluded_large_enterprise",
+            "candidate_screening_stage": "hard_reject",
+            "candidate_screening_reason": "excluded_large_enterprise",
         }
 
     if _is_social_domain(url):
@@ -613,6 +682,8 @@ def classify_discovery_candidate(
                 "score": 0.0,
                 "reasons": ["social_profiles_not_allowed"],
                 "exclusion_reason": "blocked_domain:social_profile",
+                "candidate_screening_stage": "hard_reject",
+                "candidate_screening_reason": "blocked_domain:social_profile",
             }
         if _looks_like_social_post(url):
             return {
@@ -622,6 +693,8 @@ def classify_discovery_candidate(
                 "score": 0.0,
                 "reasons": ["social_post_or_share"],
                 "exclusion_reason": "excluded_social_post",
+                "candidate_screening_stage": "hard_reject",
+                "candidate_screening_reason": "excluded_social_post",
             }
 
         is_profile, platform, handle = _is_canonical_social_profile(url)
@@ -633,6 +706,8 @@ def classify_discovery_candidate(
                 "score": 0.0,
                 "reasons": ["non_canonical_social_profile"],
                 "exclusion_reason": "excluded_social_post",
+                "candidate_screening_stage": "hard_reject",
+                "candidate_screening_reason": "excluded_social_post",
             }
 
         social_score = 0.35
@@ -650,13 +725,27 @@ def classify_discovery_candidate(
             social_score += 0.05
             reasons.append("concise_title")
 
+        screening_stage, screening_reason, rescue_reasons = _resolve_candidate_screening(
+            url=url,
+            title=title,
+            snippet=snippet,
+            result_kind="social_profile",
+            website_score=min(social_score, 1.0),
+            reasons=reasons,
+            title_tokens=title_tokens,
+            url_tokens=url_tokens,
+            query_context=query_context,
+            handle=handle,
+        )
         return {
             "result_kind": "social_profile",
             "website_result_score": 0.0,
             "social_profile_score": round(min(social_score, 1.0), 4),
             "score": round(min(social_score, 1.0), 4),
-            "reasons": reasons,
+            "reasons": [*reasons, *[reason for reason in rescue_reasons if reason not in reasons]],
             "exclusion_reason": None,
+            "candidate_screening_stage": screening_stage,
+            "candidate_screening_reason": screening_reason,
         }
 
     website_score = 0.0
@@ -713,19 +802,36 @@ def classify_discovery_candidate(
         reasons.append("directory_seed_candidate")
 
     result_kind = "website_home" if path in {"", "/"} else "website_inner_page"
+    screening_stage, screening_reason, rescue_reasons = _resolve_candidate_screening(
+        url=url,
+        title=title,
+        snippet=snippet,
+        result_kind=result_kind,
+        website_score=website_score,
+        reasons=reasons,
+        title_tokens=title_tokens,
+        url_tokens=url_tokens,
+        query_context=query_context,
+    )
     exclusion_reason = None
     if "product_page" in reasons:
         exclusion_reason = "excluded_as_product_page"
-    elif website_score < 0.15:
+        screening_stage = "hard_reject"
+        screening_reason = "excluded_as_product_page"
+    elif website_score < 0.15 and screening_stage != "borderline_rescue_pool":
         exclusion_reason = "low_business_likeness"
+        screening_stage = "hard_reject"
+        screening_reason = "low_business_likeness"
 
     return {
         "result_kind": result_kind,
         "website_result_score": round(website_score, 4),
         "social_profile_score": 0.0,
         "score": round(website_score, 4),
-        "reasons": reasons,
+        "reasons": [*reasons, *[reason for reason in rescue_reasons if reason not in reasons]],
         "exclusion_reason": exclusion_reason,
+        "candidate_screening_stage": screening_stage,
+        "candidate_screening_reason": screening_reason,
     }
 
 
@@ -734,11 +840,13 @@ def score_business_likeness(
     title: str,
     snippet: str,
     allow_social_profiles: bool = False,
+    query_context: dict[str, Any] | None = None,
 ) -> tuple[float, list[str], str | None]:
     classified = classify_discovery_candidate(
         url,
         title,
         snippet,
         allow_social_profiles=allow_social_profiles,
+        query_context=query_context,
     )
     return classified["score"], classified["reasons"], classified["exclusion_reason"]

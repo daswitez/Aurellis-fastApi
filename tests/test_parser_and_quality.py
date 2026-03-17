@@ -4,7 +4,12 @@ from app.scraper.parser import parse_html_basic
 from app.services.entity_classifier import classify_entity_type
 from app.services.heuristic_extractor import _score_context_fit
 from app.services.identity_resolution import resolve_identity_surfaces
-from app.services.prospect_quality import build_ai_evidence_pack, evaluate_prospect_quality
+from app.services.prospect_quality import (
+    apply_ai_target_validation,
+    build_ai_evidence_pack,
+    evaluate_prospect_quality,
+    should_call_ai_target_validator,
+)
 
 
 class ParserAndQualityTestCase(unittest.TestCase):
@@ -607,6 +612,71 @@ class ParserAndQualityTestCase(unittest.TestCase):
         self.assertEqual(quality["quality_status"], "accepted")
         self.assertEqual(quality["acceptance_decision"], "accepted_target")
         self.assertGreaterEqual(quality["social_business_evidence_count"], 2)
+
+    def test_quality_accepts_social_first_profile_without_phone_when_offer_and_link_exist(self) -> None:
+        html = """
+        <html lang="es">
+          <head>
+            <title>MentorPro (@mentorpro) • Instagram photos and videos</title>
+            <meta property="og:description" content="Mentoria para coaches y asesores. Aplica en el link de la bio." />
+          </head>
+          <body>
+            <a href="https://linktr.ee/mentorpro">Link in bio</a>
+            <p>Mentoria premium para coaches, asesores y marcas personales.</p>
+            <p>Aplica desde el link y agenda una llamada.</p>
+          </body>
+        </html>
+        """
+
+        clean_text, metadata = parse_html_basic(html, "https://www.instagram.com/mentorpro/")
+        heuristic_data = {
+            "score": 0.69,
+            "confidence_level": "medium",
+            "inferred_niche": "Coaches y Asesores",
+            "inferred_tech_stack": [],
+            "generic_attributes": {
+                "pain_points_detected": [],
+                "heuristic_score_breakdown": {"context_fit": 0.66},
+                "content_profile": {
+                    "offer_signals": ["commercial_offer_detected"],
+                    "audience_signals": ["buyer_audience_visible"],
+                    "platform_ctas": ["profile_cta_visible", "external_link_present"],
+                    "external_links": ["https://linktr.ee/mentorpro"],
+                    "social_activity_signals": ["content_format_visible"],
+                    "budget_signal_matches": [],
+                },
+            },
+            "heuristic_trace": {"component_scores": {"context_fit": 0.66}},
+            "hiring_signals": False,
+        }
+
+        quality = evaluate_prospect_quality(
+            clean_text=clean_text,
+            metadata=metadata,
+            context={
+                "target_language": "es",
+                "target_niche": "Coaches y Asesores",
+                "candidate_evaluation_policy": {
+                    "identity_priority": "social_first",
+                    "contact_requirement": "soft",
+                    "quick_ai_stage": "hybrid",
+                },
+            },
+            heuristic_data=heuristic_data,
+            discovery_metadata={"query": "coaches asesores instagram", "title": metadata["title"]},
+            entity_data=classify_entity_type(
+                target_url="https://www.instagram.com/mentorpro/",
+                clean_text=clean_text,
+                metadata=metadata,
+                discovery_metadata={"query": "coaches asesores instagram", "title": metadata["title"]},
+            ),
+        )
+
+        self.assertEqual(quality["phone"], None)
+        self.assertEqual(quality["primary_phone_confidence"], "low")
+        self.assertGreaterEqual(quality["commercial_access_score"], 0.1)
+        self.assertEqual(quality["quality_status"], "accepted")
+        self.assertEqual(quality["acceptance_decision"], "accepted_target")
 
     def test_quality_reviews_social_first_profile_with_weak_evidence(self) -> None:
         html = """
@@ -1427,6 +1497,73 @@ class ParserAndQualityTestCase(unittest.TestCase):
         )
 
         self.assertEqual(quality["acceptance_decision"], "accepted_target")
+
+    def test_ai_target_validator_runs_for_accepted_target_when_target_niche_exists(self) -> None:
+        should_validate, reason = should_call_ai_target_validator(
+            context={"target_niche": "Marcas Personales y Coaches"},
+            heuristic_data={"score": 0.74},
+            quality_data={"quality_status": "accepted", "acceptance_decision": "accepted_target"},
+        )
+
+        self.assertTrue(should_validate)
+        self.assertEqual(reason, "validate_commercial_fit")
+
+    def test_ai_target_validation_rejects_editorial_article(self) -> None:
+        quality_data = {
+            "quality_status": "accepted",
+            "acceptance_decision": "accepted_target",
+            "rejection_reason": None,
+            "quality_flags": [],
+            "technical_score_multiplier": 0.9,
+            "commercial_score_multiplier": 1.0,
+            "score_multiplier": 0.9,
+            "score_cap": None,
+        }
+
+        updated = apply_ai_target_validation(
+            quality_data,
+            {
+                "verdict": "reject",
+                "confidence_level": "high",
+                "reason_code": "editorial_article",
+                "reasoning": ["La URL parece un articulo editorial y no un cliente directo."],
+                "niche_match": False,
+                "direct_client": False,
+            },
+        )
+
+        self.assertEqual(updated["quality_status"], "rejected")
+        self.assertEqual(updated["acceptance_decision"], "rejected_article")
+        self.assertEqual(updated["rejection_reason"], "rejected_article")
+        self.assertIn("ai_target_validation_rejected", updated["quality_flags"])
+
+    def test_ai_target_validation_downgrades_related_candidate(self) -> None:
+        quality_data = {
+            "quality_status": "accepted",
+            "acceptance_decision": "accepted_target",
+            "rejection_reason": None,
+            "quality_flags": [],
+            "technical_score_multiplier": 0.85,
+            "commercial_score_multiplier": 1.0,
+            "score_multiplier": 0.85,
+            "score_cap": None,
+        }
+
+        updated = apply_ai_target_validation(
+            quality_data,
+            {
+                "verdict": "related",
+                "confidence_level": "medium",
+                "reason_code": "partial_fit",
+                "reasoning": ["El negocio es relacionado pero no parece el comprador directo ideal."],
+                "niche_match": True,
+                "direct_client": False,
+            },
+        )
+
+        self.assertEqual(updated["quality_status"], "needs_review")
+        self.assertEqual(updated["acceptance_decision"], "accepted_related")
+        self.assertIn("ai_target_validation_related", updated["quality_flags"])
 
 
 if __name__ == "__main__":

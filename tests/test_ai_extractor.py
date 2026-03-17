@@ -10,7 +10,7 @@ if "openai" not in sys.modules:
     openai_stub.AsyncOpenAI = object
     sys.modules["openai"] = openai_stub
 
-from app.services.ai_extractor import AIExtractionFallbackError, _AI_CACHE, extract_business_entity_ai
+from app.services.ai_extractor import AIExtractionFallbackError, _AI_CACHE, extract_business_entity_ai, screen_candidate_quick_ai
 
 
 class _FakeCompletions:
@@ -194,6 +194,46 @@ class ExtractBusinessEntityAITestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.reason, "invalid_schema")
         self.assertEqual(ctx.exception.error_type, "invalid_response")
+
+    async def test_quick_screen_accepts_social_first_candidate_without_phone(self) -> None:
+        payload = json.dumps(
+            {
+                "verdict": "keep_target",
+                "confidence_level": "high",
+                "reason_code": "social_offer_with_cta",
+                "reasoning": ["Marca personal con oferta clara y link-in-bio."],
+            }
+        )
+
+        with patch("app.services.ai_extractor._get_deepseek_api_key", return_value="test-key"):
+            with patch(
+                "app.services.ai_extractor._build_deepseek_client",
+                return_value=_FakeClient(payload),
+            ):
+                result = await screen_candidate_quick_ai(
+                    "instagram:mentorpro",
+                    {
+                        "target_niche": "Coaches y Asesores",
+                        "candidate_evaluation_policy": {
+                            "identity_priority": "social_first",
+                            "contact_requirement": "soft",
+                            "quick_ai_stage": "hybrid",
+                        },
+                    },
+                    evidence_pack={
+                        "title": "MentorPro",
+                        "snippet": "Mentoria para coaches. Aplica en bio.",
+                        "result_kind": "social_profile",
+                        "platform": "instagram",
+                        "handle": "mentorpro",
+                        "link_in_bio_present": True,
+                        "cta_tokens": ["apply", "link in bio"],
+                    },
+                )
+
+        self.assertEqual(result["verdict"], "keep_target")
+        self.assertEqual(result["confidence_level"], "high")
+        self.assertEqual(result["reason_code"], "social_offer_with_cta")
 
 
 if __name__ == "__main__":

@@ -290,6 +290,43 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertTrue(any(context["segment_id"] == "legacy_backfill" for context in query_plan["query_context_map"].values()))
         self.assertGreaterEqual(query_plan["family_distribution"]["rescue_queries"], 1)
 
+    def test_no_planner_fallback_rotates_queries_across_iterations(self) -> None:
+        initial_plan = build_discovery_query_plan(
+            search_query="marcas personales ecommerce y coaches de negocios España",
+            user_profession="Editor de Video",
+            target_niche="Marcas Personales y Coaches",
+            target_location="España",
+            target_language="es",
+            target_budget_signals=[
+                "Venden cursos o infoproductos",
+                "Activos en Instagram o TikTok con mas de 10k seguidores",
+                "Tienen linktree/tienda oficial",
+            ],
+            planner_output=None,
+            max_queries=8,
+            iteration_index=0,
+        )
+        fallback_plan = build_discovery_query_plan(
+            search_query="marcas personales ecommerce y coaches de negocios España",
+            user_profession="Editor de Video",
+            target_niche="Marcas Personales y Coaches",
+            target_location="España",
+            target_language="es",
+            target_budget_signals=[
+                "Venden cursos o infoproductos",
+                "Activos en Instagram o TikTok con mas de 10k seguidores",
+                "Tienen linktree/tienda oficial",
+            ],
+            planner_output=None,
+            max_queries=8,
+            iteration_index=2,
+        )
+
+        self.assertEqual(len(initial_plan["queries"]), 8)
+        self.assertEqual(len(fallback_plan["queries"]), 8)
+        self.assertNotEqual(initial_plan["queries"], fallback_plan["queries"])
+        self.assertTrue(set(fallback_plan["queries"]) - set(initial_plan["queries"]))
+
     def test_resolves_minimum_candidate_ratio_for_single_target(self) -> None:
         targets = resolve_capture_targets(
             max_results_legacy=1,
@@ -503,6 +540,18 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertEqual(post_exclusion, "excluded_social_post")
         self.assertEqual(post_score, 0.0)
         self.assertIn("social_post_or_share", post_reasons)
+
+    def test_classify_discovery_candidate_keeps_borderline_brand_for_rescue_pool(self) -> None:
+        classified = classify_discovery_candidate(
+            "https://www.brandalpha.com/team/founders/alpha",
+            "BrandAlpha",
+            "Mentoria para founders. Apply now y book call.",
+            query_context={"seed_terms": ["brandalpha mentor", "founder mentoring"]},
+        )
+
+        self.assertIsNone(classified["exclusion_reason"])
+        self.assertEqual(classified["candidate_screening_stage"], "borderline_rescue_pool")
+        self.assertIn("commercial_snippet_hint", classified["reasons"])
 
     def test_business_likeness_rejects_reference_and_finance_pages(self) -> None:
         reference_score, _, reference_exclusion = score_business_likeness(

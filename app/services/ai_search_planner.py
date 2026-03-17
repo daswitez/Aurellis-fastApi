@@ -98,6 +98,7 @@ class AISearchPlanPayload(BaseModel):
     segment_rotation_rules: list[str] = Field(default_factory=list)
     next_segments_to_try: list[str] = Field(default_factory=list)
     segments_to_pause: list[str] = Field(default_factory=list)
+    candidate_evaluation_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 def _normalize_space(value: str | None) -> str:
@@ -185,6 +186,38 @@ PLANNER_PROFILES: dict[PlannerProfileKey, SearchPlannerProfile] = {
 }
 
 DEFAULT_PLATFORM_PRIORITY = ("instagram", "tiktok", "website")
+DEFAULT_QUICK_AI_INPUTS = (
+    "url",
+    "domain",
+    "title",
+    "snippet",
+    "result_kind",
+    "platform",
+    "handle",
+    "meta_title",
+    "meta_description",
+    "social_bio",
+    "link_in_bio_present",
+    "cta_tokens",
+)
+DEFAULT_HARD_REJECT_REASONS = (
+    "blocked_domain",
+    "blocked_binary_document",
+    "excluded_social_post",
+    "excluded_reference_page",
+    "excluded_auth_or_help_page",
+    "excluded_as_article",
+    "excluded_large_enterprise",
+    "excluded_as_product_page",
+)
+DEFAULT_BORDERLINE_RESCUE_RULES = (
+    "canonical_social_profile",
+    "canonical_handle_detected",
+    "brand_title_overlap",
+    "commercial_snippet_hint",
+    "brandable_domain_match",
+    "short_branded_title",
+)
 
 PROFILE_SEGMENT_CATALOGS: dict[PlannerProfileKey, dict[str, tuple[dict[str, Any], ...]]] = {
     "generic_business": {
@@ -555,6 +588,32 @@ def _normalize_platforms(values: list[str] | None) -> list[str]:
     return normalized
 
 
+def _normalize_candidate_evaluation_policy(raw_value: Any) -> dict[str, Any]:
+    if not isinstance(raw_value, dict):
+        return {}
+
+    identity_priority = _normalize_ascii(str(raw_value.get("identity_priority") or ""))
+    if identity_priority not in {"social_first", "hybrid"}:
+        identity_priority = ""
+
+    contact_requirement = _normalize_ascii(str(raw_value.get("contact_requirement") or ""))
+    if contact_requirement not in {"soft"}:
+        contact_requirement = ""
+
+    quick_ai_stage = _normalize_ascii(str(raw_value.get("quick_ai_stage") or ""))
+    if quick_ai_stage not in {"hybrid"}:
+        quick_ai_stage = ""
+
+    return {
+        "identity_priority": identity_priority or None,
+        "contact_requirement": contact_requirement or None,
+        "quick_ai_stage": quick_ai_stage or None,
+        "quick_ai_inputs": _normalize_platforms(raw_value.get("quick_ai_inputs")),
+        "hard_reject_reasons": _dedupe_strings(raw_value.get("hard_reject_reasons")),
+        "borderline_rescue_rules": _dedupe_strings(raw_value.get("borderline_rescue_rules")),
+    }
+
+
 def _enforce_geo_policy(
     queries: list[str],
     *,
@@ -718,6 +777,40 @@ def _derive_platform_priority(
     if profile.key in {"creator_coach", "ecommerce_content"} or any(token in profession for token in social_first_roles):
         return list(DEFAULT_PLATFORM_PRIORITY)
     return ["website", "instagram", "tiktok"]
+
+
+def _build_candidate_evaluation_policy(
+    *,
+    profile: SearchPlannerProfile,
+    job_context: Dict[str, Any],
+    platform_priority: list[str],
+    dynamic_priority_signals: list[str],
+    planner_policy: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_policy = _normalize_candidate_evaluation_policy(planner_policy)
+    social_priority = profile.key in {"creator_coach", "ecommerce_content"} or any(
+        token in _normalize_ascii(str(job_context.get("user_profession") or ""))
+        for token in ("video", "editor", "community", "social", "designer", "creador")
+    )
+    identity_priority = normalized_policy.get("identity_priority") or ("social_first" if social_priority else "hybrid")
+    quick_ai_inputs = normalized_policy.get("quick_ai_inputs") or list(DEFAULT_QUICK_AI_INPUTS)
+
+    cta_tokens = [
+        signal
+        for signal in dynamic_priority_signals
+        if any(token in _normalize_ascii(signal) for token in ("dm", "agenda", "book", "contact", "shop", "apply", "link"))
+    ][:6]
+
+    return {
+        "identity_priority": identity_priority,
+        "contact_requirement": normalized_policy.get("contact_requirement") or "soft",
+        "quick_ai_stage": normalized_policy.get("quick_ai_stage") or "hybrid",
+        "quick_ai_inputs": quick_ai_inputs,
+        "hard_reject_reasons": normalized_policy.get("hard_reject_reasons") or list(DEFAULT_HARD_REJECT_REASONS),
+        "borderline_rescue_rules": normalized_policy.get("borderline_rescue_rules") or list(DEFAULT_BORDERLINE_RESCUE_RULES),
+        "platform_priority": platform_priority[:3],
+        "cta_tokens": cta_tokens,
+    }
 
 
 def _build_query_families(
@@ -1135,6 +1228,14 @@ SALIDA JSON:
   ],
   "platform_priority": ["instagram", "tiktok", "website"],
   "commercial_validation_signals": ["..."],
+  "candidate_evaluation_policy": {{
+    "identity_priority": "social_first",
+    "contact_requirement": "soft",
+    "quick_ai_stage": "hybrid",
+    "quick_ai_inputs": ["url", "domain", "title", "snippet", "result_kind", "platform", "handle", "meta_title", "meta_description", "social_bio", "link_in_bio_present", "cta_tokens"],
+    "hard_reject_reasons": ["blocked_domain", "excluded_social_post", "excluded_reference_page"],
+    "borderline_rescue_rules": ["canonical_social_profile", "commercial_snippet_hint", "brandable_domain_match"]
+  }},
   "refinement_hypotheses": [],
   "segment_rotation_rules": ["..."],
   "next_segments_to_try": ["business_coach"],
@@ -1185,6 +1286,14 @@ SALIDA JSON:
   "query_families": [{{"segment_id": "...", "family": "social_profile_queries", "platforms": ["instagram"], "intent_terms": ["..."], "commercial_hints": ["..."], "priority": 1}}],
   "platform_priority": ["instagram", "tiktok", "website"],
   "commercial_validation_signals": ["..."],
+  "candidate_evaluation_policy": {{
+    "identity_priority": "social_first",
+    "contact_requirement": "soft",
+    "quick_ai_stage": "hybrid",
+    "quick_ai_inputs": ["url", "domain", "title", "snippet", "result_kind", "platform", "handle", "meta_title", "meta_description", "social_bio", "link_in_bio_present", "cta_tokens"],
+    "hard_reject_reasons": ["blocked_domain", "excluded_social_post", "excluded_reference_page"],
+    "borderline_rescue_rules": ["canonical_social_profile", "commercial_snippet_hint", "brandable_domain_match"]
+  }},
   "refinement_hypotheses": [{{"segment_id": "...", "action": "pause", "reason": "noise"}}],
   "segment_rotation_rules": ["..."],
   "next_segments_to_try": ["..."],
@@ -1396,6 +1505,13 @@ def _coerce_plan_payload(
     result["commercial_validation_signals"] = _dedupe_strings(
         [*(result.get("commercial_validation_signals") or []), *(profile.priority_signals or ()), *dynamic_priority_signals[:6]]
     )[:12]
+    result["candidate_evaluation_policy"] = _build_candidate_evaluation_policy(
+        profile=profile,
+        job_context=job_context,
+        platform_priority=platform_priority,
+        dynamic_priority_signals=dynamic_priority_signals,
+        planner_policy=result.get("candidate_evaluation_policy"),
+    )
     result["refinement_hypotheses"] = result.get("refinement_hypotheses") or refinement_hypotheses
     result["segment_rotation_rules"] = result.get("segment_rotation_rules") or segment_rotation_rules
     result["next_segments_to_try"] = _dedupe_strings(result.get("next_segments_to_try") or next_segments_to_try)
