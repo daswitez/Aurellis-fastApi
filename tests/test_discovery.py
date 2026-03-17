@@ -15,6 +15,7 @@ from app.services.discovery import (
     build_discovery_query_batches,
     build_discovery_queries,
     determine_capture_stop_reason,
+    resolve_discovery_target_location,
     resolve_candidate_batch_size,
     resolve_capture_targets,
     resolve_discovery_batch_budget,
@@ -128,6 +129,41 @@ class DiscoveryQueryTestCase(unittest.TestCase):
         self.assertIn("Marcas Personales España", queries[:4])
         self.assertIn("Coaches España", queries[:5])
         self.assertNotEqual(queries[0], "marcas personales ecommerce y coaches de negocios España")
+
+    def test_resolve_discovery_target_location_supports_new_country_aliases(self) -> None:
+        location = resolve_discovery_target_location(
+            search_query="small ecommerce brands in united states",
+            target_location=None,
+            target_niche="Shopify stores",
+        )
+
+        self.assertEqual(location, "USA")
+
+    def test_builds_english_ecommerce_queries_without_coach_noise(self) -> None:
+        queries = build_discovery_queries(
+            search_query="small ecommerce brands shopify dropshipping stores instagram tiktok active content",
+            user_profession="Editor de Video",
+            target_niche="Pequeñas marcas ecommerce, tiendas online, dropshipping y pymes digitales",
+            target_location="USA",
+            target_language="en",
+            target_budget_signals=[
+                "Tienda online activa",
+                "Presencia en Instagram o TikTok",
+                "Publican contenido de producto con frecuencia",
+                "Corren anuncios o muestran señales de ads",
+            ],
+            user_target_offer_focus="Marcas pequeñas que venden productos y necesitan contenido constante.",
+        )
+
+        queries_without_negative_coach = [
+            query.lower().replace("-coach", "").replace("-coaching", "")
+            for query in queries
+        ]
+        self.assertTrue(any("online stores USA" in query for query in queries))
+        self.assertTrue(any("shop now" in query or "product video" in query for query in queries))
+        self.assertFalse(any("marca personal" in query.lower() for query in queries))
+        self.assertFalse(any(" coach " in f" {query} " for query in queries_without_negative_coach))
+        self.assertFalse(any("tienda online usa" in query.lower() for query in queries))
 
     def test_resolves_capture_targets_from_legacy_max_results(self) -> None:
         targets = resolve_capture_targets(

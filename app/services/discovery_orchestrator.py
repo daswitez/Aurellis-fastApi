@@ -28,6 +28,7 @@ DISCOVERY_LANGUAGE_HINTS = {
 DISCOVERY_TARGET_TOPIC_HINTS = {
     "personal_brand": ["marca personal", "marcas personales", "personal brand", "branding personal"],
     "coaching": ["coach", "coaches", "coaching", "mentor", "mentora", "mentoria", "mentoría", "mentoring", "negocios", "emprendedores"],
+    "ecommerce": ["ecommerce", "shopify", "online store", "online stores", "tienda online", "tiendas online", "dropshipping", "shop now", "product page"],
     "education": ["curso", "cursos", "programa", "masterclass", "infoproducto", "infoproductos", "academia", "formacion", "formación"],
     "social_short_form": ["instagram", "tiktok", "reels", "shorts", "youtube shorts", "linktree", "link in bio"],
 }
@@ -42,7 +43,14 @@ DISCOVERY_OFF_TARGET_HINTS = {
     "health": [" kidney ", " creatinine ", " injury ", " disease ", " causes ", " health ", " medical "],
 }
 DISCOVERY_LOCATION_HINTS = {
+    "usa": [" usa ", " united states ", " estados unidos ", " eeuu ", ".us"],
+    "uk": [" uk ", " united kingdom ", " reino unido ", ".co.uk"],
+    "canada": [" canada ", ".ca"],
+    "australia": [" australia ", ".com.au"],
     "espana": [" espana ", " madrid ", " barcelona ", ".es"],
+    "mexico": [" mexico ", " cdmx ", ".mx"],
+    "colombia": [" colombia ", " bogota ", ".co"],
+    "argentina": [" argentina ", " buenos aires ", ".ar"],
 }
 
 
@@ -155,6 +163,8 @@ def _resolve_context_topics(target_niche: str | None, target_budget_signals: lis
         topics.add("personal_brand")
     if any(token in searchable for token in [" coach ", " coaches ", " coaching ", " mentor ", " mentoria ", " mentoring "]):
         topics.add("coaching")
+    if any(token in searchable for token in [" ecommerce ", " tienda online ", " tiendas online ", " shopify ", " dropshipping ", " online store ", " online stores "]):
+        topics.add("ecommerce")
     if any(token in searchable for token in [" curso ", " cursos ", " programa ", " infoproducto ", " infoproductos ", " academia "]):
         topics.add("education")
     if any(token in searchable for token in [" instagram ", " tiktok ", " reels ", " shorts ", " linktree ", " link in bio "]):

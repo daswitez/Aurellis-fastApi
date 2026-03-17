@@ -3,6 +3,7 @@ import logging
 import re
 import unicodedata
 from copy import deepcopy
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Dict, Literal
 
@@ -13,28 +14,62 @@ from app.services.ai_extractor import (
     _build_deepseek_client,
     _get_deepseek_api_key,
 )
+from app.services.discovery import GLOBAL_LOCATION_TOKENS, LOCATION_ALIAS_RULES
 
 logger = logging.getLogger(__name__)
 
 PlannerMode = Literal["initial", "refinement"]
-STRICT_SPAIN_ALIASES = ("espana", "españa", "spain")
-NON_SPAIN_GEO_TOKENS = (
-    "argentina",
-    "mexico",
-    "méxico",
-    "peru",
-    "perú",
-    "colombia",
-    "chile",
-    "uruguay",
-    "bolivia",
-    "buenos aires",
-    "lima",
-    "bogota",
-    "bogotá",
-    "cdmx",
+PlannerProfileKey = Literal["generic_business", "creator_coach", "ecommerce_content"]
+MULTI_LOCATION_SPLIT_PATTERN = re.compile(r"\s*(?:/|,|\||;)\s*")
+CREATOR_COACH_HINTS = (
+    "coach",
+    "coaches",
+    "coaching",
+    "marca personal",
+    "marcas personales",
+    "personal brand",
+    "mentor",
+    "mentoria",
+    "mentoría",
+    "creator",
+    "creador",
+)
+ECOMMERCE_HINTS = (
+    "ecommerce",
+    "e-commerce",
+    "tienda online",
+    "shopify",
+    "dropshipping",
+    "online store",
+    "product brand",
+    "d2c",
+    "direct to consumer",
+    "shop",
+    "store",
+)
+ECOMMERCE_BLOCKED_QUERY_HINTS = (
+    "site:*.com",
+    "site:myshopify.com",
+    "site:shopify.com",
+    "help.shopify.com",
+    "accounts.shopify.com",
+    "inurl:collections",
+    "inurl:products",
+    "\"active on instagram\"",
+    "\"tiktok shop\"",
 )
 _PLANNER_CACHE: dict[str, Dict[str, Any]] = {}
+
+
+@dataclass(frozen=True)
+class SearchPlannerProfile:
+    key: PlannerProfileKey
+    label: str
+    target_description: str
+    priority_signals: tuple[str, ...]
+    exclusion_focus: tuple[str, ...]
+    default_target_entity_hints: tuple[str, ...]
+    default_exclusion_entity_hints: tuple[str, ...]
 
 
 class AISearchPlanPayload(BaseModel):
@@ -45,6 +80,8 @@ class AISearchPlanPayload(BaseModel):
     target_entity_hints: list[str] = Field(default_factory=list)
     exclusion_entity_hints: list[str] = Field(default_factory=list)
     refinement_goal: str | None = None
+    planner_profile: str | None = None
+    geo_scope: str | None = None
 
 
 def _normalize_space(value: str | None) -> str:
@@ -56,9 +93,175 @@ def _normalize_ascii(value: str | None) -> str:
     return normalized.encode("ascii", "ignore").decode("ascii").lower()
 
 
-def _is_strict_spain_job(job_context: Dict[str, Any]) -> bool:
-    target_location = _normalize_ascii(str(job_context.get("target_location") or ""))
-    return target_location in STRICT_SPAIN_ALIASES
+_GLOBAL_LOCATION_ALIASES = {_normalize_ascii(token) for token in GLOBAL_LOCATION_TOKENS}
+
+
+PLANNER_PROFILES: dict[PlannerProfileKey, SearchPlannerProfile] = {
+    "generic_business": SearchPlannerProfile(
+        key="generic_business",
+        label="general_business",
+        target_description="negocios finales con oferta comercial clara y canal de contacto usable",
+        priority_signals=(
+            "sitio oficial",
+            "pagina de contacto",
+            "pagina de servicios o productos",
+            "CTA comercial visible",
+        ),
+        exclusion_focus=(
+            "blogs",
+            "medios",
+            "directorios",
+            "listados",
+            "software",
+            "assets",
+            "paginas informativas",
+        ),
+        default_target_entity_hints=("negocio final", "sitio oficial", "contacto comercial"),
+        default_exclusion_entity_hints=("blog", "directorio", "medio", "software"),
+    ),
+    "creator_coach": SearchPlannerProfile(
+        key="creator_coach",
+        label="creator_coach",
+        target_description="coaches finales, marcas personales finales y negocios finales con oferta propia",
+        priority_signals=(
+            "instagram o tiktok activos",
+            "link in bio o linktree",
+            "programas o mentorias",
+            "pagina de contacto",
+            "CTA comercial visible",
+        ),
+        exclusion_focus=(
+            "escuelas",
+            "directorios",
+            "listados",
+            "blogs",
+            "medios",
+            "assets",
+            "tools",
+        ),
+        default_target_entity_hints=("coach final", "marca personal", "contacto comercial"),
+        default_exclusion_entity_hints=("escuela", "directorio", "listado de coaches"),
+    ),
+    "ecommerce_content": SearchPlannerProfile(
+        key="ecommerce_content",
+        label="ecommerce_content",
+        target_description="pequenas marcas ecommerce, tiendas online, negocios Shopify y pymes digitales que venden productos",
+        priority_signals=(
+            "sitio oficial o storefront activo",
+            "paginas de producto o coleccion",
+            "shopify o checkout visible",
+            "instagram o tiktok activos",
+            "branding, ads o landing comercial",
+        ),
+        exclusion_focus=(
+            "agencias",
+            "freelancers",
+            "apps",
+            "themes",
+            "tutoriales",
+            "marketplaces",
+            "directorios",
+            "proveedores o mayoristas",
+        ),
+        default_target_entity_hints=("ecommerce activo", "shopify store", "marca de producto"),
+        default_exclusion_entity_hints=("agencia", "theme", "app", "tutorial", "supplier", "marketplace"),
+    ),
+}
+
+
+def _build_location_alias_index() -> dict[str, str]:
+    alias_index: dict[str, str] = {}
+    for canonical_location, aliases in LOCATION_ALIAS_RULES.items():
+        for alias in (canonical_location, *aliases):
+            normalized_alias = _normalize_ascii(alias)
+            if normalized_alias:
+                alias_index[normalized_alias] = canonical_location
+    return alias_index
+
+
+LOCATION_ALIAS_INDEX = _build_location_alias_index()
+
+
+def _collect_profile_context_blob(job_context: Dict[str, Any]) -> str:
+    context_parts: list[str] = [
+        str(job_context.get("search_query") or ""),
+        str(job_context.get("target_niche") or ""),
+        str(job_context.get("user_target_offer_focus") or ""),
+        str(job_context.get("user_profession") or ""),
+        str(job_context.get("target_company_size") or ""),
+    ]
+    context_parts.extend(str(item) for item in (job_context.get("target_budget_signals") or []))
+    context_parts.extend(str(item) for item in (job_context.get("target_pain_points") or []))
+    return _normalize_ascii(" ".join(context_parts))
+
+
+def _count_profile_hint_matches(searchable_blob: str, hints: tuple[str, ...]) -> int:
+    return sum(1 for hint in hints if _normalize_ascii(hint) in searchable_blob)
+
+
+def _resolve_planner_profile(job_context: Dict[str, Any]) -> SearchPlannerProfile:
+    explicit_profile = _normalize_ascii(str(job_context.get("planner_profile") or job_context.get("search_mode") or ""))
+    explicit_aliases = {
+        "generic": "generic_business",
+        "generic_business": "generic_business",
+        "coach": "creator_coach",
+        "creator": "creator_coach",
+        "creator_coach": "creator_coach",
+        "coach_creator": "creator_coach",
+        "ecommerce": "ecommerce_content",
+        "ecommerce_content": "ecommerce_content",
+        "shopify": "ecommerce_content",
+    }
+    selected_key = explicit_aliases.get(explicit_profile)
+    if selected_key:
+        return PLANNER_PROFILES[selected_key]  # type: ignore[index]
+
+    searchable_blob = _collect_profile_context_blob(job_context)
+    creator_score = _count_profile_hint_matches(searchable_blob, CREATOR_COACH_HINTS)
+    ecommerce_score = _count_profile_hint_matches(searchable_blob, ECOMMERCE_HINTS)
+
+    if ecommerce_score > creator_score and ecommerce_score >= 1:
+        return PLANNER_PROFILES["ecommerce_content"]
+    if creator_score >= 1:
+        return PLANNER_PROFILES["creator_coach"]
+    if ecommerce_score >= 1:
+        return PLANNER_PROFILES["ecommerce_content"]
+    return PLANNER_PROFILES["generic_business"]
+
+
+def _split_location_candidates(raw_location: str | None) -> list[str]:
+    normalized_location = _normalize_space(raw_location)
+    if not normalized_location:
+        return []
+    if _normalize_ascii(normalized_location) in _GLOBAL_LOCATION_ALIASES:
+        return []
+    if not MULTI_LOCATION_SPLIT_PATTERN.search(normalized_location):
+        return [normalized_location]
+    return [
+        candidate
+        for candidate in (_normalize_space(part) for part in MULTI_LOCATION_SPLIT_PATTERN.split(normalized_location))
+        if candidate
+    ]
+
+
+def _resolve_geo_scope(job_context: Dict[str, Any]) -> dict[str, Any] | None:
+    location_candidates = _split_location_candidates(job_context.get("target_location"))
+    if len(location_candidates) != 1:
+        return None
+
+    raw_location = location_candidates[0]
+    canonical_location = LOCATION_ALIAS_INDEX.get(_normalize_ascii(raw_location), raw_location)
+    aliases = LOCATION_ALIAS_RULES.get(canonical_location, (raw_location,))
+    normalized_aliases = tuple(
+        normalized_alias
+        for normalized_alias in (_normalize_ascii(alias) for alias in (canonical_location, *aliases))
+        if normalized_alias
+    )
+    return {
+        "label": canonical_location,
+        "canonical": canonical_location,
+        "aliases": normalized_aliases,
+    }
 
 
 def _dedupe_strings(values: list[str] | None) -> list[str]:
@@ -77,18 +280,26 @@ def _dedupe_strings(values: list[str] | None) -> list[str]:
 def _enforce_geo_policy(
     queries: list[str],
     *,
-    strict_spain: bool,
+    geo_scope: dict[str, Any] | None,
 ) -> list[str]:
-    if not strict_spain:
+    if not geo_scope:
         return _dedupe_strings(queries)
 
     filtered: list[str] = []
     for query in _dedupe_strings(queries):
-        normalized = _normalize_ascii(query)
-        if any(token in normalized for token in NON_SPAIN_GEO_TOKENS):
+        normalized_query = _normalize_ascii(query)
+        has_conflicting_location = False
+        for canonical_location, aliases in LOCATION_ALIAS_RULES.items():
+            if canonical_location == geo_scope["canonical"]:
+                continue
+            normalized_candidates = [_normalize_ascii(canonical_location), *(_normalize_ascii(alias) for alias in aliases)]
+            if any(candidate and candidate in normalized_query for candidate in normalized_candidates):
+                has_conflicting_location = True
+                break
+        if has_conflicting_location:
             continue
-        if not any(alias in normalized for alias in STRICT_SPAIN_ALIASES):
-            query = _normalize_space(f"{query} España")
+        if not any(alias in normalized_query for alias in geo_scope["aliases"]):
+            query = _normalize_space(f"{query} {geo_scope['label']}")
         filtered.append(query)
     return _dedupe_strings(filtered)
 
@@ -101,51 +312,89 @@ def _normalize_negative_terms(values: list[str] | None) -> list[str]:
     return normalized
 
 
-def _build_initial_system_prompt() -> str:
-    return """Eres un experto mundial en OSINT, Growth Hacking y prospeccion comercial.
+def _sanitize_profile_queries(queries: list[str], profile: SearchPlannerProfile) -> list[str]:
+    sanitized_queries = _dedupe_strings(queries)
+    if profile.key != "ecommerce_content":
+        return sanitized_queries
+
+    filtered_queries: list[str] = []
+    for query in sanitized_queries:
+        normalized_query = _normalize_ascii(query)
+        if any(blocked_hint in normalized_query for blocked_hint in ECOMMERCE_BLOCKED_QUERY_HINTS):
+            continue
+        filtered_queries.append(query)
+    return filtered_queries
+
+
+def _render_numbered_rules(*rule_groups: tuple[str, ...]) -> str:
+    lines: list[str] = []
+    counter = 1
+    for rule_group in rule_groups:
+        for rule in rule_group:
+            lines.append(f"{counter}. {rule}")
+            counter += 1
+    return "\n".join(lines)
+
+
+def _build_initial_system_prompt(profile: SearchPlannerProfile) -> str:
+    base_rules = (
+        "Genera 3 a 6 queries comerciales, especificas y accionables.",
+        "Busca clientes finales exactos para outreach, no proveedores ni intermediarios.",
+        "Evita blogs, medios, escuelas, directorios, listados, software, assets, fuentes, tools y paginas informativas.",
+        "Si existe una ubicacion objetivo unica, no abras geografia fuera de esa ubicacion.",
+        "Devuelve terminos negativos utiles y hints para el clasificador final.",
+    )
+    profile_rules = (
+        f"Trabaja en modo {profile.label} y prioriza: {', '.join(profile.priority_signals)}.",
+        f"Rechaza especialmente: {', '.join(profile.exclusion_focus)}.",
+    )
+    return f"""Eres un experto mundial en OSINT, Growth Hacking y prospeccion comercial.
 
 Tu tarea es disenar un Search Plan para encontrar CLIENTES FINALES EXACTOS para outreach.
 
 REGLAS:
-1. Genera 3 a 6 queries comerciales, especificas y accionables.
-2. Evita blogs, medios, escuelas, directorios, listados, software, assets, fuentes, tools y paginas informativas.
-3. Si el target incluye coaches o marcas personales, prioriza huellas de oferta final, redes, link in bio, programas, mentorias y contacto comercial.
-4. Si la ubicacion objetivo es España, no abras geografia fuera de España.
-5. Devuelve terminos negativos utiles y hints para el clasificador final.
+{_render_numbered_rules(base_rules, profile_rules)}
 
 SALIDA JSON:
-{
+{{
   "optimal_dork_queries": ["..."],
   "dynamic_negative_terms": ["-blog"],
   "target_entity_hints": ["..."],
   "exclusion_entity_hints": ["..."],
   "refinement_goal": "..."
-}
+}}
 """
 
 
-def _build_refinement_system_prompt() -> str:
-    return """Eres un experto en iteracion de discovery comercial.
+def _build_refinement_system_prompt(profile: SearchPlannerProfile) -> str:
+    base_rules = (
+        "Aumenta prospectos finales validos.",
+        "Reduce ruido y falsos positivos.",
+        "No repitas queries ya usadas.",
+        "Si existe una ubicacion objetivo unica, no abras geografia fuera de esa ubicacion.",
+        "Excluye directorios, listados, blogs, medios, assets y paginas oportunistas por keyword.",
+    )
+    profile_rules = (
+        f"Trabaja en modo {profile.label} y prioriza: {', '.join(profile.priority_signals)}.",
+        f"Endurece exclusiones para: {', '.join(profile.exclusion_focus)}.",
+    )
+    return f"""Eres un experto en iteracion de discovery comercial.
 
 Debes revisar los resultados previos de un job y proponer nuevas queries MAS ESPECIFICAS.
 
 OBJETIVO:
-- aumentar prospectos finales validos,
-- reducir ruido,
-- no repetir queries ya usadas,
-- no abrir geografia fuera de España,
-- excluir escuelas, directorios, listados, blogs, medios, assets y paginas oportunistas por keyword.
+{_render_numbered_rules(base_rules, profile_rules)}
 
 Si viste falsos positivos, usalos para endurecer terminos negativos y exclusiones.
 
 SALIDA JSON:
-{
+{{
   "optimal_dork_queries": ["..."],
   "dynamic_negative_terms": ["-blog"],
   "target_entity_hints": ["..."],
   "exclusion_entity_hints": ["..."],
   "refinement_goal": "..."
-}
+}}
 """
 
 
@@ -165,17 +414,53 @@ def _compact_iteration_memory(iteration_memory: Dict[str, Any] | None) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _build_refinement_user_prompt(job_context: Dict[str, Any], iteration_memory: Dict[str, Any] | None) -> str:
+def _build_mode_summary_lines(profile: SearchPlannerProfile, geo_scope: dict[str, Any] | None) -> list[str]:
+    geo_label = geo_scope["label"] if geo_scope else "Flexible o multiple opciones"
+    return [
+        "MODO DE BUSQUEDA:",
+        f"- Perfil activo: {profile.label}",
+        f"- Ubicacion operativa: {geo_label}",
+        f"- Target valido: {profile.target_description}",
+        f"- Priorizar: {', '.join(profile.priority_signals)}",
+        f"- Rechazar: {', '.join(profile.exclusion_focus)}",
+    ]
+
+
+def _build_initial_user_prompt(
+    job_context: Dict[str, Any],
+    profile: SearchPlannerProfile,
+    geo_scope: dict[str, Any] | None,
+) -> str:
     buyer_persona = _build_buyer_persona(job_context)
+    return "\n".join(
+        [
+            "PERFIL DEL VENDEDOR:",
+            buyer_persona,
+            "",
+            *_build_mode_summary_lines(profile, geo_scope),
+        ]
+    )
+
+
+def _build_refinement_user_prompt(
+    job_context: Dict[str, Any],
+    iteration_memory: Dict[str, Any] | None,
+    profile: SearchPlannerProfile,
+    geo_scope: dict[str, Any] | None,
+) -> str:
+    buyer_persona = _build_buyer_persona(job_context)
+    geo_policy = geo_scope["label"] if geo_scope else "Flexible o multiple opciones"
     return "\n".join(
         [
             "REQUEST ORIGINAL DEL USUARIO:",
             buyer_persona,
             "",
+            *_build_mode_summary_lines(profile, geo_scope),
+            "",
             "POLITICA FIJA:",
-            "- Ubicacion estricta: España",
-            "- Target valido: coaches finales, marcas personales finales y negocios finales",
-            "- Rechazar: escuelas, directorios, listados, blogs, medios, assets, fuentes, tools",
+            f"- Ubicacion operativa: {geo_policy}",
+            f"- Target valido: {profile.target_description}",
+            f"- Rechazar: {', '.join(profile.exclusion_focus)}",
             "",
             "MEMORIA DEL JOB:",
             _compact_iteration_memory(iteration_memory),
@@ -189,8 +474,10 @@ def _build_planner_cache_key(
     mode: PlannerMode,
     iteration_memory: Dict[str, Any] | None,
 ) -> str:
+    profile = _resolve_planner_profile(job_context)
     base_parts = [
         mode,
+        profile.key,
         str(job_context.get("search_query", "")),
         str(job_context.get("user_profession", "")),
         str(job_context.get("target_niche", "")),
@@ -207,18 +494,26 @@ def _build_planner_cache_key(
 def _coerce_plan_payload(
     parsed_data: Dict[str, Any],
     *,
-    strict_spain: bool,
+    profile: SearchPlannerProfile,
+    geo_scope: dict[str, Any] | None,
 ) -> Dict[str, Any]:
     payload = AISearchPlanPayload.model_validate(parsed_data)
     result = payload.model_dump()
+    sanitized_queries = _sanitize_profile_queries(result.get("optimal_dork_queries", []), profile)
     result["optimal_dork_queries"] = _enforce_geo_policy(
-        result.get("optimal_dork_queries", []),
-        strict_spain=strict_spain,
+        sanitized_queries,
+        geo_scope=geo_scope,
     )
     result["dynamic_negative_terms"] = _normalize_negative_terms(result.get("dynamic_negative_terms", []))
-    result["target_entity_hints"] = _dedupe_strings(result.get("target_entity_hints", []))
-    result["exclusion_entity_hints"] = _dedupe_strings(result.get("exclusion_entity_hints", []))
+    result["target_entity_hints"] = _dedupe_strings(
+        [*profile.default_target_entity_hints, *(result.get("target_entity_hints", []) or [])]
+    )
+    result["exclusion_entity_hints"] = _dedupe_strings(
+        [*profile.default_exclusion_entity_hints, *(result.get("exclusion_entity_hints", []) or [])]
+    )
     result["refinement_goal"] = _normalize_space(result.get("refinement_goal"))
+    result["planner_profile"] = profile.key
+    result["geo_scope"] = geo_scope["label"] if geo_scope else None
     return result
 
 
@@ -262,17 +557,18 @@ async def generate_dynamic_search_plan(
         logger.info("Retornando AI Search Plan desde caché en memoria.")
         return deepcopy(_PLANNER_CACHE[cache_key])
 
-    strict_spain = _is_strict_spain_job(job_context)
+    profile = _resolve_planner_profile(job_context)
+    geo_scope = _resolve_geo_scope(job_context)
     if mode == "refinement":
-        system_prompt = _build_refinement_system_prompt()
-        user_prompt = _build_refinement_user_prompt(job_context, iteration_memory)
+        system_prompt = _build_refinement_system_prompt(profile)
+        user_prompt = _build_refinement_user_prompt(job_context, iteration_memory, profile, geo_scope)
     else:
-        system_prompt = _build_initial_system_prompt()
-        user_prompt = f"PERFIL DEL VENDEDOR:\n\n{_build_buyer_persona(job_context)}"
+        system_prompt = _build_initial_system_prompt(profile)
+        user_prompt = _build_initial_user_prompt(job_context, profile, geo_scope)
 
     try:
         parsed_data = await _call_planner(system_prompt=system_prompt, user_prompt=user_prompt)
-        result_dict = _coerce_plan_payload(parsed_data, strict_spain=strict_spain)
+        result_dict = _coerce_plan_payload(parsed_data, profile=profile, geo_scope=geo_scope)
         _PLANNER_CACHE[cache_key] = deepcopy(result_dict)
         logger.info("Plan AI de búsqueda generado exitosamente en modo %s.", mode)
         return result_dict

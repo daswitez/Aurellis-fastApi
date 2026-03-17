@@ -24,6 +24,9 @@ BLOCKED_DOMAIN_TOKENS = [
     "google.com",
     "googleusercontent",
     "dafont.com",
+    "pinterest.com",
+    "github.com",
+    "fiverr.com",
 ]
 REFERENCE_DOMAIN_TOKENS = [
     "wikipedia.org",
@@ -40,6 +43,8 @@ REFERENCE_DOMAIN_TOKENS = [
     "britannica.com",
     "dictionary.com",
     "infoescola.com",
+    "statista.com",
+    "mordorintelligence.com",
     "verywellhealth.com",
     "verywellmind.com",
     "verywellfit.com",
@@ -295,6 +300,15 @@ BINARY_DOCUMENT_PATH_SUFFIXES = (
     ".rar",
     ".7z",
 )
+AUTH_HELP_TITLE_TOKENS = (
+    "sign up",
+    "signup",
+    "log in",
+    "login",
+    "welcome to",
+    "help center",
+    "help center",
+)
 
 
 def clean_text(value: str | None) -> str:
@@ -389,6 +403,19 @@ def _looks_like_search_utility(url: str, title: str, snippet: str) -> bool:
     path = urlparse(url).path.lower()
     return any(token in path for token in SEARCH_UTILITY_PATH_TOKENS) or any(
         token in lowered_blob for token in SEARCH_UTILITY_TOKENS
+    )
+
+
+def _looks_like_auth_or_help_page(url: str, title: str, snippet: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    lowered_blob = f"{title} {snippet}".lower()
+    return (
+        host.startswith(("accounts.", "help.", "support."))
+        or "shopify.com" in host
+        or any(token in path for token in ("/account", "/accounts", "/login", "/signup", "/help", "/support"))
+        or any(token in lowered_blob for token in AUTH_HELP_TITLE_TOKENS)
     )
 
 
@@ -525,6 +552,16 @@ def classify_discovery_candidate(
             "score": 0.0,
             "reasons": ["search_utility_noise"],
             "exclusion_reason": "excluded_reference_page",
+        }
+
+    if _looks_like_auth_or_help_page(url, title, snippet):
+        return {
+            "result_kind": "website_inner_page",
+            "website_result_score": 0.0,
+            "social_profile_score": 0.0,
+            "score": 0.0,
+            "reasons": ["auth_or_help_page"],
+            "exclusion_reason": "excluded_auth_or_help_page",
         }
 
     if _looks_like_quiz_or_trivia(title, snippet):

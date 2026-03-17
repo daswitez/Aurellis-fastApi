@@ -42,6 +42,9 @@ LANGUAGE_DISCOVERY_HINTS = {
         "official": "sitio oficial",
         "contact": "contacto",
         "services": "servicios",
+        "shop": "tienda",
+        "products": "productos",
+        "collections": "colecciones",
         "commercial": ["empresa", "negocio", "servicios"],
         "locations": ["ubicaciones", "sedes"],
     },
@@ -49,6 +52,9 @@ LANGUAGE_DISCOVERY_HINTS = {
         "official": "official site",
         "contact": "contact",
         "services": "services",
+        "shop": "shop",
+        "products": "products",
+        "collections": "collections",
         "commercial": ["business", "company", "services"],
         "locations": ["locations", "branches"],
     },
@@ -56,6 +62,9 @@ LANGUAGE_DISCOVERY_HINTS = {
         "official": "site oficial",
         "contact": "contato",
         "services": "servicos",
+        "shop": "loja",
+        "products": "produtos",
+        "collections": "colecoes",
         "commercial": ["empresa", "negocio", "servicos"],
         "locations": ["localizacoes", "unidades"],
     },
@@ -87,6 +96,36 @@ SOCIAL_COMMERCIAL_HINTS = (
     "cursos",
     "infoproductos",
 )
+DISCOVERY_PROFILE_HINTS = {
+    "creator_coach": ("coach", "coaches", "coaching", "marca personal", "marcas personales", "personal brand"),
+    "ecommerce": ("ecommerce", "shopify", "tienda online", "tiendas online", "dropshipping", "online store", "online stores"),
+}
+PROFILE_SOCIAL_HINTS = {
+    "generic": ("link in bio", "linktree"),
+    "creator_coach": ("link in bio", "linktree", "programa", "mentoria", "coach"),
+    "ecommerce": ("shop now", "product video", "product content", "new drop", "online store", "shopify"),
+}
+PROFILE_RETRY_SOCIAL_HINTS = {
+    "generic": ("link in bio",),
+    "creator_coach": ("link in bio", "marca personal", "coach"),
+    "ecommerce": ("shop now", "product video", "new drop", "shopify"),
+}
+QUERY_LOCALIZATION_MAP = {
+    "en": (
+        ("pequeñas marcas ecommerce", "small ecommerce brands"),
+        ("pequenas marcas ecommerce", "small ecommerce brands"),
+        ("marcas ecommerce", "ecommerce brands"),
+        ("tiendas online", "online stores"),
+        ("tienda online", "online store"),
+        ("pymes digitales", "digital businesses"),
+        ("pyme digital", "digital business"),
+        ("marca personal", "personal brand"),
+        ("marcas personales", "personal brands"),
+        ("cursos online", "online courses"),
+        ("productos digitales", "digital products"),
+        ("infoproductos", "digital products"),
+    ),
+}
 NICHE_VARIANTS = {
     "ecommerce": ["ecommerce", "tienda online", "shopify"],
     "tienda online": ["tienda online", "ecommerce", "shopify"],
@@ -104,6 +143,24 @@ INTENT_FAMILY_HINTS = {
     "ecommerce": ["ecommerce", "tienda online", "shopify"],
     "education": ["academia online", "academias online", "cursos online", "escuela online", "infoproductos", "productos digitales"],
 }
+ECOMMERCE_NEGATIVE_TERMS = (
+    "-theme",
+    "-themes",
+    "-template",
+    "-templates",
+    "-app",
+    "-apps",
+    "-tutorial",
+    "-guide",
+    "-supplier",
+    "-suppliers",
+    "-wholesale",
+    "-marketplace",
+    "-directory",
+    "-help",
+    "-docs",
+    "-documentation",
+)
 GLOBAL_LOCATION_TOKENS = {
     "global",
     "globales",
@@ -116,11 +173,15 @@ GLOBAL_LOCATION_TOKENS = {
     "anywhere",
 }
 LOCATION_ALIAS_RULES = {
+    "USA": ("usa", "united states", "estados unidos", "eeuu"),
+    "UK": ("uk", "united kingdom", "reino unido", "great britain"),
+    "Canada": ("canada",),
+    "Australia": ("australia",),
     "España": ("espana", "españa", "spain"),
-    "México": ("mexico", "méxico"),
-    "Argentina": ("argentina",),
-    "Colombia": ("colombia",),
-    "Perú": ("peru", "perú"),
+    "México": ("mexico", "méxico", "cdmx", "ciudad de mexico", "ciudad de méxico"),
+    "Argentina": ("argentina", "buenos aires"),
+    "Colombia": ("colombia", "bogota", "bogotá"),
+    "Perú": ("peru", "perú", "lima"),
     "Chile": ("chile",),
     "Uruguay": ("uruguay",),
     "Bolivia": ("bolivia",),
@@ -162,6 +223,53 @@ def _query_contains_token(query: str, token: str) -> bool:
     normalized_query = f" {_normalize_space(query).lower()} "
     normalized_token = f" {_normalize_space(token).lower()} "
     return bool(token) and normalized_token in normalized_query
+
+
+def _resolve_discovery_profile(
+    *,
+    search_query: str | None,
+    target_niche: str | None,
+    user_target_offer_focus: str | None,
+    target_budget_signals: list[str] | None,
+) -> str:
+    searchable = _normalize_space(
+        " ".join(
+            [
+                str(search_query or ""),
+                str(target_niche or ""),
+                str(user_target_offer_focus or ""),
+                " ".join(str(item) for item in (target_budget_signals or [])),
+            ]
+        )
+    ).lower()
+
+    profile_scores = {
+        profile_name: sum(1 for hint in hints if hint in searchable)
+        for profile_name, hints in DISCOVERY_PROFILE_HINTS.items()
+    }
+    if profile_scores["ecommerce"] > profile_scores["creator_coach"] and profile_scores["ecommerce"] >= 1:
+        return "ecommerce"
+    if profile_scores["creator_coach"] >= 1:
+        return "creator_coach"
+    if profile_scores["ecommerce"] >= 1:
+        return "ecommerce"
+    return "generic"
+
+
+def _localize_query_fragment(value: str | None, language: str | None) -> str:
+    normalized_value = _normalize_space(value)
+    if not normalized_value:
+        return ""
+    replacements = QUERY_LOCALIZATION_MAP.get(_normalize_space(language).lower(), ())
+    localized_value = normalized_value
+    lowered_value = localized_value.lower()
+    for source, target in replacements:
+        if source in lowered_value:
+            localized_value = re.sub(re.escape(source), target, localized_value, flags=re.IGNORECASE)
+            lowered_value = localized_value.lower()
+    if _normalize_space(language).lower() == "en":
+        localized_value = re.sub(r"\s+y\s+", " and ", localized_value, flags=re.IGNORECASE)
+    return _normalize_space(localized_value)
 
 
 def _extract_keywords(value: str) -> list[str]:
@@ -297,20 +405,36 @@ def _normalize_context_list(values: list[str] | None) -> list[str]:
     return normalized
 
 
-def _build_budget_signal_keywords(target_budget_signals: list[str] | None) -> list[str]:
+def _build_budget_signal_keywords(
+    target_budget_signals: list[str] | None,
+    *,
+    target_language: str | None,
+    discovery_profile: str,
+) -> list[str]:
     keywords: list[str] = []
+    language = _normalize_space(target_language).lower()
     for signal in _normalize_context_list(target_budget_signals):
         lowered = signal.lower()
         if "instagram" in lowered or "tiktok" in lowered:
             keywords.extend(["instagram", "tiktok"])
-        if "linktree" in lowered or "tienda oficial" in lowered or "tienda" in lowered:
-            keywords.extend(["link in bio", "linktree", "tienda online"])
+            if discovery_profile == "ecommerce":
+                keywords.extend(["product video", "product content"])
+        if "linktree" in lowered or "tienda oficial" in lowered or "tienda" in lowered or "store" in lowered or "shopify" in lowered:
+            keywords.extend(["link in bio", "linktree"])
+            if language == "en":
+                keywords.extend(["online store", "shop now", "shopify"])
+            else:
+                keywords.extend(["tienda online", "shopify"])
         if "curso" in lowered or "infoproducto" in lowered:
-            keywords.extend(["curso", "infoproductos"])
+            keywords.extend(["course", "digital products"] if language == "en" else ["curso", "infoproductos"])
         if "anuncio" in lowered or "ads" in lowered:
-            keywords.extend(["anuncios", "meta ads"])
-        if "seguidores" in lowered:
+            keywords.extend(["meta ads", "facebook ads"] if language == "en" else ["anuncios", "meta ads"])
+        if "producto" in lowered:
+            keywords.extend(["product video", "product content"] if language == "en" else ["contenido de producto", "productos"])
+        if "seguidores" in lowered and discovery_profile == "creator_coach":
             keywords.extend(["creador", "marca personal"])
+        if "branding" in lowered or "landing" in lowered:
+            keywords.extend(["brand", "landing page"] if language == "en" else ["branding", "landing"])
 
     deduped: list[str] = []
     for keyword in keywords:
@@ -318,14 +442,22 @@ def _build_budget_signal_keywords(target_budget_signals: list[str] | None) -> li
             deduped.append(keyword)
 
     priority_order = [
+        "shop now",
+        "product video",
+        "product content",
         "link in bio",
         "linktree",
+        "online store",
         "tienda online",
+        "shopify",
         "curso",
+        "course",
+        "digital products",
         "infoproductos",
         "instagram",
         "tiktok",
         "meta ads",
+        "facebook ads",
         "anuncios",
         "creador",
         "marca personal",
@@ -339,7 +471,19 @@ def _filter_budget_signal_keywords_for_niche(keywords: list[str], target_niche: 
     if not niche:
         return keywords
 
-    generic_social_keywords = {"instagram", "tiktok", "link in bio", "linktree", "meta ads", "anuncios", "creador"}
+    generic_social_keywords = {
+        "instagram",
+        "tiktok",
+        "link in bio",
+        "linktree",
+        "meta ads",
+        "facebook ads",
+        "anuncios",
+        "creador",
+        "product video",
+        "product content",
+        "shop now",
+    }
     filtered = [
         keyword
         for keyword in keywords
@@ -386,6 +530,8 @@ def _derive_contextual_negative_terms(
         )
     ):
         extra_terms.extend(SERVICE_PROVIDER_EXCLUSION_TERMS)
+    if any(token in searchable_text for token in ("ecommerce", "tienda online", "shopify", "dropshipping")):
+        extra_terms.extend(ECOMMERCE_NEGATIVE_TERMS)
 
     deduped_terms: list[str] = []
     for term in [*NEGATIVE_DISCOVERY_TERMS, *extra_terms]:
@@ -488,14 +634,22 @@ def build_discovery_queries(
     ai_negative_terms: list[str] | None = None,
     max_queries: int = MAX_DISCOVERY_QUERIES,
 ) -> list[str]:
-    base_query = _normalize_space(search_query)
-    niche = _normalize_space(target_niche)
+    raw_base_query = _normalize_space(search_query)
+    raw_niche = _normalize_space(target_niche)
     location = resolve_discovery_target_location(
-        search_query=base_query,
+        search_query=raw_base_query,
         target_location=target_location,
-        target_niche=niche,
+        target_niche=raw_niche,
     )
     language = _normalize_space(target_language).lower()
+    discovery_profile = _resolve_discovery_profile(
+        search_query=raw_base_query,
+        target_niche=raw_niche,
+        user_target_offer_focus=user_target_offer_focus,
+        target_budget_signals=target_budget_signals,
+    )
+    base_query = _localize_query_fragment(raw_base_query, language)
+    niche = _localize_query_fragment(raw_niche, language)
 
     if not base_query and niche and location:
         base_query = f"{niche} {location}"
@@ -521,7 +675,11 @@ def build_discovery_queries(
         ai_negative_terms=ai_negative_terms,
     )
     budget_signal_keywords = _filter_budget_signal_keywords_for_niche(
-        _build_budget_signal_keywords(target_budget_signals),
+        _build_budget_signal_keywords(
+            target_budget_signals,
+            target_language=language,
+            discovery_profile=discovery_profile,
+        ),
         niche,
     )
 
@@ -529,6 +687,8 @@ def build_discovery_queries(
         for dork in ai_dork_queries:
             _append_query(queries, _apply_negative_terms(dork, negative_terms))
 
+    if base_query and niche and _normalize_space(base_query).lower() == niche.lower():
+        _append_query(queries, base_query)
     _append_query(queries, niche_location_query)
     for localized_intent_seed in localized_intent_seeds[:3]:
         _append_query(queries, localized_intent_seed)
@@ -543,7 +703,7 @@ def build_discovery_queries(
     )
     
     if needs_social_profiles:
-        social_intent_hints = [*budget_signal_keywords[:3], *SOCIAL_COMMERCIAL_HINTS[:4]]
+        social_intent_hints = [*budget_signal_keywords[:3], *PROFILE_SOCIAL_HINTS.get(discovery_profile, PROFILE_SOCIAL_HINTS["generic"])]
         for intent_seed in intent_seeds[:2]:
             localized_seed = _normalize_space(f"{intent_seed} {location}") if location else intent_seed
             _append_query(queries, _apply_negative_terms(f"{localized_seed} site:instagram.com", negative_terms))
@@ -569,9 +729,14 @@ def build_discovery_queries(
                 _apply_negative_terms(f"{primary_intent_seed} {hint} site:tiktok.com", negative_terms),
             )
 
+    if discovery_profile == "ecommerce":
+        _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['shop']}", negative_terms))
+        _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['products']}", negative_terms))
+        _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} {language_hints['collections']}", negative_terms))
+
     if user_technologies:
         tech_string = " ".join(_normalize_context_list(user_technologies)).lower()
-        if "shopify" in tech_string:
+        if "shopify" in tech_string and discovery_profile == "ecommerce":
             _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} \"powered by shopify\"", negative_terms))
         if "wordpress" in tech_string:
             _append_query(queries, _apply_negative_terms(f"{primary_intent_seed} \"creado con wordpress\"", negative_terms))
@@ -619,14 +784,22 @@ def build_retry_discovery_queries(
     user_target_offer_focus: str | None = None,
     target_budget_signals: list[str] | None = None,
 ) -> list[str]:
-    base_query = _normalize_space(search_query)
-    niche = _normalize_space(target_niche)
+    raw_base_query = _normalize_space(search_query)
+    raw_niche = _normalize_space(target_niche)
     location = resolve_discovery_target_location(
-        search_query=base_query,
+        search_query=raw_base_query,
         target_location=target_location,
-        target_niche=niche,
+        target_niche=raw_niche,
     )
     language = _normalize_space(target_language).lower()
+    discovery_profile = _resolve_discovery_profile(
+        search_query=raw_base_query,
+        target_niche=raw_niche,
+        user_target_offer_focus=user_target_offer_focus,
+        target_budget_signals=target_budget_signals,
+    )
+    base_query = _localize_query_fragment(raw_base_query, language)
+    niche = _localize_query_fragment(raw_niche, language)
     language_hints = LANGUAGE_DISCOVERY_HINTS.get(language or "es", LANGUAGE_DISCOVERY_HINTS["es"])
     intent_seeds = _derive_intent_seeds(search_query=base_query, target_niche=niche, location=location)
     negative_terms = _derive_contextual_negative_terms(
@@ -637,7 +810,11 @@ def build_retry_discovery_queries(
         user_service_constraints=user_service_constraints,
     )
     budget_signal_keywords = _filter_budget_signal_keywords_for_niche(
-        _build_budget_signal_keywords(target_budget_signals),
+        _build_budget_signal_keywords(
+            target_budget_signals,
+            target_language=language,
+            discovery_profile=discovery_profile,
+        ),
         niche,
     )
 
@@ -658,7 +835,7 @@ def build_retry_discovery_queries(
     if needs_social_profiles:
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} site:instagram.com", negative_terms))
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} site:tiktok.com", negative_terms))
-        for hint in [*budget_signal_keywords[:2], "marca personal", "coach", "link in bio"]:
+        for hint in [*budget_signal_keywords[:2], *PROFILE_RETRY_SOCIAL_HINTS.get(discovery_profile, PROFILE_RETRY_SOCIAL_HINTS["generic"])]:
             _append_query(
                 retry_queries,
                 _apply_negative_terms(f"{intent_seed} {hint} site:instagram.com", negative_terms),
@@ -670,6 +847,10 @@ def build_retry_discovery_queries(
 
     for hint in language_hints.get("locations", []):
         _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {hint}", negative_terms))
+
+    if discovery_profile == "ecommerce":
+        _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {language_hints['shop']}", negative_terms))
+        _append_query(retry_queries, _apply_negative_terms(f"{intent_seed} {language_hints['products']}", negative_terms))
 
     for derived_seed in intent_seeds[:4]:
         localized_seed = _normalize_space(f"{derived_seed} {location}") if location else derived_seed
